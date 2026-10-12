@@ -80,19 +80,15 @@ export type OutboundSyncStatus = {
   closed: boolean;
 };
 
-export type OutboundSyncFlushResult =
-  | { status: 'drained' }
-  | { status: 'deferred'; reason: 'no-target' | 'offline'; pendingOps: number }
-  | { status: 'failed'; error: unknown; pendingOps: number }
-  | { status: 'closed' };
-
 /**
  * One replaceable destination for exact committed local operations.
  *
  * This deliberately does not expose a `SyncPeer` or transport. A high-level websocket handle can
  * be used with `(ops, opts) => sync.pushLocalOps(ops, opts)`, while low-level callers can wrap
- * `peer.pushOps(transport, ops, opts)`. Targets must honor `opts.signal`; replacement, timeout,
- * and close wait for the aborted attempt before moving on.
+ * `peer.pushOps(transport, ops, opts)`. Resolution acknowledges application of all supplied ops.
+ * Forward `opts.signal` where supported. Local storage targets must await their actual write, not
+ * race an uninterruptible write against cancellation. Network cancellation only stops waiting;
+ * an already-started send or remote application may still finish after the target promise rejects.
  */
 export type OutboundSyncPushTarget<Op = Operation> = (
   ops: readonly Op[],
@@ -108,14 +104,13 @@ export type OutboundSyncOptions<Op = Operation> = {
    */
   opKey?: (op: Op) => string;
   /**
-   * Allows apps to keep queued work while offline instead of turning transient offline state into
-   * sync errors.
+   * Prevent attempts while offline. Waiting calls reject, but operations remain queued for retry.
    */
   isOnline?: () => boolean;
   /** Optional low-level peer notification used to wake local live subscriptions. */
   notifyLocalUpdate?: (ops: readonly Op[]) => void | Promise<void>;
   pushOptions?: SyncPushOptions;
-  /** Abort a stalled push after this duration while keeping its ops queued for retry. */
+  /** Reject waiting calls and request cancellation after this duration; retain ops for retry. */
   pushTimeoutMs?: number;
   onError?: (error: unknown) => void;
   onStatus?: (status: OutboundSyncStatus) => void;
@@ -124,23 +119,31 @@ export type OutboundSyncOptions<Op = Operation> = {
 export type OutboundSync<Op = Operation> = {
   readonly status: OutboundSyncStatus;
   /**
-   * Replace the remote upload target. The returned cleanup removes only this registration, so a
+   * Replace the push target. The returned cleanup removes only this registration, so a
    * stale socket cleanup cannot remove a newer target.
    */
   setTarget: (target: OutboundSyncPushTarget<Op>) => () => void;
   /**
-   * Queue exact committed local ops. This also invokes `notifyLocalUpdate`, when supplied, to wake
-   * low-level live subscriptions.
+   * Synchronously enqueue exact committed local ops and acknowledge this batch plus earlier work.
+   * Later writes do not delay or fail this promise. A failed attempt rejects dependent promises,
+   * retaining operations for a new push, flush, or target registration to retry. Rejected promises
+   * never revive. Also invokes the best-effort `notifyLocalUpdate`, when supplied.
    */
-  queueOps: (ops: readonly Op[]) => void;
+  push: (ops: readonly Op[]) => Promise<void>;
   /**
-   * Attempt to flush queued work. Offline and missing-target states are deferred, while push
-   * errors are reported as failed; all three keep the ops queued for an explicit retry.
+   * Attempt and acknowledge the accepted prefix at invocation, without waiting for later writes.
+   * Missing-target, offline, and failed attempts reject while retaining operations for retry.
    */
-  flush: () => Promise<OutboundSyncFlushResult>;
+  flush: () => Promise<void>;
   /**
-   * Abort and await active work, then discard queued ops. Repeated calls share one barrier.
-   * Afterwards, queue/target updates are ignored and `flush()` reports `closed`.
+   * Wait until execution stops, including work enqueued by synchronous completion callbacks.
+   * Does not retry retained operations or acknowledge success; resolves even after a failed attempt.
+   */
+  whenIdle: () => Promise<void>;
+  /**
+   * Abort active work, discard queued ops, and await the active target promise. Repeated calls share
+   * one barrier.
+   * Reject unsettled calls immediately. Afterwards push/flush reject and target updates are ignored.
    */
   close: () => Promise<void>;
 };

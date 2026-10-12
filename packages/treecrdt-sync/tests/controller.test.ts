@@ -50,24 +50,24 @@ function createRecordingTarget<Op = Operation>(opts: { failPushes?: number } = {
   return { pushed, target };
 }
 
-test('outbound sync defers without a target, dedupes, and drains after one is installed', async () => {
+test('outbound sync rejects without a target, dedupes, and drains after one is installed', async () => {
   const op = makeInsertOp();
   const { pushed, target } = createRecordingTarget();
   const controller = createOutboundSync();
 
-  controller.queueOps([op, op]);
-  await expect(controller.flush()).resolves.toEqual({
-    status: 'deferred',
-    reason: 'no-target',
-    pendingOps: 1,
-  });
+  const first = controller.push([op, op]);
+  await Promise.all([
+    expect(first).rejects.toThrow('no target'),
+    expect(controller.flush()).rejects.toThrow('no target'),
+  ]);
   expect(controller.status).toMatchObject({ hasTarget: false, pendingOps: 1 });
 
   controller.setTarget(target);
-  await expect(controller.flush()).resolves.toEqual({ status: 'drained' });
+  await expect(controller.flush()).resolves.toBeUndefined();
 
   expect(controller.status).toMatchObject({ hasTarget: true, pendingOps: 0 });
   expect(pushed).toEqual([[op]]);
+  await expect(first).rejects.toThrow('no target');
 });
 
 test('target cleanup is identity-safe when a connection is replaced', async () => {
@@ -81,8 +81,7 @@ test('target cleanup is identity-safe when a connection is replaced', async () =
   releaseOld();
 
   expect(controller.status.hasTarget).toBe(true);
-  controller.queueOps([op]);
-  await controller.flush();
+  await controller.push([op]);
 
   expect(oldTarget).not.toHaveBeenCalled();
   expect(newTarget).toHaveBeenCalledWith(
@@ -116,58 +115,28 @@ test('a target installed while a no-target flush settles triggers a retry', asyn
       }
     },
   });
-  controller.queueOps([op]);
+  void controller.push([op]).catch(() => {});
 
-  await expect(controller.flush()).resolves.toEqual({
-    status: 'deferred',
-    reason: 'no-target',
-    pendingOps: 1,
-  });
-  for (let i = 0; i < 10 && target.mock.calls.length === 0; i += 1) await tick();
+  await expect(controller.flush()).rejects.toThrow('no target');
+  for (let i = 0; i < 10 && controller.status.pendingOps > 0; i += 1) await tick();
 
   expect(target).toHaveBeenCalledWith([op], expect.objectContaining({ signal: expect.anything() }));
   expect(controller.status.pendingOps).toBe(0);
 });
 
-test('offline work is deferred until the caller explicitly retries', async () => {
+test('offline work is retained until the caller explicitly retries', async () => {
   const op = makeInsertOp();
   let online = false;
   const { pushed, target } = createRecordingTarget();
   const controller = createOutboundSync({ isOnline: () => online });
   controller.setTarget(target);
-  controller.queueOps([op]);
-
-  await expect(controller.flush()).resolves.toEqual({
-    status: 'deferred',
-    reason: 'offline',
-    pendingOps: 1,
-  });
+  await expect(controller.push([op])).rejects.toThrow('offline');
 
   online = true;
   await tick();
   expect(pushed).toEqual([]);
 
-  await expect(controller.flush()).resolves.toEqual({ status: 'drained' });
-  expect(pushed).toEqual([[op]]);
-});
-
-test('a failed push returns its error and keeps the batch queued for retry', async () => {
-  const op = makeInsertOp();
-  const { pushed, target } = createRecordingTarget({ failPushes: 1 });
-  const errors: unknown[] = [];
-  const controller = createOutboundSync({ onError: (error) => errors.push(error) });
-  controller.setTarget(target);
-  controller.queueOps([op]);
-
-  const first = await controller.flush();
-  expect(first).toMatchObject({ status: 'failed', pendingOps: 1 });
-  expect(first.status === 'failed' ? first.error : undefined).toEqual(
-    new Error('direct push failed'),
-  );
-  expect(errors).toHaveLength(1);
-  expect(controller.status.pendingOps).toBe(1);
-
-  await expect(controller.flush()).resolves.toEqual({ status: 'drained' });
+  await expect(controller.flush()).resolves.toBeUndefined();
   expect(pushed).toEqual([[op]]);
 });
 
@@ -189,23 +158,23 @@ test('ops queued during a failed push wait for an explicit retry', async () => {
   });
   const controller = createOutboundSync();
   controller.setTarget(target);
-  controller.queueOps([firstOp]);
+  void controller.push([firstOp]).catch(() => {});
 
   const flushing = controller.flush();
   await firstStarted.promise;
-  controller.queueOps([secondOp]);
+  void controller.push([secondOp]).catch(() => {});
   failFirst.resolve();
 
-  await expect(flushing).resolves.toMatchObject({ status: 'failed', pendingOps: 2 });
+  await expect(flushing).rejects.toThrow('first push failed');
   await tick();
   expect(target).toHaveBeenCalledTimes(1);
   expect(controller.status.pendingOps).toBe(2);
 
-  await expect(controller.flush()).resolves.toEqual({ status: 'drained' });
-  expect(deliveries).toEqual([[firstOp, secondOp]]);
+  await expect(controller.flush()).resolves.toBeUndefined();
+  expect(deliveries).toEqual([[firstOp], [secondOp]]);
 });
 
-test('concurrent flush calls share the drain including work queued during the push', async () => {
+test('push and flush acknowledge their accepted prefix without waiting for later work', async () => {
   const firstOp = makeInsertOp(1);
   const secondOp = makeInsertOp(2);
   const deliveries: Operation[][] = [];
@@ -226,23 +195,26 @@ test('concurrent flush calls share the drain including work queued during the pu
   const controller = createOutboundSync();
   controller.setTarget(target);
 
-  controller.queueOps([firstOp]);
+  const firstPush = controller.push([firstOp]);
   const activeFlush = controller.flush();
   await firstStarted.promise;
-  controller.queueOps([secondOp]);
+  const secondPush = controller.push([secondOp]);
   const concurrentFlush = controller.flush();
   let concurrentResolved = false;
   void concurrentFlush.then(() => {
     concurrentResolved = true;
   });
 
-  expect(concurrentFlush).toBe(activeFlush);
+  expect(concurrentFlush).not.toBe(activeFlush);
   firstGate.resolve();
   await secondStarted.promise;
+  await expect(firstPush).resolves.toBeUndefined();
+  await expect(activeFlush).resolves.toBeUndefined();
   expect(concurrentResolved).toBe(false);
 
   secondGate.resolve();
-  await expect(activeFlush).resolves.toEqual({ status: 'drained' });
+  await expect(secondPush).resolves.toBeUndefined();
+  await expect(concurrentFlush).resolves.toBeUndefined();
   expect(deliveries).toEqual([[firstOp], [secondOp]]);
 });
 
@@ -276,12 +248,12 @@ test('a timed-out push is aborted before the queued batch is retried', async () 
   });
   const controller = createOutboundSync({ pushTimeoutMs: 5 });
   controller.setTarget(target);
-  controller.queueOps([op]);
+  void controller.push([op]).catch(() => {});
 
-  await expect(controller.flush()).resolves.toMatchObject({ status: 'failed', pendingOps: 1 });
+  await expect(controller.flush()).rejects.toThrow('timed out');
   expect(timedOutSignal?.aborted).toBe(true);
 
-  await expect(controller.flush()).resolves.toEqual({ status: 'drained' });
+  await expect(controller.flush()).resolves.toBeUndefined();
   expect(maxActivePushes).toBe(1);
   expect(pushed).toEqual([[op]]);
 });
@@ -303,12 +275,12 @@ test('an in-flight batch is replayed to a replacement target', async () => {
   const controller = createOutboundSync();
   controller.setTarget(oldTarget);
 
-  controller.queueOps([op]);
+  void controller.push([op]).catch(() => {});
   const flushing = controller.flush();
   await oldStarted.promise;
   controller.setTarget(newTarget);
 
-  await expect(flushing).resolves.toEqual({ status: 'drained' });
+  await expect(flushing).resolves.toBeUndefined();
   expect(oldSignal?.aborted).toBe(true);
   expect(newTarget).toHaveBeenCalledWith(
     [op],
@@ -338,23 +310,20 @@ test('a replacement that was already tried is not retried implicitly after failu
   });
   const controller = createOutboundSync();
   controller.setTarget(oldTarget);
-  controller.queueOps([firstOp]);
+  void controller.push([firstOp]).catch(() => {});
 
   const flushing = controller.flush();
   await oldStarted.promise;
-  controller.queueOps([secondOp]);
+  void controller.push([secondOp]).catch(() => {});
   controller.setTarget(newTarget);
 
-  await expect(flushing).resolves.toMatchObject({ status: 'failed', pendingOps: 2 });
+  await expect(flushing).rejects.toThrow('replacement push failed');
   await tick();
-  expect(replacementBatches).toEqual([[firstOp, secondOp]]);
+  expect(replacementBatches).toEqual([[firstOp]]);
   expect(controller.status.pendingOps).toBe(2);
 
-  await expect(controller.flush()).resolves.toEqual({ status: 'drained' });
-  expect(replacementBatches).toEqual([
-    [firstOp, secondOp],
-    [firstOp, secondOp],
-  ]);
+  await expect(controller.flush()).resolves.toBeUndefined();
+  expect(replacementBatches).toEqual([[firstOp], [firstOp], [secondOp]]);
 });
 
 test('an already-aborted parent signal does not invoke the target', async () => {
@@ -363,9 +332,7 @@ test('an already-aborted parent signal does not invoke the target', async () => 
   const target = vi.fn(async () => {});
   const controller = createOutboundSync({ pushOptions: { signal: parent.signal } });
   controller.setTarget(target);
-  controller.queueOps([makeInsertOp()]);
-
-  await expect(controller.flush()).resolves.toMatchObject({ status: 'failed', pendingOps: 1 });
+  await expect(controller.push([makeInsertOp()])).rejects.toThrow('already cancelled');
   expect(target).not.toHaveBeenCalled();
 });
 
@@ -384,9 +351,7 @@ test('notifyLocalUpdate and observers are optional and isolated from queue deliv
     },
   });
   controller.setTarget(target);
-  controller.queueOps([op]);
-
-  await expect(controller.flush()).resolves.toEqual({ status: 'drained' });
+  await controller.push([op]);
   expect(target).toHaveBeenCalledWith([op], expect.objectContaining({ signal: expect.anything() }));
 });
 
@@ -396,7 +361,7 @@ test('a synchronous local notification cannot enqueue work after closing the con
     notifyLocalUpdate: () => controller.close(),
   });
 
-  controller.queueOps([makeInsertOp()]);
+  await expect(controller.push([makeInsertOp()])).rejects.toThrow('closed');
   await controller.close();
 
   expect(controller.status).toEqual({
@@ -437,15 +402,14 @@ test('work queued by the final status notification is not stranded behind the se
         target.mock.calls.length === 1
       ) {
         queuedFromFinalStatus = true;
-        controller.queueOps([secondOp]);
+        void controller.push([secondOp]).catch(() => {});
       }
     },
   });
   controller.setTarget(target);
 
-  controller.queueOps([firstOp]);
-  await controller.flush();
-  for (let i = 0; i < 10 && target.mock.calls.length < 2; i += 1) await tick();
+  await controller.push([firstOp]);
+  await controller.whenIdle();
 
   expect(target.mock.calls.map(([ops]) => ops)).toEqual([[firstOp], [secondOp]]);
   expect(controller.status.pendingOps).toBe(0);
@@ -458,8 +422,7 @@ test('custom op keys dedupe non-TreeCRDT shapes', async () => {
   const controller = createOutboundSync<CustomOp>({ opKey: (next) => next.id });
   controller.setTarget(target);
 
-  controller.queueOps([op, { id: op.id }]);
-  await controller.flush();
+  await controller.push([op, { id: op.id }]);
 
   expect(pushed).toEqual([[op]]);
 });
@@ -476,7 +439,7 @@ test('a reentrant close from opKey cannot enqueue or notify after teardown', asy
     notifyLocalUpdate,
   });
 
-  controller.queueOps([{ id: 'close-during-key' }]);
+  await expect(controller.push([{ id: 'close-during-key' }])).rejects.toThrow('closed');
   await controller.close();
 
   expect(notifyLocalUpdate).not.toHaveBeenCalled();
@@ -511,9 +474,10 @@ test('close aborts and awaits an active flush, clears state, and is idempotent',
   });
   controller = createOutboundSync();
   controller.setTarget(target);
-  controller.queueOps([makeInsertOp()]);
+  void controller.push([makeInsertOp()]).catch(() => {});
 
   const flushing = controller.flush();
+  const rejectedFlush = expect(flushing).rejects.toThrow('closed');
   await started.promise;
   const firstClose = controller.close();
   const secondClose = controller.close();
@@ -530,7 +494,7 @@ test('close aborts and awaits an active flush, clears state, and is idempotent',
 
   abortCleanup.resolve();
   await firstClose;
-  await expect(flushing).resolves.toEqual({ status: 'closed' });
+  await rejectedFlush;
   expect(pushSignal?.aborted).toBe(true);
   expect(controller.status).toEqual({
     hasTarget: false,
@@ -539,8 +503,220 @@ test('close aborts and awaits an active flush, clears state, and is idempotent',
     closed: true,
   });
 
-  controller.queueOps([makeInsertOp(2)]);
+  void controller.push([makeInsertOp(2)]).catch(() => {});
   controller.setTarget(vi.fn(async () => {}));
-  await expect(controller.flush()).resolves.toEqual({ status: 'closed' });
+  await expect(controller.flush()).rejects.toThrow('closed');
   expect(controller.status.pendingOps).toBe(0);
+});
+
+test('a later failure cannot reject an earlier acknowledged command or flush', async () => {
+  const firstOp = makeInsertOp(1);
+  const secondOp = makeInsertOp(2);
+  const failure = new Error('second failed');
+  const target = vi.fn(async (ops: readonly Operation[]) => {
+    if (ops[0] === secondOp) throw failure;
+  });
+  const controller = createOutboundSync();
+  controller.setTarget(target);
+  const first = controller.push([firstOp]);
+  const prefix = controller.flush();
+  const second = controller.push([secondOp]);
+  const secondRejected = expect(second).rejects.toBe(failure);
+  const allRejected = expect(controller.flush()).rejects.toBe(failure);
+
+  await Promise.all([first, prefix, secondRejected, allRejected]);
+  expect(target.mock.calls.map(([ops]) => ops)).toEqual([[firstOp], [secondOp]]);
+  expect(controller.status.pendingOps).toBe(1);
+  await expect(first).resolves.toBeUndefined();
+});
+
+test.each(['flush', 'target', 'push'] as const)(
+  '%s retries retained work without reviving rejected promises',
+  async (retry) => {
+    const op = makeInsertOp();
+    const { target, pushed } = createRecordingTarget({ failPushes: 1 });
+    const errors: unknown[] = [];
+    const controller = createOutboundSync({ onError: (error) => errors.push(error) });
+    controller.setTarget(target);
+    const first = controller.push([op]);
+    await expect(first).rejects.toThrow('direct push failed');
+    await controller.whenIdle();
+    expect(target).toHaveBeenCalledTimes(1);
+    expect(errors).toHaveLength(1);
+    expect(controller.status.pendingOps).toBe(1);
+    if (retry === 'target') {
+      controller.setTarget(target);
+      for (let i = 0; i < 10 && controller.status.pendingOps > 0; i += 1) await tick();
+    } else if (retry === 'push') await controller.push([makeInsertOp(2)]);
+    else await controller.flush();
+    expect(controller.status.pendingOps).toBe(0);
+    expect(pushed[0]).toEqual([op]);
+    await expect(first).rejects.toThrow('direct push failed');
+  },
+);
+
+test('pending and in-flight duplicates share delivery, but acknowledged keys are not kept forever', async () => {
+  const gate = deferred();
+  const started = deferred();
+  const op = makeInsertOp();
+  const target = vi.fn(async () => {
+    started.resolve();
+    await gate.promise;
+  });
+  const controller = createOutboundSync();
+  controller.setTarget(target);
+  const first = controller.push([op, op]);
+  const pendingDuplicate = controller.push([op]);
+  await started.promise;
+  const activeDuplicate = controller.push([op]);
+  let acknowledged = false;
+  void activeDuplicate.then(() => {
+    acknowledged = true;
+  });
+  await tick();
+  expect(acknowledged).toBe(false);
+  expect(controller.status.pendingOps).toBe(1);
+  gate.resolve();
+  await Promise.all([first, pendingDuplicate, activeDuplicate]);
+  expect(target).toHaveBeenCalledTimes(1);
+  await controller.push([op]);
+  expect(target).toHaveBeenCalledTimes(2);
+});
+
+test('duplicate-only and empty pushes reject with their earlier failed prefix', async () => {
+  const { target } = createRecordingTarget({ failPushes: 1 });
+  const controller = createOutboundSync();
+  controller.setTarget(target);
+  const op = makeInsertOp();
+  await Promise.all([
+    expect(controller.push([op])).rejects.toThrow('direct push failed'),
+    expect(controller.push([op])).rejects.toThrow('direct push failed'),
+    expect(controller.push([])).rejects.toThrow('direct push failed'),
+  ]);
+  await controller.flush();
+  expect(target).toHaveBeenCalledTimes(2);
+});
+
+test('acknowledgment continuations can close before a later command starts', async () => {
+  const controller = createOutboundSync();
+  const target = vi.fn(async () => {});
+  controller.setTarget(target);
+  const first = controller.push([makeInsertOp(1)]);
+  const closing = first.then(() => controller.close());
+  const rejected = expect(controller.push([makeInsertOp(2)])).rejects.toThrow('closed');
+  await Promise.all([closing, rejected]);
+  expect(target).toHaveBeenCalledTimes(1);
+});
+
+test('a replaced unabortable target cannot acknowledge the replacement or overlap it', async () => {
+  const oldGate = deferred();
+  const newGate = deferred();
+  const oldStarted = deferred();
+  const newStarted = deferred();
+  const oldTarget = vi.fn(async () => {
+    oldStarted.resolve();
+    await oldGate.promise;
+  });
+  const newTarget = vi.fn(async () => {
+    newStarted.resolve();
+    await newGate.promise;
+  });
+  const controller = createOutboundSync();
+  controller.setTarget(oldTarget);
+  const push = controller.push([makeInsertOp()]);
+  let acknowledged = false;
+  void push.then(() => {
+    acknowledged = true;
+  });
+  await oldStarted.promise;
+  controller.setTarget(newTarget);
+  await tick();
+  expect(newTarget).not.toHaveBeenCalled();
+  oldGate.resolve();
+  await newStarted.promise;
+  expect(acknowledged).toBe(false);
+  newGate.resolve();
+  await push;
+});
+
+test.each(['retry', 'close', 'idle'] as const)(
+  'timeout rejects promptly but %s still awaits unabortable owned work',
+  async (next) => {
+    const gate = deferred();
+    const started = deferred();
+    const target = vi.fn(async () => {
+      started.resolve();
+      await gate.promise;
+    });
+    const controller = createOutboundSync({ pushTimeoutMs: 5 });
+    controller.setTarget(target);
+    const rejected = expect(controller.push([makeInsertOp()])).rejects.toThrow('timed out');
+    await started.promise;
+    await rejected;
+    expect(controller.status.pendingOps).toBe(1);
+    const barrier =
+      next === 'retry'
+        ? controller.flush()
+        : next === 'close'
+          ? controller.close()
+          : controller.whenIdle();
+    let settled = false;
+    void barrier.then(() => {
+      settled = true;
+    });
+    await tick();
+    expect(settled).toBe(false);
+    expect(target).toHaveBeenCalledTimes(1);
+    gate.resolve();
+    await barrier;
+    expect(target).toHaveBeenCalledTimes(next === 'retry' ? 2 : 1);
+    expect(controller.status.pendingOps).toBe(next === 'idle' ? 1 : 0);
+  },
+);
+
+test('whenIdle includes work enqueued synchronously by an acknowledgment callback', async () => {
+  const firstOp = makeInsertOp(1);
+  const secondOp = makeInsertOp(2);
+  const started = deferred();
+  const gate = deferred();
+  const controller = createOutboundSync();
+  controller.setTarget(async (ops) => {
+    if (ops[0] === secondOp) {
+      started.resolve();
+      await gate.promise;
+    }
+  });
+  const second = controller.push([firstOp]).then(() => controller.push([secondOp]));
+  let idle = false;
+  const barrier = controller.whenIdle().then(() => {
+    idle = true;
+  });
+  await started.promise;
+  expect(idle).toBe(false);
+  gate.resolve();
+  await Promise.all([barrier, second]);
+  expect(controller.status.pendingOps).toBe(0);
+});
+
+test('removing a target rejects promptly without releasing its unabortable work', async () => {
+  const gate = deferred();
+  const started = deferred();
+  const controller = createOutboundSync();
+  const remove = controller.setTarget(async () => {
+    started.resolve();
+    await gate.promise;
+  });
+  const push = controller.push([makeInsertOp()]);
+  const rejected = expect(push).rejects.toThrow('no target');
+  await started.promise;
+  remove();
+  await rejected;
+  let closed = false;
+  const closing = controller.close().then(() => {
+    closed = true;
+  });
+  await tick();
+  expect(closed).toBe(false);
+  gate.resolve();
+  await closing;
 });

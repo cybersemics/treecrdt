@@ -87,7 +87,13 @@ export type OpsBatch<Op> = {
   ops: Op[];
   auth?: OpAuth[];
   done: boolean;
+  /** A fresh id for an acknowledged direct push, shared by all its chunks. */
+  pushId?: string;
+  /** Zero-based chunk index. Only index zero can start a push. */
+  pushIndex?: number;
 };
+
+export type OpsAck = { pushId: string };
 
 export type Subscribe = {
   subscriptionId: string;
@@ -108,6 +114,7 @@ export type SyncError = {
   message: string;
   filterId?: string;
   subscriptionId?: string;
+  pushId?: string;
 };
 
 export type SyncMessagePayload<Op> =
@@ -116,6 +123,7 @@ export type SyncMessagePayload<Op> =
   | { case: 'ribltCodewords'; value: RibltCodewords }
   | { case: 'ribltStatus'; value: RibltStatus }
   | { case: 'opsBatch'; value: OpsBatch<Op> }
+  | { case: 'opsAck'; value: OpsAck }
   | { case: 'subscribe'; value: Subscribe }
   | { case: 'subscribeAck'; value: SubscribeAck }
   | { case: 'unsubscribe'; value: Unsubscribe }
@@ -132,6 +140,10 @@ export interface SyncBackend<Op> {
   maxLamport(): Promise<bigint>;
   listOpRefs(filter: Filter): Promise<OpRef[]>;
   getOpsByOpRefs(opRefs: OpRef[]): Promise<Op[]>;
+  /**
+   * Resolve after the operations are applied and visible to subsequent backend
+   * reads. Crash durability is backend-specific and is not implied by this API.
+   */
   applyOps(ops: Op[]): Promise<void>;
 
   /**

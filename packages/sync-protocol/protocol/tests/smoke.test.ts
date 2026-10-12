@@ -311,7 +311,7 @@ function receiveError(
   control: OperationTransportControl,
   docId: string,
   message: string,
-  ids: { filterId?: string; subscriptionId?: string } = {},
+  ids: { filterId?: string; subscriptionId?: string; pushId?: string } = {},
 ): void {
   receiveSync(control, docId, {
     case: 'error',
@@ -1343,9 +1343,7 @@ test('pushOps uploads direct ops without reconcile roundtrips', async () => {
   try {
     await peerA.pushOps(transportA, [op]);
 
-    await waitUntil(() => b.hasOp(replicaHex.a, 1), {
-      message: 'expected direct push to apply on receiver',
-    });
+    expect(b.hasOp(replicaHex.a, 1)).toBe(true);
 
     const serverCases = wire
       .filter((entry) => entry.dir === 'aToB')
@@ -1354,6 +1352,288 @@ test('pushOps uploads direct ops without reconcile roundtrips', async () => {
   } finally {
     detachA();
     detachB();
+  }
+});
+
+test('acknowledged push messages round-trip through protobuf', () => {
+  const docId = 'doc-push-codec';
+  const payloads: OperationSyncPayload[] = [
+    {
+      case: 'opsBatch',
+      value: {
+        filterId: 'stream',
+        pushId: 'attempt',
+        pushIndex: 2,
+        ops: [makeInsertOp(replicas.a, 1)],
+        done: true,
+      },
+    },
+    { case: 'opsAck', value: { pushId: 'attempt' } },
+    {
+      case: 'error',
+      value: { code: ErrorCode.UNAUTHORIZED, message: 'denied', pushId: 'attempt' },
+    },
+  ];
+  for (const payload of payloads) {
+    const message: SyncMessage<Operation> = { v: 0, docId, payload };
+    expect(treecrdtSyncV0ProtobufCodec.decode(treecrdtSyncV0ProtobufCodec.encode(message))).toEqual(
+      message,
+    );
+  }
+});
+
+test('pushOps waits for every receiver chunk and acknowledges the logical push once', async () => {
+  const docId = 'doc-push-apply-barrier';
+  const backend = new BlockingFirstApplyBackend(docId);
+  const [ta, tb, wire] = createLoggedTimedDuplex<SyncMessage<Operation>>();
+  const sender = new SyncPeer(new MemoryBackend(docId), { maxOpsPerBatch: 1 });
+  const receiver = new SyncPeer(backend);
+  const detachA = sender.attach(ta);
+  const detachB = receiver.attach(tb);
+  const ops = [1, 2, 3].map((counter) => makeInsertOp(replicas.a, counter));
+  try {
+    const push = sender.pushOps(ta, ops);
+    await waitUntil(() => wire.filter((e) => e.msg.payload.case === 'opsBatch').length === 3);
+    await expectPending(push);
+    expect(backend.applyOpsCalls).toBe(1);
+    expect(wire.some((e) => e.msg.payload.case === 'opsAck')).toBe(false);
+    backend.release();
+    await push;
+    expect(await backend.listOpRefs({ all: {} })).toHaveLength(3);
+    expect(wire.filter((e) => e.msg.payload.case === 'opsAck')).toHaveLength(1);
+    expect((sender as any).initiatorPushes.size).toBe(0);
+    expect((receiver as any).responderPushes.size).toBe(0);
+  } finally {
+    backend.release();
+    detachA();
+    detachB();
+  }
+});
+
+test('a failed early push chunk prevents later chunks from applying or acknowledging success', async () => {
+  const docId = 'doc-push-sticky-failure';
+  const pause = createPause();
+  const backend = new MemoryBackend(docId);
+  let applyCalls = 0;
+  backend.applyOps = async () => {
+    applyCalls += 1;
+    await pause.wait();
+    throw new Error('first chunk failed');
+  };
+  const [ta, tb, wire] = createLoggedTimedDuplex<SyncMessage<Operation>>();
+  const sender = new SyncPeer(new MemoryBackend(docId), { maxOpsPerBatch: 1 });
+  const receiver = new SyncPeer(backend);
+  const detachA = sender.attach(ta);
+  const detachB = receiver.attach(tb);
+  try {
+    const push = sender.pushOps(
+      ta,
+      [1, 2, 3].map((n) => makeInsertOp(replicas.a, n)),
+    );
+    const rejected = expect(push).rejects.toThrow('first chunk failed');
+    await pause.started;
+    await waitUntil(() => wire.filter((e) => e.msg.payload.case === 'opsBatch').length === 3);
+    pause.release();
+    await rejected;
+    await tick();
+    expect(applyCalls).toBe(1);
+    expect(wire.some((e) => e.msg.payload.case === 'opsAck')).toBe(false);
+    expect((receiver as any).responderPushes.size).toBe(0);
+  } finally {
+    pause.release();
+    detachA();
+    detachB();
+  }
+});
+
+test.each(['reject', 'throw'] as const)(
+  'pushOps cleans up the receiver when send can deliver a chunk and then %s',
+  async (mode) => {
+    const docId = `doc-push-send-${mode}`;
+    const [ta, tb, wire] = createLoggedTimedDuplex<SyncMessage<Operation>>();
+    const send = ta.send.bind(ta);
+    ta.send = (message) => {
+      const sent = send(message);
+      if (message.payload.case === 'opsBatch') {
+        if (mode === 'throw') throw new Error('send failed after delivery');
+        return sent.then(() => {
+          throw new Error('send failed after delivery');
+        });
+      }
+      return sent;
+    };
+    const sender = new SyncPeer(new MemoryBackend(docId), { maxOpsPerBatch: 1 });
+    const receiver = new SyncPeer(new MemoryBackend(docId));
+    const detachA = sender.attach(ta);
+    const detachB = receiver.attach(tb);
+    try {
+      await expect(
+        sender.pushOps(
+          ta,
+          [1, 2].map((n) => makeInsertOp(replicas.a, n)),
+        ),
+      ).rejects.toThrow('send failed after delivery');
+      await tick();
+      expect(wire.filter((e) => e.msg.payload.case === 'opsBatch')).toHaveLength(1);
+      expect(wire.some((e) => e.msg.payload.case === 'error' && e.msg.payload.value.pushId)).toBe(
+        true,
+      );
+      expect((sender as any).initiatorPushes.size).toBe(0);
+      expect((receiver as any).responderPushes.size).toBe(0);
+    } finally {
+      detachA();
+      detachB();
+    }
+  },
+);
+
+test.each(['denied', 'pending'] as const)(
+  'pushOps rejects %s authorization without applied success',
+  async (mode) => {
+    const docId = `doc-push-auth-${mode}`;
+    const backend = new MemoryBackend(docId);
+    const peers = createInMemoryConnectedPeers({
+      backendA: new MemoryBackend(docId),
+      backendB: backend,
+      codec: treecrdtSyncV0ProtobufCodec,
+      peerBOptions: {
+        auth: {
+          verifyOps: (ops) => {
+            if (mode === 'denied') throw new Error('denied');
+            return { dispositions: ops.map(() => ({ status: 'pending_context' as const })) };
+          },
+        },
+      },
+    });
+    try {
+      await expect(
+        peers.peerA.pushOps(peers.transportA, [makeInsertOp(replicas.a, 1)]),
+      ).rejects.toThrow(mode === 'denied' ? 'denied' : 'requires missing context');
+      expect(await backend.listOpRefs({ all: {} })).toHaveLength(0);
+      expect((peers.peerB as any).responderPushes.size).toBe(0);
+    } finally {
+      peers.detach();
+    }
+  },
+);
+
+test('push acknowledgements and failures are scoped to transport and attempt, not shared filter id', async () => {
+  const docId = 'doc-push-attempt-routing';
+  const a = createCloseControlledTransport<SyncMessage<Operation>>();
+  const b = createCloseControlledTransport<SyncMessage<Operation>>();
+  const peer = new SyncPeer(new MemoryBackend(docId));
+  const detachA = peer.attach(a.transport);
+  const detachB = peer.attach(b.transport);
+  try {
+    const first = peer.pushOps(a.transport, [makeInsertOp(replicas.a, 1)], { filterId: 'same' });
+    const second = peer.pushOps(a.transport, [makeInsertOp(replicas.a, 2)], { filterId: 'same' });
+    await waitUntil(() => sentValues(a, 'opsBatch').length === 2);
+    const [one, two] = sentValues(a, 'opsBatch');
+    expect(one!.pushId).not.toBe(two!.pushId);
+    receiveSync(b, docId, { case: 'opsAck', value: { pushId: one!.pushId! } });
+    receiveError(b, docId, 'wrong transport', { pushId: two!.pushId! });
+    await expectPending(first);
+    await expectPending(second);
+    receiveSync(a, docId, { case: 'opsAck', value: { pushId: two!.pushId! } });
+    await second;
+    await expectPending(first);
+    const rejected = expect(first).rejects.toThrow('own attempt failed');
+    receiveError(a, docId, 'own attempt failed', { pushId: one!.pushId! });
+    await rejected;
+  } finally {
+    detachA();
+    detachB();
+  }
+});
+
+test('pushOps registers its waiter before a synchronous acknowledgement', async () => {
+  const docId = 'doc-push-reentrant-ack';
+  const control = createCloseControlledTransport<SyncMessage<Operation>>();
+  control.transport.send = async (message) => {
+    if (message.payload.case === 'opsBatch') {
+      receiveSync(control, docId, {
+        case: 'opsAck',
+        value: { pushId: message.payload.value.pushId! },
+      });
+    }
+  };
+  const peer = new SyncPeer(new MemoryBackend(docId));
+  const detach = peer.attach(control.transport);
+  try {
+    await peer.pushOps(control.transport, [makeInsertOp(replicas.a, 1)]);
+  } finally {
+    detach();
+  }
+});
+
+test.each(['abort', 'detach', 'close'] as const)(
+  'pushOps releases its waiter on %s while awaiting application',
+  async (action) => {
+    const docId = `doc-push-cleanup-${action}`;
+    const control = createCloseControlledTransport<SyncMessage<Operation>>();
+    const peer = new SyncPeer(new MemoryBackend(docId));
+    const detach = peer.attach(control.transport);
+    const controller = new AbortController();
+    try {
+      const push = peer.pushOps(control.transport, [makeInsertOp(replicas.a, 1)], {
+        signal: controller.signal,
+      });
+      const rejected = expect(push).rejects.toThrow();
+      await waitUntil(() => sentValues(control, 'opsBatch').length === 1);
+      const oldId = sentValues(control, 'opsBatch')[0]!.pushId!;
+      if (action === 'abort') controller.abort(new Error('cancelled'));
+      else if (action === 'detach') detach();
+      else control.close(new Error('closed'));
+      await rejected;
+      expect((peer as any).initiatorPushes.size).toBe(0);
+      if (action === 'abort') {
+        const retry = peer.pushOps(control.transport, [makeInsertOp(replicas.a, 1)]);
+        await waitUntil(() => sentValues(control, 'opsBatch').length === 2);
+        receiveSync(control, docId, { case: 'opsAck', value: { pushId: oldId } });
+        await expectPending(retry);
+        const newId = sentValues(control, 'opsBatch')[1]!.pushId!;
+        expect(newId).not.toBe(oldId);
+        receiveSync(control, docId, { case: 'opsAck', value: { pushId: newId } });
+        await retry;
+      }
+    } finally {
+      detach();
+    }
+  },
+);
+
+test('cancelled receiver pushes ignore queued chunks and cannot be recreated by late chunks', async () => {
+  const docId = 'doc-push-late-chunks';
+  const backend = new BlockingFirstApplyBackend(docId);
+  const control = createCloseControlledTransport<SyncMessage<Operation>>();
+  const peer = new SyncPeer(backend);
+  const detach = peer.attach(control.transport);
+  const sendChunk = (pushIndex: number, done: boolean) =>
+    receiveSync(control, docId, {
+      case: 'opsBatch',
+      value: {
+        filterId: 'same',
+        pushId: 'old',
+        pushIndex,
+        ops: [makeInsertOp(replicas.a, pushIndex + 1)],
+        done,
+      },
+    });
+  try {
+    sendChunk(0, false);
+    await waitUntil(() => backend.applyOpsCalls === 1);
+    sendChunk(1, false);
+    receiveError(control, docId, 'cancelled', { pushId: 'old' });
+    sendChunk(2, false);
+    sendChunk(3, true);
+    backend.release();
+    await waitUntil(() => (peer as any).opsBatchQueues.size === 0);
+    expect(backend.applyOpsCalls).toBe(1);
+    expect(sentValues(control, 'opsAck')).toHaveLength(0);
+    expect((peer as any).responderPushes.size).toBe(0);
+  } finally {
+    backend.release();
+    detach();
   }
 });
 
@@ -1446,6 +1726,11 @@ test('pushOps retries capability negotiation after cancellation while waiting fo
         value: { capabilities: [], acceptedFilters: [], rejectedFilters: [], maxLamport: 0n },
       },
     });
+    await waitUntil(() => sentValues(control, 'opsBatch').length === 1);
+    receiveSync(control, docId, {
+      case: 'opsAck',
+      value: { pushId: sentValues(control, 'opsBatch')[0]!.pushId! },
+    });
     await retry;
 
     expect(control.sent.map((message) => message.payload.case)).toEqual([
@@ -1489,8 +1774,9 @@ test('pushOps aborts an in-flight chunk without sending later chunks', async () 
   releaseFirstSend();
   await tick();
 
-  expect(control.sent).toHaveLength(1);
+  expect(control.sent).toHaveLength(2);
   expect(control.sent[0]?.payload.case).toBe('opsBatch');
+  expect(control.sent[1]?.payload.case).toBe('error');
 });
 
 test('pushOps refreshes replay capabilities before uploading newly authorized ops', async () => {

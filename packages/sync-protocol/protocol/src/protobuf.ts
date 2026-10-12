@@ -31,6 +31,7 @@ import {
   HelloAckSchema,
   HelloSchema,
   OpAuthSchema,
+  OpsAckSchema,
   OpsBatchSchema,
   RejectedFilterSchema,
   RibltCodewordSchema,
@@ -374,6 +375,8 @@ function toProtoOpsBatch(batch: OpsBatch<Operation>) {
     ops: batch.ops.map(toProtoOperation),
     ...(batch.auth ? { auth: batch.auth.map(toProtoOpAuth) } : {}),
     done: batch.done,
+    pushId: batch.pushId ?? '',
+    pushIndex: batch.pushIndex ?? 0,
   });
 }
 
@@ -384,6 +387,7 @@ function fromProtoOpsBatch(batch: any): OpsBatch<Operation> {
     ops: (batch.ops ?? []).map(fromProtoOperation),
     ...(auth.length > 0 ? { auth: auth.map(fromProtoOpAuth) } : {}),
     done: !!batch.done,
+    ...(batch.pushId ? { pushId: batch.pushId, pushIndex: batch.pushIndex } : {}),
   };
 }
 
@@ -584,6 +588,13 @@ export function encodeTreecrdtSyncV0(msg: SyncMessage<Operation>): Uint8Array {
       });
       return toBinary(SyncMessageSchema, proto);
     }
+    case 'opsAck': {
+      const proto = create(SyncMessageSchema, {
+        ...base,
+        payload: { case: 'opsAck', value: create(OpsAckSchema, msg.payload.value) },
+      });
+      return toBinary(SyncMessageSchema, proto);
+    }
     case 'subscribe': {
       const proto = create(SyncMessageSchema, {
         ...base,
@@ -612,6 +623,7 @@ export function encodeTreecrdtSyncV0(msg: SyncMessage<Operation>): Uint8Array {
         message: err.message,
         filterId: err.filterId ?? '',
         subscriptionId: err.subscriptionId ?? '',
+        pushId: err.pushId ?? '',
       });
       const proto = create(SyncMessageSchema, {
         ...base,
@@ -658,6 +670,11 @@ export function decodeTreecrdtSyncV0(bytes: Uint8Array): SyncMessage<Operation> 
         ...base,
         payload: { case: 'opsBatch', value: fromProtoOpsBatch(msg.payload.value) },
       };
+    case 'opsAck':
+      return {
+        ...base,
+        payload: { case: 'opsAck', value: { pushId: msg.payload.value.pushId } },
+      };
     case 'subscribe':
       return {
         ...base,
@@ -684,6 +701,7 @@ export function decodeTreecrdtSyncV0(bytes: Uint8Array): SyncMessage<Operation> 
             message: err.message,
             filterId: err.filterId.length > 0 ? err.filterId : undefined,
             subscriptionId: err.subscriptionId.length > 0 ? err.subscriptionId : undefined,
+            pushId: err.pushId.length > 0 ? err.pushId : undefined,
           },
         },
       };

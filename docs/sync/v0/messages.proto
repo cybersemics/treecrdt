@@ -104,6 +104,16 @@ message OpsBatch {
   // as `ops` (one entry per operation).
   repeated OpAuth auth = 4;
   bool done = 3;
+  // Present only for acknowledged direct pushes. A fresh id identifies one
+  // logical push, potentially split into several ordered chunks.
+  string push_id = 5;
+  uint32 push_index = 6;
+}
+
+// Sent only after every chunk of the identified push has been authorized and
+// applied. This is a receiver read-after-write barrier, not a durability claim.
+message OpsAck {
+  string push_id = 1;
 }
 
 // Auth metadata attached to a single operation.
@@ -146,6 +156,8 @@ message SyncError {
   string message = 2;
   string filter_id = 3;
   string subscription_id = 4;
+  // Identifies a failed or cancelled direct push independently of filter_id.
+  string push_id = 5;
 }
 
 enum ErrorCode {

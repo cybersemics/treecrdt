@@ -7,6 +7,7 @@ import { fileDesc, messageDesc } from '@bufbuild/protobuf/codegenv2';
 import type {
   Hello,
   HelloAck,
+  OpsAck,
   OpsBatch,
   RibltCodewords,
   RibltStatus,
@@ -24,7 +25,7 @@ import type { Message } from '@bufbuild/protobuf';
 export const file_sync_v0: GenFile =
   /*@__PURE__*/
   fileDesc(
-    'Cg1zeW5jL3YwLnByb3RvEhB0cmVlY3JkdC5zeW5jLnYwIoIECgtTeW5jTWVzc2FnZRIJCgF2GAEgASgNEg4KBmRvY19pZBgCIAEoCRIoCgVoZWxsbxgKIAEoCzIXLnRyZWVjcmR0LnN5bmMudjAuSGVsbG9IABIvCgloZWxsb19hY2sYCyABKAsyGi50cmVlY3JkdC5zeW5jLnYwLkhlbGxvQWNrSAASOwoPcmlibHRfY29kZXdvcmRzGAwgASgLMiAudHJlZWNyZHQuc3luYy52MC5SaWJsdENvZGV3b3Jkc0gAEjUKDHJpYmx0X3N0YXR1cxgNIAEoCzIdLnRyZWVjcmR0LnN5bmMudjAuUmlibHRTdGF0dXNIABIvCglvcHNfYmF0Y2gYDiABKAsyGi50cmVlY3JkdC5zeW5jLnYwLk9wc0JhdGNoSAASMAoJc3Vic2NyaWJlGA8gASgLMhsudHJlZWNyZHQuc3luYy52MC5TdWJzY3JpYmVIABI3Cg1zdWJzY3JpYmVfYWNrGBAgASgLMh4udHJlZWNyZHQuc3luYy52MC5TdWJzY3JpYmVBY2tIABI0Cgt1bnN1YnNjcmliZRgRIAEoCzIdLnRyZWVjcmR0LnN5bmMudjAuVW5zdWJzY3JpYmVIABIsCgVlcnJvchgSIAEoCzIbLnRyZWVjcmR0LnN5bmMudjAuU3luY0Vycm9ySABCCQoHcGF5bG9hZGIGcHJvdG8z',
+    'Cg1zeW5jL3YwLnByb3RvEhB0cmVlY3JkdC5zeW5jLnYwIq8ECgtTeW5jTWVzc2FnZRIJCgF2GAEgASgNEg4KBmRvY19pZBgCIAEoCRIoCgVoZWxsbxgKIAEoCzIXLnRyZWVjcmR0LnN5bmMudjAuSGVsbG9IABIvCgloZWxsb19hY2sYCyABKAsyGi50cmVlY3JkdC5zeW5jLnYwLkhlbGxvQWNrSAASOwoPcmlibHRfY29kZXdvcmRzGAwgASgLMiAudHJlZWNyZHQuc3luYy52MC5SaWJsdENvZGV3b3Jkc0gAEjUKDHJpYmx0X3N0YXR1cxgNIAEoCzIdLnRyZWVjcmR0LnN5bmMudjAuUmlibHRTdGF0dXNIABIvCglvcHNfYmF0Y2gYDiABKAsyGi50cmVlY3JkdC5zeW5jLnYwLk9wc0JhdGNoSAASMAoJc3Vic2NyaWJlGA8gASgLMhsudHJlZWNyZHQuc3luYy52MC5TdWJzY3JpYmVIABI3Cg1zdWJzY3JpYmVfYWNrGBAgASgLMh4udHJlZWNyZHQuc3luYy52MC5TdWJzY3JpYmVBY2tIABI0Cgt1bnN1YnNjcmliZRgRIAEoCzIdLnRyZWVjcmR0LnN5bmMudjAuVW5zdWJzY3JpYmVIABIsCgVlcnJvchgSIAEoCzIbLnRyZWVjcmR0LnN5bmMudjAuU3luY0Vycm9ySAASKwoHb3BzX2FjaxgTIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuT3BzQWNrSABCCQoHcGF5bG9hZGIGcHJvdG8z',
     [file_sync_v0_messages],
   );
 
@@ -115,6 +116,13 @@ export type SyncMessage = Message<'treecrdt.sync.v0.SyncMessage'> & {
          */
         value: SyncError;
         case: 'error';
+      }
+    | {
+        /**
+         * @generated from field: treecrdt.sync.v0.OpsAck ops_ack = 19;
+         */
+        value: OpsAck;
+        case: 'opsAck';
       }
     | { case: undefined; value?: undefined };
 };

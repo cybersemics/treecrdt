@@ -18,7 +18,7 @@ import type { Message } from '@bufbuild/protobuf';
 export const file_sync_v0_messages: GenFile =
   /*@__PURE__*/
   fileDesc(
-    'ChZzeW5jL3YwL21lc3NhZ2VzLnByb3RvEhB0cmVlY3JkdC5zeW5jLnYwIikKCkNhcGFiaWxpdHkSDAoEbmFtZRgBIAEoCRINCgV2YWx1ZRgCIAEoCSJCCgpGaWx0ZXJTcGVjEgoKAmlkGAEgASgJEigKBmZpbHRlchgCIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuRmlsdGVyIn8KBUhlbGxvEjIKDGNhcGFiaWxpdGllcxgBIAMoCzIcLnRyZWVjcmR0LnN5bmMudjAuQ2FwYWJpbGl0eRItCgdmaWx0ZXJzGAIgAygLMhwudHJlZWNyZHQuc3luYy52MC5GaWx0ZXJTcGVjEhMKC21heF9sYW1wb3J0GAMgASgEIloKDlJlamVjdGVkRmlsdGVyEgoKAmlkGAEgASgJEisKBnJlYXNvbhgCIAEoDjIbLnRyZWVjcmR0LnN5bmMudjAuRXJyb3JDb2RlEg8KB21lc3NhZ2UYAyABKAkiqQEKCEhlbGxvQWNrEjIKDGNhcGFiaWxpdGllcxgBIAMoCzIcLnRyZWVjcmR0LnN5bmMudjAuQ2FwYWJpbGl0eRIYChBhY2NlcHRlZF9maWx0ZXJzGAIgAygJEjoKEHJlamVjdGVkX2ZpbHRlcnMYAyADKAsyIC50cmVlY3JkdC5zeW5jLnYwLlJlamVjdGVkRmlsdGVyEhMKC21heF9sYW1wb3J0GAQgASgEIkIKDVJpYmx0Q29kZXdvcmQSDQoFY291bnQYASABKBESDwoHa2V5X3N1bRgCIAEoDBIRCgl2YWx1ZV9zdW0YAyABKAwiewoOUmlibHRDb2Rld29yZHMSEQoJZmlsdGVyX2lkGAEgASgJEg0KBXJvdW5kGAIgASgNEhMKC3N0YXJ0X2luZGV4GAMgASgEEjIKCWNvZGV3b3JkcxgEIAMoCzIfLnRyZWVjcmR0LnN5bmMudjAuUmlibHRDb2Rld29yZCI4CglSaWJsdE1vcmUSGgoSY29kZXdvcmRzX3JlY2VpdmVkGAEgASgEEg8KB2NyZWRpdHMYAiABKA0ijgEKDFJpYmx0RGVjb2RlZBIvCg5zZW5kZXJfbWlzc2luZxgBIAMoCzIXLnRyZWVjcmR0LnN5bmMudjAuT3BSZWYSMQoQcmVjZWl2ZXJfbWlzc2luZxgCIAMoCzIXLnRyZWVjcmR0LnN5bmMudjAuT3BSZWYSGgoSY29kZXdvcmRzX3JlY2VpdmVkGAMgASgEIlQKC1JpYmx0RmFpbGVkEjQKBnJlYXNvbhgBIAEoDjIkLnRyZWVjcmR0LnN5bmMudjAuUmlibHRGYWlsdXJlUmVhc29uEg8KB21lc3NhZ2UYAiABKAkiywEKC1JpYmx0U3RhdHVzEhEKCWZpbHRlcl9pZBgBIAEoCRINCgVyb3VuZBgCIAEoDRIxCgdkZWNvZGVkGAMgASgLMh4udHJlZWNyZHQuc3luYy52MC5SaWJsdERlY29kZWRIABIvCgZmYWlsZWQYBCABKAsyHS50cmVlY3JkdC5zeW5jLnYwLlJpYmx0RmFpbGVkSAASKwoEbW9yZRgFIAEoCzIbLnRyZWVjcmR0LnN5bmMudjAuUmlibHRNb3JlSABCCQoHcGF5bG9hZCJ9CghPcHNCYXRjaBIRCglmaWx0ZXJfaWQYASABKAkSKAoDb3BzGAIgAygLMhsudHJlZWNyZHQuc3luYy52MC5PcGVyYXRpb24SJgoEYXV0aBgEIAMoCzIYLnRyZWVjcmR0LnN5bmMudjAuT3BBdXRoEgwKBGRvbmUYAyABKAgiLgoGT3BBdXRoEgsKA3NpZxgCIAEoDBIRCglwcm9vZl9yZWYYAyABKAxKBAgBEAIiTgoJU3Vic2NyaWJlEhcKD3N1YnNjcmlwdGlvbl9pZBgBIAEoCRIoCgZmaWx0ZXIYAiABKAsyGC50cmVlY3JkdC5zeW5jLnYwLkZpbHRlciJACgxTdWJzY3JpYmVBY2sSFwoPc3Vic2NyaXB0aW9uX2lkGAEgASgJEhcKD2N1cnJlbnRfbGFtcG9ydBgCIAEoBCImCgtVbnN1YnNjcmliZRIXCg9zdWJzY3JpcHRpb25faWQYASABKAkicwoJU3luY0Vycm9yEikKBGNvZGUYASABKA4yGy50cmVlY3JkdC5zeW5jLnYwLkVycm9yQ29kZRIPCgdtZXNzYWdlGAIgASgJEhEKCWZpbHRlcl9pZBgDIAEoCRIXCg9zdWJzY3JpcHRpb25faWQYBCABKAkqewoSUmlibHRGYWlsdXJlUmVhc29uEiQKIFJJQkxUX0ZBSUxVUkVfUkVBU09OX1VOU1BFQ0lGSUVEEAASGgoWTUFYX0NPREVXT1JEU19FWENFRURFRBABEhEKDURFQ09ERV9GQUlMRUQQAhIQCgxPVVRfT0ZfT1JERVIQAyrJAQoJRXJyb3JDb2RlEhoKFkVSUk9SX0NPREVfVU5TUEVDSUZJRUQQABIXChNVTlNVUFBPUlRFRF9WRVJTSU9OEAESGAoURklMVEVSX05PVF9TVVBQT1JURUQQAhIUChBUT09fTUFOWV9GSUxURVJTEAMSIAocUkVDT05DSUxJQVRJT05fREVDT0RFX0ZBSUxFRBAEEhAKDFJBVEVfTElNSVRFRBAFEhEKDURPQ19OT1RfRk9VTkQQBhIQCgxVTkFVVEhPUklaRUQQB2IGcHJvdG8z',
+    'ChZzeW5jL3YwL21lc3NhZ2VzLnByb3RvEhB0cmVlY3JkdC5zeW5jLnYwIikKCkNhcGFiaWxpdHkSDAoEbmFtZRgBIAEoCRINCgV2YWx1ZRgCIAEoCSJCCgpGaWx0ZXJTcGVjEgoKAmlkGAEgASgJEigKBmZpbHRlchgCIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuRmlsdGVyIn8KBUhlbGxvEjIKDGNhcGFiaWxpdGllcxgBIAMoCzIcLnRyZWVjcmR0LnN5bmMudjAuQ2FwYWJpbGl0eRItCgdmaWx0ZXJzGAIgAygLMhwudHJlZWNyZHQuc3luYy52MC5GaWx0ZXJTcGVjEhMKC21heF9sYW1wb3J0GAMgASgEIloKDlJlamVjdGVkRmlsdGVyEgoKAmlkGAEgASgJEisKBnJlYXNvbhgCIAEoDjIbLnRyZWVjcmR0LnN5bmMudjAuRXJyb3JDb2RlEg8KB21lc3NhZ2UYAyABKAkiqQEKCEhlbGxvQWNrEjIKDGNhcGFiaWxpdGllcxgBIAMoCzIcLnRyZWVjcmR0LnN5bmMudjAuQ2FwYWJpbGl0eRIYChBhY2NlcHRlZF9maWx0ZXJzGAIgAygJEjoKEHJlamVjdGVkX2ZpbHRlcnMYAyADKAsyIC50cmVlY3JkdC5zeW5jLnYwLlJlamVjdGVkRmlsdGVyEhMKC21heF9sYW1wb3J0GAQgASgEIkIKDVJpYmx0Q29kZXdvcmQSDQoFY291bnQYASABKBESDwoHa2V5X3N1bRgCIAEoDBIRCgl2YWx1ZV9zdW0YAyABKAwiewoOUmlibHRDb2Rld29yZHMSEQoJZmlsdGVyX2lkGAEgASgJEg0KBXJvdW5kGAIgASgNEhMKC3N0YXJ0X2luZGV4GAMgASgEEjIKCWNvZGV3b3JkcxgEIAMoCzIfLnRyZWVjcmR0LnN5bmMudjAuUmlibHRDb2Rld29yZCI4CglSaWJsdE1vcmUSGgoSY29kZXdvcmRzX3JlY2VpdmVkGAEgASgEEg8KB2NyZWRpdHMYAiABKA0ijgEKDFJpYmx0RGVjb2RlZBIvCg5zZW5kZXJfbWlzc2luZxgBIAMoCzIXLnRyZWVjcmR0LnN5bmMudjAuT3BSZWYSMQoQcmVjZWl2ZXJfbWlzc2luZxgCIAMoCzIXLnRyZWVjcmR0LnN5bmMudjAuT3BSZWYSGgoSY29kZXdvcmRzX3JlY2VpdmVkGAMgASgEIlQKC1JpYmx0RmFpbGVkEjQKBnJlYXNvbhgBIAEoDjIkLnRyZWVjcmR0LnN5bmMudjAuUmlibHRGYWlsdXJlUmVhc29uEg8KB21lc3NhZ2UYAiABKAkiywEKC1JpYmx0U3RhdHVzEhEKCWZpbHRlcl9pZBgBIAEoCRINCgVyb3VuZBgCIAEoDRIxCgdkZWNvZGVkGAMgASgLMh4udHJlZWNyZHQuc3luYy52MC5SaWJsdERlY29kZWRIABIvCgZmYWlsZWQYBCABKAsyHS50cmVlY3JkdC5zeW5jLnYwLlJpYmx0RmFpbGVkSAASKwoEbW9yZRgFIAEoCzIbLnRyZWVjcmR0LnN5bmMudjAuUmlibHRNb3JlSABCCQoHcGF5bG9hZCKiAQoIT3BzQmF0Y2gSEQoJZmlsdGVyX2lkGAEgASgJEigKA29wcxgCIAMoCzIbLnRyZWVjcmR0LnN5bmMudjAuT3BlcmF0aW9uEiYKBGF1dGgYBCADKAsyGC50cmVlY3JkdC5zeW5jLnYwLk9wQXV0aBIMCgRkb25lGAMgASgIEg8KB3B1c2hfaWQYBSABKAkSEgoKcHVzaF9pbmRleBgGIAEoDSIZCgZPcHNBY2sSDwoHcHVzaF9pZBgBIAEoCSIuCgZPcEF1dGgSCwoDc2lnGAIgASgMEhEKCXByb29mX3JlZhgDIAEoDEoECAEQAiJOCglTdWJzY3JpYmUSFwoPc3Vic2NyaXB0aW9uX2lkGAEgASgJEigKBmZpbHRlchgCIAEoCzIYLnRyZWVjcmR0LnN5bmMudjAuRmlsdGVyIkAKDFN1YnNjcmliZUFjaxIXCg9zdWJzY3JpcHRpb25faWQYASABKAkSFwoPY3VycmVudF9sYW1wb3J0GAIgASgEIiYKC1Vuc3Vic2NyaWJlEhcKD3N1YnNjcmlwdGlvbl9pZBgBIAEoCSKEAQoJU3luY0Vycm9yEikKBGNvZGUYASABKA4yGy50cmVlY3JkdC5zeW5jLnYwLkVycm9yQ29kZRIPCgdtZXNzYWdlGAIgASgJEhEKCWZpbHRlcl9pZBgDIAEoCRIXCg9zdWJzY3JpcHRpb25faWQYBCABKAkSDwoHcHVzaF9pZBgFIAEoCSp7ChJSaWJsdEZhaWx1cmVSZWFzb24SJAogUklCTFRfRkFJTFVSRV9SRUFTT05fVU5TUEVDSUZJRUQQABIaChZNQVhfQ09ERVdPUkRTX0VYQ0VFREVEEAESEQoNREVDT0RFX0ZBSUxFRBACEhAKDE9VVF9PRl9PUkRFUhADKskBCglFcnJvckNvZGUSGgoWRVJST1JfQ09ERV9VTlNQRUNJRklFRBAAEhcKE1VOU1VQUE9SVEVEX1ZFUlNJT04QARIYChRGSUxURVJfTk9UX1NVUFBPUlRFRBACEhQKEFRPT19NQU5ZX0ZJTFRFUlMQAxIgChxSRUNPTkNJTElBVElPTl9ERUNPREVfRkFJTEVEEAQSEAoMUkFURV9MSU1JVEVEEAUSEQoNRE9DX05PVF9GT1VORBAGEhAKDFVOQVVUSE9SSVpFRBAHYgZwcm90bzM',
     [file_sync_v0_filters, file_sync_v0_ops, file_sync_v0_types],
   );
 
@@ -389,6 +389,19 @@ export type OpsBatch = Message<'treecrdt.sync.v0.OpsBatch'> & {
    * @generated from field: bool done = 3;
    */
   done: boolean;
+
+  /**
+   * Present only for acknowledged direct pushes. A fresh id identifies one
+   * logical push, potentially split into several ordered chunks.
+   *
+   * @generated from field: string push_id = 5;
+   */
+  pushId: string;
+
+  /**
+   * @generated from field: uint32 push_index = 6;
+   */
+  pushIndex: number;
 };
 
 /**
@@ -398,6 +411,27 @@ export type OpsBatch = Message<'treecrdt.sync.v0.OpsBatch'> & {
 export const OpsBatchSchema: GenMessage<OpsBatch> =
   /*@__PURE__*/
   messageDesc(file_sync_v0_messages, 11);
+
+/**
+ * Sent only after every chunk of the identified push has been authorized and
+ * applied. This is a receiver read-after-write barrier, not a durability claim.
+ *
+ * @generated from message treecrdt.sync.v0.OpsAck
+ */
+export type OpsAck = Message<'treecrdt.sync.v0.OpsAck'> & {
+  /**
+   * @generated from field: string push_id = 1;
+   */
+  pushId: string;
+};
+
+/**
+ * Describes the message treecrdt.sync.v0.OpsAck.
+ * Use `create(OpsAckSchema)` to create a new message.
+ */
+export const OpsAckSchema: GenMessage<OpsAck> =
+  /*@__PURE__*/
+  messageDesc(file_sync_v0_messages, 12);
 
 /**
  * Auth metadata attached to a single operation.
@@ -429,7 +463,7 @@ export type OpAuth = Message<'treecrdt.sync.v0.OpAuth'> & {
  */
 export const OpAuthSchema: GenMessage<OpAuth> =
   /*@__PURE__*/
-  messageDesc(file_sync_v0_messages, 12);
+  messageDesc(file_sync_v0_messages, 13);
 
 /**
  * Push-based subscription for live updates.
@@ -458,7 +492,7 @@ export type Subscribe = Message<'treecrdt.sync.v0.Subscribe'> & {
  */
 export const SubscribeSchema: GenMessage<Subscribe> =
   /*@__PURE__*/
-  messageDesc(file_sync_v0_messages, 13);
+  messageDesc(file_sync_v0_messages, 14);
 
 /**
  * Acknowledges a Subscribe request.
@@ -483,7 +517,7 @@ export type SubscribeAck = Message<'treecrdt.sync.v0.SubscribeAck'> & {
  */
 export const SubscribeAckSchema: GenMessage<SubscribeAck> =
   /*@__PURE__*/
-  messageDesc(file_sync_v0_messages, 14);
+  messageDesc(file_sync_v0_messages, 15);
 
 /**
  * Stops a previously-established subscription.
@@ -503,7 +537,7 @@ export type Unsubscribe = Message<'treecrdt.sync.v0.Unsubscribe'> & {
  */
 export const UnsubscribeSchema: GenMessage<Unsubscribe> =
   /*@__PURE__*/
-  messageDesc(file_sync_v0_messages, 15);
+  messageDesc(file_sync_v0_messages, 16);
 
 /**
  * @generated from message treecrdt.sync.v0.SyncError
@@ -528,6 +562,13 @@ export type SyncError = Message<'treecrdt.sync.v0.SyncError'> & {
    * @generated from field: string subscription_id = 4;
    */
   subscriptionId: string;
+
+  /**
+   * Identifies a failed or cancelled direct push independently of filter_id.
+   *
+   * @generated from field: string push_id = 5;
+   */
+  pushId: string;
 };
 
 /**
@@ -536,7 +577,7 @@ export type SyncError = Message<'treecrdt.sync.v0.SyncError'> & {
  */
 export const SyncErrorSchema: GenMessage<SyncError> =
   /*@__PURE__*/
-  messageDesc(file_sync_v0_messages, 16);
+  messageDesc(file_sync_v0_messages, 17);
 
 /**
  * @generated from enum treecrdt.sync.v0.RibltFailureReason

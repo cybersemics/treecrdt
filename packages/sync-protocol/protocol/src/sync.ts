@@ -32,6 +32,7 @@ import type {
   Subscribe,
   SubscribeAck,
   SyncBackend,
+  SyncError,
   SyncMessage,
   Unsubscribe,
 } from './types.js';
@@ -80,6 +81,9 @@ type ResponderSession = {
   expectedIndex: bigint;
   awaitingIncomingDone: boolean;
 };
+
+type InitiatorPush = { ack: Pending<void>; controller: AbortController };
+type ResponderPush = { filterId: string; nextIndex: number; active: boolean };
 
 type InitiatorSession<Op> = {
   transport: DuplexTransport<SyncMessage<Op>>;
@@ -136,13 +140,13 @@ export type SyncOnceOptions = {
 export type SyncPushOptions = {
   /** Split a direct push into smaller wire batches to avoid giant frames. */
   maxOpsPerBatch?: number;
-  /** Abort an in-flight direct push before it sends any later chunks. */
+  /** Stop waiting and sending later chunks. Already sent ops may still apply. */
   signal?: AbortSignal;
   /**
    * Reuse an existing opsBatch stream id for a direct push.
    *
-   * This is not a filter definition; it only groups related push chunks and
-   * the final done marker on the receiver.
+   * This is not a filter definition; it only groups ordered chunks on the
+   * receiver. Each call has a separate acknowledgement identity.
    */
   filterId?: string;
 };
@@ -372,6 +376,8 @@ export class SyncPeer<Op> {
     new Map();
   private readonly initiatorSubscriptions = new Map<string, InitiatorSubscription<Op>>();
   private readonly responderAwaitingUploadAcks: TransportOwnedMap<Op, true> = new Map();
+  private readonly initiatorPushes: TransportOwnedMap<Op, InitiatorPush> = new Map();
+  private readonly responderPushes: TransportOwnedMap<Op, ResponderPush> = new Map();
   private readonly opsBatchQueues: TransportOwnedMap<Op, Promise<void>> = new Map();
   private readonly responderHelloAbortControllers = new WeakMap<
     DuplexTransport<SyncMessage<Op>>,
@@ -1009,9 +1015,10 @@ export class SyncPeer<Op> {
    * Send a known set of ops directly without first reconciling state via
    * `syncOnce()`.
    *
-   * The `opsBatch` wire format still carries a `filterId`; for direct pushes
-   * that field acts only as a stable stream id so the receiver can order chunks
-   * and interpret the final `done` marker correctly.
+   * Resolve only after the receiver has authorized and applied every chunk,
+   * making the resulting CRDT state visible to its backend reads. Durability is
+   * backend-specific. Rejection or cancellation may leave some ops applied;
+   * retrying is safe because operations are idempotent.
    */
   async pushOps(
     transport: DuplexTransport<SyncMessage<Op>>,
@@ -1020,50 +1027,92 @@ export class SyncPeer<Op> {
   ): Promise<void> {
     if (ops.length === 0) return;
 
-    const signal = opts.signal;
-    const step = <T>(run: () => T | PromiseLike<T>) => awaitSyncStep(run, signal);
-    throwIfSyncAborted(signal);
-    await this.refreshHelloCapabilities(transport, { waitForAck: true, signal });
-
-    const streamId = this.resolveDirectPushStreamId(transport, opts.filterId);
+    throwIfSyncAborted(opts.signal);
     const batchSize = this.resolveMaxOpsPerBatch(opts.maxOpsPerBatch);
+    const pushId = randomId('push');
+    const push: InitiatorPush = { ack: deferred<void>(), controller: new AbortController() };
+    const forwardAbort = () => push.controller.abort(opts.signal?.reason);
+    opts.signal?.addEventListener('abort', forwardAbort, { once: true });
+    const signal = push.controller.signal;
+    const step = <T>(run: () => T | PromiseLike<T>) => awaitSyncStep(run, signal);
+    setTransportOwned(this.initiatorPushes, transport, pushId, push);
+    let lastSend: Promise<void> | undefined;
 
-    const peerCapabilities = this.transportPeerCapabilities.get(transport) ?? [];
-    const shouldAttachAuth = peerAdvertisedOpAuth(peerCapabilities);
+    try {
+      await this.refreshHelloCapabilities(transport, { waitForAck: true, signal });
+      const streamId = this.resolveDirectPushStreamId(transport, opts.filterId);
+      const peerCapabilities = this.transportPeerCapabilities.get(transport) ?? [];
+      const shouldAttachAuth = peerAdvertisedOpAuth(peerCapabilities);
 
-    for (let start = 0; start < ops.length; start += batchSize) {
-      throwIfSyncAborted(signal);
-      const chunk = ops.slice(start, start + batchSize);
-      const auth =
-        shouldAttachAuth && this.auth?.signOps
-          ? await step(() =>
-              this.auth!.signOps!(chunk, {
-                docId: this.backend.docId,
-                purpose: 'reconcile',
-                filterId: streamId,
-              }),
-            )
-          : undefined;
-      if (auth && auth.length !== chunk.length) {
-        throw new Error(`signOps returned ${auth.length} entries for ${chunk.length} ops`);
+      for (let start = 0, pushIndex = 0; start < ops.length; start += batchSize, pushIndex += 1) {
+        throwIfSyncAborted(signal);
+        const chunk = ops.slice(start, start + batchSize);
+        const auth =
+          shouldAttachAuth && this.auth?.signOps
+            ? await step(() =>
+                this.auth!.signOps!(chunk, {
+                  docId: this.backend.docId,
+                  purpose: 'reconcile',
+                  filterId: streamId,
+                }),
+              )
+            : undefined;
+        if (auth && auth.length !== chunk.length) {
+          throw new Error(`signOps returned ${auth.length} entries for ${chunk.length} ops`);
+        }
+
+        await step(() => {
+          // Capture even a synchronous send throw so cleanup still follows
+          // a chunk that the transport may already have delivered.
+          lastSend = Promise.resolve().then(() => {
+            throwIfSyncAborted(signal);
+            return transport.send({
+              v: 0,
+              docId: this.backend.docId,
+              payload: {
+                case: 'opsBatch',
+                value: {
+                  filterId: streamId,
+                  pushId,
+                  pushIndex,
+                  ops: [...chunk],
+                  ...(auth ? { auth } : {}),
+                  done: start + batchSize >= ops.length,
+                },
+              },
+            });
+          });
+          return lastSend;
+        });
+        await step(yieldToMacrotask);
       }
-
-      await step(() =>
-        transport.send({
-          v: 0,
-          docId: this.backend.docId,
-          payload: {
-            case: 'opsBatch',
-            value: {
-              filterId: streamId,
-              ops: [...chunk],
-              ...(auth ? { auth } : {}),
-              done: start + batchSize >= ops.length,
-            },
-          },
-        }),
-      );
-      await step(yieldToMacrotask);
+      await step(() => push.ack.promise);
+    } catch (error) {
+      // A send already in flight can still deliver after local cancellation.
+      // Order cleanup after it, including when send rejects after delivery.
+      if (lastSend) {
+        void lastSend
+          .catch(() => {})
+          .then(() =>
+            transport.send({
+              v: 0,
+              docId: this.backend.docId,
+              payload: {
+                case: 'error',
+                value: {
+                  code: ErrorCode.ERROR_CODE_UNSPECIFIED,
+                  message: `push cancelled: ${String(error)}`,
+                  pushId,
+                },
+              },
+            }),
+          )
+          .catch(() => {});
+      }
+      throw error;
+    } finally {
+      opts.signal?.removeEventListener('abort', forwardAbort);
+      deleteTransportOwned(this.initiatorPushes, transport, pushId);
     }
   }
 
@@ -1315,6 +1364,13 @@ export class SyncPeer<Op> {
         case 'opsBatch':
           await this.enqueueOpsBatch(transport, msg.payload.value);
           return;
+        case 'opsAck':
+          getTransportOwned(
+            this.initiatorPushes,
+            transport,
+            msg.payload.value.pushId,
+          )?.ack.resolve();
+          return;
         case 'subscribe':
           await this.onSubscribe(transport, msg.payload.value);
           return;
@@ -1332,11 +1388,13 @@ export class SyncPeer<Op> {
     } catch (err: any) {
       let filterId: string | undefined;
       let subscriptionId: string | undefined;
+      let pushId: string | undefined;
       switch (msg.payload.case) {
         case 'ribltCodewords':
         case 'ribltStatus':
         case 'opsBatch':
           filterId = msg.payload.value.filterId;
+          if (msg.payload.case === 'opsBatch') pushId = msg.payload.value.pushId;
           if (
             msg.payload.case === 'opsBatch' &&
             this.initiatorSubscriptions.get(filterId)?.transport === transport
@@ -1357,6 +1415,7 @@ export class SyncPeer<Op> {
           message: String(err?.message ?? err ?? 'error'),
           ...(filterId ? { filterId } : {}),
           ...(subscriptionId ? { subscriptionId } : {}),
+          ...(pushId ? { pushId } : {}),
         });
 
         await transport.send({
@@ -1369,6 +1428,7 @@ export class SyncPeer<Op> {
               message: String(err?.message ?? err ?? 'error'),
               ...(filterId ? { filterId } : {}),
               ...(subscriptionId ? { subscriptionId } : {}),
+              ...(pushId ? { pushId } : {}),
             },
           },
         });
@@ -1904,15 +1964,20 @@ export class SyncPeer<Op> {
 
   private async onError(
     transport: DuplexTransport<SyncMessage<Op>>,
-    err: {
-      code: ErrorCode;
-      message: string;
-      filterId?: string;
-      subscriptionId?: string;
-    },
+    err: SyncError,
   ): Promise<void> {
     const code = ErrorCode[err.code] ?? String(err.code);
     const e = new Error(`${code}: ${err.message}`);
+
+    if (err.pushId) {
+      const push = getTransportOwned(this.initiatorPushes, transport, err.pushId);
+      push?.controller.abort(e);
+      push?.ack.reject(e);
+      const incoming = getTransportOwned(this.responderPushes, transport, err.pushId);
+      if (incoming) incoming.active = false;
+      deleteTransportOwned(this.responderPushes, transport, err.pushId);
+      return;
+    }
 
     if (err.filterId) {
       this.responderHelloAbortControllers
@@ -1943,6 +2008,11 @@ export class SyncPeer<Op> {
 
     if (err.subscriptionId) return;
 
+    for (const push of this.initiatorPushes.get(transport)?.values() ?? []) {
+      push.controller.abort(e);
+      push.ack.reject(e);
+    }
+
     for (const [filterId, session] of this.initiatorSessions) {
       if (session.transport !== transport) continue;
       rejectInitiatorSession(session, e);
@@ -1955,6 +2025,12 @@ export class SyncPeer<Op> {
     error: unknown,
   ): void {
     const e = error instanceof Error ? error : new Error(String(error));
+
+    for (const push of this.initiatorPushes.get(transport)?.values() ?? []) {
+      push.controller.abort(e);
+      push.ack.reject(e);
+    }
+    dropTransportOwned(this.initiatorPushes, transport);
 
     const helloWaiters = this.transportHelloAckWaiters.get(transport);
     if (helloWaiters) {
@@ -1977,6 +2053,8 @@ export class SyncPeer<Op> {
   }
 
   private dropResponderStateForTransport(transport: DuplexTransport<SyncMessage<Op>>): void {
+    for (const push of this.responderPushes.get(transport)?.values() ?? []) push.active = false;
+    dropTransportOwned(this.responderPushes, transport);
     dropTransportOwned(this.responderSessions, transport);
     dropTransportOwned(this.responderSubscriptions, transport);
     dropTransportOwned(this.responderAwaitingUploadAcks, transport);
@@ -2013,6 +2091,15 @@ export class SyncPeer<Op> {
     transport: DuplexTransport<SyncMessage<Op>>,
     batch: OpsBatch<Op>,
   ): Promise<void> {
+    let push: ResponderPush | undefined;
+    if (batch.pushId) {
+      push = getTransportOwned(this.responderPushes, transport, batch.pushId);
+      if (!push) {
+        if (batch.pushIndex !== 0) throw new Error('push must start at chunk zero');
+        push = { filterId: batch.filterId, nextIndex: 0, active: true };
+        setTransportOwned(this.responderPushes, transport, batch.pushId, push);
+      }
+    }
     // Apply batches sequentially per transport/filter so a later done marker cannot overtake
     // earlier ops without making an unrelated transport wait on the same peer-chosen id.
     const previous =
@@ -2021,7 +2108,32 @@ export class SyncPeer<Op> {
       .catch(() => {
         // A prior batch failure should not permanently poison the queue.
       })
-      .then(() => this.onOpsBatch(transport, batch));
+      .then(async () => {
+        if (push && !push.active) return;
+        try {
+          if (push) {
+            if (push.filterId !== batch.filterId || push.nextIndex !== batch.pushIndex) {
+              throw new Error('push chunks must use the same stream and arrive in order');
+            }
+            push.nextIndex += 1;
+          }
+          await this.onOpsBatch(transport, batch);
+          if (push?.active && batch.done) {
+            push.active = false;
+            deleteTransportOwned(this.responderPushes, transport, batch.pushId!);
+            await transport.send({
+              v: 0,
+              docId: this.backend.docId,
+              payload: { case: 'opsAck', value: { pushId: batch.pushId! } },
+            });
+          }
+        } catch (error) {
+          // Keep the captured state failed even when onError removes its map
+          // entry: queued later chunks must never turn a partial failure into success.
+          if (push) push.active = false;
+          throw error;
+        }
+      });
     setTransportOwned(this.opsBatchQueues, transport, batch.filterId, current);
     try {
       await current;
@@ -2040,7 +2152,7 @@ export class SyncPeer<Op> {
     // - reconcile / direct-send during syncOnce
     // - incremental pushes for live subscriptions
     const purpose: SyncOpPurpose =
-      this.initiatorSubscriptions.get(batch.filterId)?.transport === transport
+      !batch.pushId && this.initiatorSubscriptions.get(batch.filterId)?.transport === transport
         ? 'subscribe'
         : 'reconcile';
     const auth = batch.auth;
@@ -2066,6 +2178,9 @@ export class SyncPeer<Op> {
       throw new Error(
         `verifyOps returned ${dispositions.length} dispositions for ${batch.ops.length} ops`,
       );
+    }
+    if (batch.pushId && dispositions?.some((d) => d.status === 'pending_context')) {
+      throw new Error('push was not applied: authorization requires missing context');
     }
     if (auth && auth.length > 0) {
       await this.auth?.onVerifiedOps?.(batch.ops, auth, {
@@ -2111,6 +2226,8 @@ export class SyncPeer<Op> {
     await this.backend.applyOps(allowedOps);
     if (allowedOps.length > 0) void this.notifyLocalUpdate(allowedOps);
     await this.reprocessPendingOps();
+
+    if (batch.pushId) return;
 
     const responderSession = getTransportOwned(this.responderSessions, transport, batch.filterId);
     // The empty done ack is only a completion signal. Send it after applyOps/reprocessPending

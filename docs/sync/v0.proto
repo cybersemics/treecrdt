@@ -30,5 +30,6 @@ message SyncMessage {
     SubscribeAck subscribe_ack = 16;
     Unsubscribe unsubscribe = 17;
     SyncError error = 18;
+    OpsAck ops_ack = 19;
   }
 }

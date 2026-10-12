@@ -3,7 +3,7 @@ import { bytesToHex, nodeIdToBytes16 } from '@treecrdt/interface/ids';
 import { makeOp, maxLamport, nodeIdFromInt } from '@treecrdt/benchmark';
 import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite/backend';
 import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
-import { SyncPeer, deriveOpRefV0 } from '@treecrdt/sync-protocol';
+import { SyncPeer, deriveOpRefV0, type SyncMessage } from '@treecrdt/sync-protocol';
 import {
   createInMemoryDuplex,
   wrapDuplexTransportWithCodec,
@@ -11,6 +11,7 @@ import {
 import type { Operation } from '@treecrdt/interface';
 
 import { createTreecrdtWebSocketSyncFromTransport } from '../src/create-sync-from-transport.js';
+import { createOutboundSync } from '../src/controller.js';
 import { DEFAULT_MAX_OPS_PER_BATCH } from '../src/constants.js';
 import type { TreecrdtWebSocketSyncClient } from '../src/types.js';
 import { ROOT, createInMemoryTestClient, orderKeyFromPosition } from './test-helpers.js';
@@ -215,7 +216,7 @@ test('syncOnce pulls insert, move, payload, and delete operations', async () => 
   expect(nodes).toEqual(new Set([n1, n2]));
 });
 
-test('pushLocalOps uploads an insert to the remote peer (in-memory transport)', async () => {
+test('outbound push through the high-level handle waits for receiver application', async () => {
   const docId = `sync-push-local-${Math.random().toString(16).slice(2)}`;
   const nodeId = nodeIdFromInt(1);
   const opA = makeOp(replicas.a, 1, 1, {
@@ -229,6 +230,21 @@ test('pushLocalOps uploads an insert to the remote peer (in-memory transport)', 
   const { client: bClient, getOps: getAllB } = createInMemoryTestClient(docId, []);
   await aClient.ops.append(opA);
   expect((await getAllB()).length).toBe(0);
+
+  let markApplyStarted!: () => void;
+  const applyStarted = new Promise<void>((resolve) => {
+    markApplyStarted = resolve;
+  });
+  let releaseApply!: () => void;
+  const applyReleased = new Promise<void>((resolve) => {
+    releaseApply = resolve;
+  });
+  const appendMany = bClient.ops.appendMany.bind(bClient.ops);
+  bClient.ops.appendMany = async (ops, opts) => {
+    markApplyStarted();
+    await applyReleased;
+    await appendMany(ops, opts);
+  };
 
   const [wireA, wireB] = createInMemoryDuplex<Uint8Array>();
   const transportA = wrapDuplexTransportWithCodec(wireA, treecrdtSyncV0ProtobufCodec);
@@ -248,6 +264,8 @@ test('pushLocalOps uploads an insert to the remote peer (in-memory transport)', 
   const sync = createTreecrdtWebSocketSyncFromTransport(aClient, transportA, {
     syncPeerOptions: { maxCodewords: 100_000, maxOpsPerBatch: 2_000 },
   });
+  const outbound = createOutboundSync();
+  outbound.setTarget((ops, opts) => sync.pushLocalOps(ops, opts));
   try {
     const cancelled = new AbortController();
     cancelled.abort(new Error('cancelled high-level push'));
@@ -256,17 +274,20 @@ test('pushLocalOps uploads an insert to the remote peer (in-memory transport)', 
     );
     expect(await getAllB()).toEqual([]);
 
-    await sync.pushLocalOps([opA], { maxOpsPerBatch: 1 });
+    let acknowledged = false;
+    const pushed = outbound.push([opA]).then(() => {
+      acknowledged = true;
+    });
+    await applyStarted;
+    expect(acknowledged).toBe(false);
+    releaseApply();
+    await pushed;
+    expect(await getAllB()).toEqual([opA]);
   } finally {
+    releaseApply();
+    await outbound.close();
     await sync.close();
   }
-
-  const afterB = await getAllB();
-  expect(afterB.length).toBe(1);
-  const [first] = afterB;
-  expect(bytesToHex(first!.meta.id.replica)).toBe(bytesToHex(replicas.a));
-  expect(first!.meta.lamport).toBe(1);
-  expect('kind' in first! && first!.kind.type === 'insert' ? first!.kind.node : '').toBe(nodeId);
 });
 
 test('pushLocalOps with no ops is a no-op (no syncOnce)', async () => {

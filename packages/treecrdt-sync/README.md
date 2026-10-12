@@ -11,7 +11,7 @@ High-level **client** library for TreeCRDT sync v0. It combines **`@treecrdt/dis
 
 ## Queued outbound upload
 
-Use `createOutboundSync` to queue exact committed local ops for one replaceable remote destination.
+Use `createOutboundSync` to queue exact committed local ops for one replaceable destination.
 The destination is only a push function, so the queue can sit above the high-level websocket handle
 without taking ownership of its `SyncPeer` or transport.
 
@@ -25,24 +25,38 @@ const outbound = createOutboundSync({
 const removeTarget = outbound.setTarget((ops, opts) => sync.pushLocalOps(ops, opts));
 
 const op = await client.local.payload(replica, node, payload);
-outbound.queueOps([op]);
+try {
+  await outbound.push([op]); // receiver applied this batch and all earlier queued work
+} catch (error) {
+  console.error(error); // unacknowledged operations remain queued
+}
 
-const result = await outbound.flush();
-if (result.status === 'failed') console.error(result.error);
-
-window.addEventListener('online', () => void outbound.flush());
+window.addEventListener('online', () => void outbound.flush().catch(console.error));
 ```
 
 Installing a new target aborts an active push and replays its batch to the replacement. The cleanup
 returned by `setTarget` is identity-safe: cleanup from an old socket cannot remove a newer target.
-`queueOps` dedupes standard TreeCRDT `Operation` values by `meta.id`; pass `opKey` only for a custom
+`push` dedupes outstanding standard TreeCRDT `Operation` values by `meta.id`; pass `opKey` only for a custom
 op shape or coalescing rule.
 
-`flush()` reports `drained`, `deferred`, `failed`, or `closed`. Missing-target, offline, failed, and
-timed-out pushes keep their operations queued. Setting a target triggers another attempt, but a
-change in application-defined online state does not, so call `flush()` from the application's
-online/reconnect event. `close()` is an async terminal barrier: it aborts and awaits the active
-push, then discards queued work.
+`push()` enqueues synchronously; its promise waits for that batch and earlier queued work.
+`flush()` attempts the currently queued prefix. Later submissions cannot delay either promise or
+turn an earlier success into failure. Missing-target, offline, failed, and timed-out attempts reject
+their waiting promises but retain unacknowledged operations. Retry with `flush()`, a new push, or a
+replacement target; there is no timed retry loop, and rejected promises never revive.
+`whenIdle()` waits for execution to stop, including work enqueued by synchronous completion callbacks.
+It does not start retries or acknowledge success: failed operations may remain queued when it resolves.
+After a timeout it still waits for the active target promise, including an uninterruptible local write.
+
+With `pushLocalOps` as the target, success means receiver backend application completed—not just
+transport delivery, CRDT conflict resolution in favor of these values, or universal crash durability.
+Cancellation cannot undo an already-started write. Targets must honor the abort signal where possible;
+the controller keeps their actual promises tracked even when a timeout has rejected its callers.
+
+`close()` rejects waiters, discards queued delivery work, aborts and awaits the active target promise.
+It does not guarantee that already-sent network operations have stopped applying remotely.
+For graceful shutdown, stop authoring first, successfully `await outbound.flush()`, then close.
+If flushing fails, choose retry or explicit abandonment rather than closing automatically.
 
 The queue is in memory, not durable across a reload or process exit; reconstruct or reconcile
 outstanding work from durable CRDT state after startup.

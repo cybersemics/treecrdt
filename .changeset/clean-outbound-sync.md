@@ -4,9 +4,10 @@
 ---
 
 Add an outbound sync helper for queued local-op upload to one replaceable structural push target.
-Flushes explicitly report drained, deferred, failed, or closed outcomes, and failed/offline work
-stays queued for retry. Target cleanup is replacement-safe, teardown aborts and awaits active work,
-and high-level websocket pushes now accept direct-push cancellation options.
+`push()` and `flush()` acknowledge a fixed queued prefix without waiting for later submissions.
+Failed/offline attempts reject but retain work for retry. Target cleanup is replacement-safe, and
+`whenIdle()` waits for owned execution without retrying, and teardown aborts and awaits active work.
 
 Standard TreeCRDT operations are deduped by operation id by default; custom op shapes may provide
-`opKey`. Direct pushes check cancellation before starting Hello, auth, and send side effects.
+`opKey`. Protocol and high-level websocket pushes now wait for receiver application and accept
+cancellation. Direct-push acknowledgements require matching updated peers; the protocol is draft.

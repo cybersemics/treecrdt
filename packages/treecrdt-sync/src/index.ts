@@ -8,7 +8,6 @@ export type {
   MaterializationEvent,
   MaterializationListener,
   OutboundSync,
-  OutboundSyncFlushResult,
   OutboundSyncOptions,
   OutboundSyncPushTarget,
   OutboundSyncStatus,
