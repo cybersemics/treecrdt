@@ -8,7 +8,8 @@ use crate::error::{Error, Result};
 use crate::ids::{Lamport, NodeId, OperationId, ReplicaId};
 use crate::ops::{cmp_op_key, cmp_ops, Operation, OperationKind};
 use crate::traits::{
-    Clock, MemoryNodeStore, MemoryPayloadStore, NodeStore, ParentOpIndex, PayloadStore, Storage,
+    Clock, LamportClock, MemoryNodeStore, MemoryPayloadStore, MemoryStorage, NodeStore,
+    ParentOpIndex, PayloadStore, Storage,
 };
 use crate::types::{
     ApplyDelta, LocalFinalizePlan, LocalPlacement, MaterializationChange, MaterializationOutcome,
@@ -20,6 +21,25 @@ use crate::version_vector::VersionVector;
 struct NodeSnapshot {
     parent: Option<NodeId>,
     order_key: Option<Vec<u8>>,
+}
+
+/// An owned current visible row; it does not pin or share native store state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReadNode {
+    pub id: NodeId,
+    pub parent: Option<NodeId>,
+    pub payload: Option<Vec<u8>>,
+    pub children: Vec<NodeId>,
+}
+
+/// A checkpoint for the native memory engine; retained operation history is not cloned.
+pub struct MemoryCheckpoint {
+    count: usize,
+    clock: LamportClock,
+    counter: u64,
+    version_vector: VersionVector,
+    head: Option<Operation>,
+    op_count: u64,
 }
 
 fn attach_source_if_missing(
@@ -74,6 +94,50 @@ where
     }
 }
 
+impl TreeCrdt<MemoryStorage, LamportClock> {
+    pub fn memory_checkpoint(&self) -> MemoryCheckpoint {
+        MemoryCheckpoint {
+            count: self.storage.len(),
+            clock: self.clock.clone(),
+            counter: self.counter,
+            version_vector: self.version_vector.clone(),
+            head: self.head.clone(),
+            op_count: self.op_count,
+        }
+    }
+
+    /// Restores an uncommitted memory transaction. Only this failure path scans retained history.
+    /// Checkpoints belong to this tree and must be consumed in reverse creation order.
+    pub fn rollback_memory(&mut self, checkpoint: MemoryCheckpoint) -> Result<()> {
+        if checkpoint.count > self.storage.len() {
+            return Err(Error::InvalidOperation(
+                "checkpoint is newer than the operation log".into(),
+            ));
+        }
+        self.storage.truncate(checkpoint.count);
+        self.replay_from_storage()?;
+        // Replay cannot undo clock/counter observations from rejected or duplicate envelopes.
+        self.clock = checkpoint.clock;
+        self.counter = checkpoint.counter;
+        self.version_vector = checkpoint.version_vector;
+        self.head = checkpoint.head;
+        self.op_count = checkpoint.op_count;
+        Ok(())
+    }
+
+    pub fn operation_count(&self) -> usize {
+        self.storage.len()
+    }
+
+    pub fn operations_from(&self, cursor: usize) -> Result<Vec<Operation>> {
+        self.storage.operations_from(cursor)
+    }
+
+    pub fn operations_at(&self, indices: &[usize]) -> Result<Vec<Operation>> {
+        self.storage.operations_at(indices)
+    }
+}
+
 impl<S, C, N, P> TreeCrdt<S, C, N, P>
 where
     S: Storage,
@@ -102,6 +166,30 @@ where
             head: None,
             op_count: 0,
         })
+    }
+
+    pub fn read_node(&self, node: NodeId) -> Result<Option<ReadNode>> {
+        if !self.is_known(node)? || self.is_tombstoned(node)? {
+            return Ok(None);
+        }
+        Ok(Some(ReadNode {
+            id: node,
+            parent: self.parent(node)?.filter(|parent| *parent != NodeId::TRASH),
+            payload: self.payload(node)?,
+            children: self.children(node)?,
+        }))
+    }
+
+    /// Explicit enumeration, including known reserved nodes, without building a row map.
+    pub fn node_ids(&self) -> Result<Vec<NodeId>> {
+        let mut ids = Vec::new();
+        for node in self.nodes.all_nodes()? {
+            if !self.is_tombstoned(node)? {
+                ids.push(node);
+            }
+        }
+        ids.sort_unstable();
+        Ok(ids)
     }
 
     fn is_in_order(&self, op: &Operation) -> bool {
@@ -627,7 +715,7 @@ where
 
         let mut seq: u64 = 0;
         let mut head: Option<Operation> = None;
-        storage.scan_since(0, &mut |op| {
+        storage.scan_all(&mut |op| {
             clock.observe(op.meta.lamport);
             version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
             let _ = Self::apply_forward(nodes, payloads, &op)?;

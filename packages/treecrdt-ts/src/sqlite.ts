@@ -5,6 +5,7 @@ import type {
   MaterializationEvent,
   MaterializationOutcome,
   MaterializationSource,
+  TreecrdtPlacement,
 } from './engine.js';
 import {
   decodeNodeId,
@@ -562,22 +563,19 @@ async function treecrdtReplicaMaxCounter(
   ]);
 }
 
-export type TreecrdtSqlitePlacement =
-  | { type: 'first' }
-  | { type: 'last' }
-  | { type: 'after'; after: string };
+export type TreecrdtSqlitePlacement = TreecrdtPlacement;
 
 export type TreecrdtSqliteWriter = {
   insert: (
     parent: string,
     node: string,
-    placement: TreecrdtSqlitePlacement,
+    placement: TreecrdtPlacement,
     opts?: { payload?: Uint8Array } & LocalWriteOptions,
   ) => Promise<Operation>;
   move: (
     node: string,
     newParent: string,
-    placement: TreecrdtSqlitePlacement,
+    placement: TreecrdtPlacement,
     opts?: LocalWriteOptions,
   ) => Promise<Operation>;
   delete: (node: string, opts?: LocalWriteOptions) => Promise<Operation>;
@@ -641,7 +639,7 @@ export function createTreecrdtSqliteWriter(
   const insert = async (
     parent: string,
     node: string,
-    placement: TreecrdtSqlitePlacement,
+    placement: TreecrdtPlacement,
     o: { payload?: Uint8Array } & LocalWriteOptions = {},
   ) => {
     const afterNode = placement.type === 'after' ? nodeIdToBytes16(placement.after) : null;
@@ -663,7 +661,7 @@ export function createTreecrdtSqliteWriter(
   const move = async (
     node: string,
     newParent: string,
-    placement: TreecrdtSqlitePlacement,
+    placement: TreecrdtPlacement,
     writeOpts?: LocalWriteOptions,
   ) => {
     const afterNode = placement.type === 'after' ? nodeIdToBytes16(placement.after) : null;

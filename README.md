@@ -21,6 +21,25 @@ pnpm test
 
 See the package READMEs for package-specific setup and API details.
 
+## Synchronous memory client
+
+`@treecrdt/wasm/memory` loads WASM asynchronously, then exposes synchronous reads and writes:
+
+```ts
+import { createMemoryClient } from '@treecrdt/wasm/memory';
+
+const memory = await createMemoryClient();
+const operation = memory.local.insert('0', '1', { type: 'last' }, new TextEncoder().encode('Hello'));
+const row = memory.get('1'); // Reads the preceding write immediately.
+// Persist or send the exact operation; memory alone is not durable storage.
+memory.close();
+```
+
+Reads return owned current values, not retained tree versions. Operation cursors count accepted
+operations in arrival order, not Lamport time or cross-replica revisions.
+`createMemorySyncBackend` from `@treecrdt/wasm/sync` connects the client to the existing sync protocol;
+this initial backend supports full-document filters only.
+
 ## Playground
 
 - Live demo: https://cybersemics.github.io/treecrdt/

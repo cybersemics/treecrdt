@@ -7,13 +7,13 @@ import {
   decodeSqliteOps,
   decodeSqliteTreeRows,
   type SqliteRunner,
-  type TreecrdtSqlitePlacement,
   type TreecrdtSqliteWriter,
 } from '@treecrdt/interface/sqlite';
 import { bytesToHex, nodeIdFromBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type {
   LocalWriteOptions,
   MaterializationOutcome,
+  TreecrdtPlacement,
   WriteOptions,
 } from '@treecrdt/interface/engine';
 import { createTreecrdtEngineLocal, createTreecrdtTreeNodes } from '@treecrdt/interface/engine';
@@ -153,7 +153,7 @@ export async function createClientFromBackend(runtime: RuntimeConnection): Promi
       replica: ReplicaId,
       parent: string,
       node: string,
-      placement: TreecrdtSqlitePlacement,
+      placement: TreecrdtPlacement,
       payload: Uint8Array | null,
       writeOpts?: LocalWriteOptions,
     ) =>
@@ -165,7 +165,7 @@ export async function createClientFromBackend(runtime: RuntimeConnection): Promi
       replica: ReplicaId,
       node: string,
       newParent: string,
-      placement: TreecrdtSqlitePlacement,
+      placement: TreecrdtPlacement,
       writeOpts?: LocalWriteOptions,
     ) => localWriterFor(replica).move(node, newParent, placement, writeOpts),
     delete: (replica: ReplicaId, node: string, writeOpts?: LocalWriteOptions) =>

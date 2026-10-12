@@ -1,4 +1,5 @@
 import { createVersionVectorCodecLoader } from './codec.js';
+import { loadWasm } from './wasm-browser.js';
 
 export type {
   VersionVector,
@@ -7,8 +8,4 @@ export type {
   VersionVectorRange,
 } from './codec.js';
 
-export const loadVersionVectorCodec = createVersionVectorCodecLoader(async () => {
-  const wasm = await import('../pkg-web/treecrdt_wasm.js');
-  await wasm.default();
-  return wasm;
-});
+export const loadVersionVectorCodec = createVersionVectorCodecLoader(loadWasm);

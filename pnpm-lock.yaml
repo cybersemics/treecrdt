@@ -426,6 +426,9 @@ importers:
       '@treecrdt/sync-server-postgres-node':
         specifier: workspace:*
         version: link:../sync-protocol/server/postgres-node
+      '@treecrdt/wasm':
+        specifier: workspace:*
+        version: link:../treecrdt-wasm-js
       '@types/better-sqlite3':
         specifier: ^7.6.12
         version: 7.6.13
@@ -578,6 +581,9 @@ importers:
       '@treecrdt/interface':
         specifier: workspace:*
         version: link:../treecrdt-ts
+      '@treecrdt/sync-protocol':
+        specifier: workspace:*
+        version: link:../sync-protocol/protocol
     devDependencies:
       '@treecrdt/benchmark':
         specifier: workspace:*

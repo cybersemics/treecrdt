@@ -1,9 +1,9 @@
 import type { Operation, TreecrdtAdapter } from '@treecrdt/interface';
 import { emptyMaterializationOutcome } from '@treecrdt/interface/engine';
-import { bytesToHex, hexToBytes, normalizeNodeId } from '@treecrdt/interface/ids';
+import { bytesToHex, hexToBytes } from '@treecrdt/interface/ids';
 import { WasmTree } from '../pkg/treecrdt_wasm.js';
 import { createHash } from 'node:crypto';
-import { isUint8Array } from 'node:util/types';
+import { toWasmOperation } from './operation-input.js';
 
 type LoadOptions = {
   replicaHex?: string;
@@ -117,32 +117,3 @@ type JsOp = {
   known_state?: number[] | null;
   payload?: string | null;
 };
-
-// Serde's byte-buffer reader uses realm-local instanceof checks.
-function localByteView(bytes: Uint8Array): Uint8Array {
-  if (bytes instanceof Uint8Array || !isUint8Array(bytes)) return bytes;
-  const view = bytes as Uint8Array;
-  return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
-}
-
-function toWasmOperation(
-  op: Operation,
-  serializeReplica: (replica: Operation['meta']['id']['replica']) => Uint8Array,
-): Operation {
-  if (op.kind.type === 'payload' && op.kind.payload === undefined) {
-    throw new Error('treecrdt: payload operations require payload or null');
-  }
-  const kind = { ...op.kind, node: normalizeNodeId(op.kind.node) };
-  if (kind.type === 'insert') kind.parent = normalizeNodeId(kind.parent);
-  else if (kind.type === 'move') kind.newParent = normalizeNodeId(kind.newParent);
-  if ('orderKey' in kind) kind.orderKey = localByteView(kind.orderKey);
-  if ('payload' in kind && kind.payload) kind.payload = localByteView(kind.payload);
-  return {
-    meta: {
-      ...op.meta,
-      id: { ...op.meta.id, replica: new Uint8Array(serializeReplica(op.meta.id.replica)) },
-      knownState: op.meta.knownState && localByteView(op.meta.knownState),
-    },
-    kind,
-  };
-}
