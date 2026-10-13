@@ -1,7 +1,7 @@
 import { runInNewContext } from 'node:vm';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import type { Operation, TreecrdtAdapter } from '@treecrdt/interface';
-import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
+import { hexToBytes, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import { createWasmAdapter } from '@treecrdt/wasm';
 import { encodeVersionVector, WasmTree } from '../pkg/treecrdt_wasm.js';
 
@@ -11,7 +11,7 @@ const insert = {
   meta: { id: { replica, counter: 1 }, lamport: 1 },
   kind: { type: 'insert', parent: '0'.repeat(32), node, orderKey: Uint8Array.of(128) },
 } satisfies Operation;
-let adapter: TreecrdtAdapter;
+let adapter: TreecrdtAdapter<Operation>;
 
 beforeEach(async () => {
   adapter = await createWasmAdapter();
@@ -45,8 +45,8 @@ test.each([
     expect(appendOps).toHaveBeenCalledTimes(1);
     expect(await adapter.treePayload(nodeIdToBytes16(node))).toEqual(Uint8Array.of(42));
     expect(await adapter.opsSince(0)).toMatchObject([
-      { kind: 'payload', payload: '2a' },
-      { kind: 'insert', order_key: '80' },
+      { kind: { type: 'payload', payload: Uint8Array.of(42) } },
+      { kind: { type: 'insert', orderKey: Uint8Array.of(128) } },
     ]);
 
     const knownState = Bytes.from([
@@ -70,7 +70,7 @@ test.each([
     );
     expect(await adapter.treeExists(nodeIdToBytes16(node))).toBe(false);
     expect(await adapter.opsSince(2)).toMatchObject([
-      { kind: 'delete', known_state: Array.from(knownState) },
+      { kind: { type: 'delete' }, meta: { knownState: Uint8Array.from(knownState) } },
     ]);
   },
 );
@@ -105,37 +105,40 @@ test.each([undefined, new Uint8Array(), Uint8Array.of(99, 0, 255, 99).subarray(1
     payload?.fill(99);
     serializedReplica.fill(99);
     expect(await adapter.treePayload(nodeIdToBytes16(node))).toEqual(expectedPayload);
-    expect(await adapter.opsSince(0)).toMatchObject([
+    expect(await adapter.opsSince(0)).toEqual([
       {
-        kind: 'insert',
-        replica: '02'.repeat(32),
-        payload: expectedPayload === null ? undefined : bytesToHex(expectedPayload),
+        meta: { ...insert.meta, id: { replica: new Uint8Array(32).fill(2), counter: 1 } },
+        kind: { ...insert.kind, ...(expectedPayload === null ? {} : { payload: expectedPayload }) },
       },
     ]);
   },
 );
 
-test('round-trips typed move and tombstone operations through existing read rows', async () => {
+test('returns canonical operations while preserving adapter opRefs and parent filters', async () => {
   const newParent = 'f'.repeat(32);
-  await adapter.appendOps!(
-    [
-      insert,
-      {
-        meta: { id: { replica, counter: 2 }, lamport: 2 },
-        kind: { type: 'move', node, newParent, orderKey: Uint8Array.of(0, 255) },
-      },
-      {
-        meta: { id: { replica, counter: 3 }, lamport: 3 },
-        kind: { type: 'tombstone', node },
-      },
-    ],
-    nodeIdToBytes16,
-    replicaIdToBytes,
-  );
-  expect(await adapter.opsSince(1)).toMatchObject([
-    { kind: 'move', new_parent: newParent, order_key: '00ff' },
-    { kind: 'tombstone' },
+  const move: Operation = {
+    meta: { id: { replica, counter: 2 }, lamport: 2 },
+    kind: { type: 'move', node, newParent, orderKey: Uint8Array.of(0, 255) },
+  };
+  const tombstone: Operation = {
+    meta: { id: { replica, counter: 3 }, lamport: 3 },
+    kind: { type: 'tombstone', node },
+  };
+  await adapter.appendOps!([tombstone, move, insert], nodeIdToBytes16, replicaIdToBytes);
+  expect(await adapter.opsSince(1)).toEqual([tombstone, move]);
+  const refs = [
+    '0aa000fe67b638dc29a958333f0da4cd',
+    '97efab0bfcc1bccc572b52d09d8b986b',
+    '6a733edba35fab666b1e18203f3cc338',
+  ].map(hexToBytes);
+  expect(await adapter.opRefsAll()).toEqual(refs.map((ref) => Array.from(ref)));
+  expect(await adapter.opRefsChildren(nodeIdToBytes16(insert.kind.parent))).toEqual([
+    Array.from(refs[0]),
   ]);
+  expect(await adapter.opRefsChildren(nodeIdToBytes16(newParent))).toEqual([Array.from(refs[1])]);
+  expect(await adapter.opsByOpRefs([refs[2], refs[1]])).toEqual([move, tombstone]);
+  expect(await adapter.headLamport()).toBe(3);
+  expect(await adapter.replicaMaxCounter(replica)).toBe(3);
 });
 
 test('copies each replica when the serializer reuses a buffer', async () => {

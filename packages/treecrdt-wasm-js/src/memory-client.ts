@@ -1,17 +1,13 @@
 import type { Operation } from '@treecrdt/interface';
 import type { TreecrdtPlacement } from '@treecrdt/interface/engine';
-import { normalizeNodeId } from '@treecrdt/interface/ids';
-import type { WasmTree } from '../pkg/treecrdt_wasm.js';
+import { bytesToHex, normalizeNodeId } from '@treecrdt/interface/ids';
+import type { TreeReadContent, TreeReadRow, WasmTree } from '../pkg/treecrdt_wasm.js';
 import { toWasmOperation } from './operation-input.js';
 
 export type MemoryClientOptions = { replicaId?: Uint8Array };
-export type MemoryContent = {
-  readonly id: string;
-  readonly parentId: string | null;
-  readonly payload: Uint8Array | null;
-};
-export type MemoryRow = MemoryContent & {
-  readonly children: readonly string[];
+export type MemoryContent = Readonly<TreeReadContent>;
+export type MemoryRow = Readonly<Omit<TreeReadRow, 'children'>> & {
+  readonly children: Readonly<TreeReadRow['children']>;
 };
 type LocalCommands = {
   insert(
@@ -25,7 +21,7 @@ type LocalCommands = {
   delete(node: string): Operation;
 };
 export interface MemoryReader {
-  /** Returns an owned row from the current tree, not a retained tree version. */
+  /** Returns an owned current row. Payload bytes are caller-owned, as with getContent. */
   get(id: string): MemoryRow | undefined;
   /** Returns owned content without copying the node's child list. Payload bytes are caller-owned. */
   getContent(id: string): MemoryContent | undefined;
@@ -49,6 +45,17 @@ function normalizePlacement(placement: TreecrdtPlacement): TreecrdtPlacement {
     : placement;
 }
 
+/** Creates clients after loading WASM, capturing replica bytes before the asynchronous boundary. */
+export function createMemoryClientFactory(loadWasm: () => Promise<{ WasmTree: typeof WasmTree }>) {
+  return async (options: MemoryClientOptions = {}): Promise<MemoryClient> => {
+    const replica = options.replicaId ?? crypto.getRandomValues(new Uint8Array(32));
+    if (replica.length !== 32) throw new Error('A memory replica id must contain 32 bytes');
+    const replicaHex = bytesToHex(replica);
+    const { WasmTree } = await loadWasm();
+    return createInitializedMemoryClient(new WasmTree(replicaHex));
+  };
+}
+
 export function createInitializedMemoryClient(native: WasmTree): MemoryClient {
   let closed = false;
   let writing = false;
@@ -57,93 +64,72 @@ export function createInitializedMemoryClient(native: WasmTree): MemoryClient {
   };
   const committed = <T>(read: () => T): T => {
     ensureOpen();
-    if (writing) throw new Error('The operation log is unavailable during a transaction');
+    if (writing) throw new Error('The operation log is unavailable during a write');
     return read();
   };
-  const read = (id: string) => {
-    ensureOpen();
-    const row = native.readNode(normalizeNodeId(id));
-    return row ? immutableRow(row) : undefined;
-  };
-  const getContent = (id: string): MemoryContent | undefined => {
-    ensureOpen();
-    const content = native.readContent(normalizeNodeId(id));
-    return content ? Object.freeze(content) : undefined;
-  };
-  const getChildren = (id: string): readonly string[] => {
-    ensureOpen();
-    return Object.freeze(native.readChildren(normalizeNodeId(id)));
-  };
-  const nodeIds = () => {
-    ensureOpen();
-    return native.nodeIds();
-  };
-  const local = (run: <T>(work: () => T) => T): LocalCommands => ({
-    insert: (parent, node, placement, payload) =>
-      run(() =>
-        native.localInsert(
-          normalizeNodeId(parent),
-          normalizeNodeId(node),
-          normalizePlacement(placement),
-          payload,
-        ),
-      ),
-    move: (node, parent, placement) =>
-      run(() =>
-        native.localMove(
-          normalizeNodeId(node),
-          normalizeNodeId(parent),
-          normalizePlacement(placement),
-        ),
-      ),
-    payload: (node, payload) => run(() => native.localPayload(normalizeNodeId(node), payload)),
-    delete: (node) => run(() => native.localDelete(normalizeNodeId(node))),
-  });
   const write = <T>(work: () => T): T => {
     ensureOpen();
-    native.beginTransaction();
+    if (writing) throw new Error('A memory write is already active');
     writing = true;
     try {
-      const value = work();
-      native.commitTransaction();
-      return value;
-    } catch (error) {
-      native.rollbackTransaction();
-      throw error;
+      return work();
     } finally {
       writing = false;
     }
   };
   return {
-    get: read,
-    getContent,
-    getChildren,
-    nodeIds,
-    local: local(write),
+    get: (id) => {
+      ensureOpen();
+      const row = native.readNode(normalizeNodeId(id));
+      if (!row) return undefined;
+      Object.freeze(row.children);
+      return Object.freeze(row);
+    },
+    getContent: (id) => {
+      ensureOpen();
+      const content = native.readContent(normalizeNodeId(id));
+      return content ? Object.freeze(content) : undefined;
+    },
+    getChildren: (id) => {
+      ensureOpen();
+      return Object.freeze(native.readChildren(normalizeNodeId(id)));
+    },
+    nodeIds: () => {
+      ensureOpen();
+      return native.nodeIds();
+    },
+    local: {
+      insert: (parent, node, placement, payload) =>
+        write(() =>
+          native.localInsert(
+            normalizeNodeId(parent),
+            normalizeNodeId(node),
+            normalizePlacement(placement),
+            payload,
+          ),
+        ),
+      move: (node, parent, placement) =>
+        write(() =>
+          native.localMove(
+            normalizeNodeId(node),
+            normalizeNodeId(parent),
+            normalizePlacement(placement),
+          ),
+        ),
+      payload: (node, payload) => write(() => native.localPayload(normalizeNodeId(node), payload)),
+      delete: (node) => write(() => native.localDelete(normalizeNodeId(node))),
+    },
     appendOperations: (operations) =>
       write(() => native.appendOps(operations.map((operation) => toWasmOperation(operation)))),
     operationCount: () => committed(() => native.operationCount()),
     operationsFrom: (cursor) => committed(() => native.operationsFrom(cursor)),
-    operationsAt: (indices) => committed(() => native.operationsAt([...indices])),
+    operationsAt: (indices) => committed(() => native.operationsAt(indices)),
     maxLamport: () => committed(() => native.maxLamport()),
     close: () => {
       if (closed) return;
-      if (writing) throw new Error('Cannot close a memory client during a transaction');
+      if (writing) throw new Error('Cannot close a memory client during a write');
       closed = true;
       native.free();
     },
   };
-}
-
-/** Protects retained query results, not whole tree versions. */
-function immutableRow(row: MemoryRow): MemoryRow {
-  const payload = row.payload;
-  return Object.freeze({
-    id: row.id,
-    parentId: row.parentId,
-    children: Object.freeze([...row.children]),
-    get payload() {
-      return payload?.slice() ?? null;
-    },
-  });
 }

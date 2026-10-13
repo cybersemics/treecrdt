@@ -27,6 +27,9 @@ test('reads owned current rows after each synchronous command', () => {
   const retainedChildren = client.getChildren(root);
   expect(retainedContent).not.toHaveProperty('children');
   expect(retainedChildren).toEqual([a, b]);
+  retainedContent.payload!.fill(98);
+  retainedRow.payload!.fill(99);
+  expect(client.getContent(a)?.payload).toEqual(Uint8Array.of(1));
 
   client.local.move('1', '2', { type: 'last' });
   client.local.payload(a, Uint8Array.of(2));
@@ -38,10 +41,6 @@ test('reads owned current rows after each synchronous command', () => {
   expect(retainedRow.parentId).toBe(root);
   expect(retainedContent.parentId).toBe(root);
   expect(retainedChildren).toEqual([a, b]);
-  retainedContent.payload!.fill(99);
-  retainedRow.payload!.fill(99);
-  expect(client.getContent(a)?.payload).toEqual(Uint8Array.of(2));
-
   client.local.delete(a);
   expect(client.get(a)).toBeUndefined();
   expect(client.getContent(a)).toBeUndefined();
@@ -83,7 +82,7 @@ test('operation exchange preserves arrival order, duplicate suppression and owne
   expect(receiver.getChildren(root)).toEqual([a]);
   expect(receiver.operationCount()).toBe(2);
   expect(receiver.operationsFrom(0)).toEqual([payload, insert]);
-  expect(receiver.operationsAt([1, 0, 1])).toEqual([insert, payload, insert]);
+  expect(receiver.operationsAt(Object.freeze([1, 0, 1]))).toEqual([insert, payload, insert]);
   expect(receiver.maxLamport()).toBe(payload.meta.lamport);
   insert.meta.id.replica.fill(99);
   expect(receiver.operationsFrom(1)[0]?.meta.id.replica).toEqual(new Uint8Array(32).fill(1));
@@ -97,3 +96,21 @@ test('operation exchange preserves arrival order, duplicate suppression and owne
   expect(() => receiver.operationsFrom(0)).toThrow('closed');
   expect(() => receiver.local.payload(a, null)).toThrow('closed');
 });
+
+test.each(['write', 'close', 'log'])(
+  'rejects reentrant %s from an input getter and remains usable',
+  (action) => {
+    const { client } = open();
+    const placement = {
+      get type(): 'last' {
+        if (action === 'write') client.local.payload(a, null);
+        else if (action === 'close') client.close();
+        else client.operationCount();
+        return 'last';
+      },
+    };
+    expect(() => client.local.insert(root, a, placement, null)).toThrow();
+    expect(client.local.insert(root, b, { type: 'last' }, null).meta.id.counter).toBe(1);
+    expect(client.getChildren(root)).toEqual([b]);
+  },
+);
