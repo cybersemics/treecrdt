@@ -1,25 +1,17 @@
 import type { Operation } from '@treecrdt/interface';
 import { bytesToHex, hexToBytes } from '@treecrdt/interface/ids';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
-import { deriveOpRefV0 } from '@treecrdt/sync-protocol';
-import type { Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
+import { deriveOpRefV0 } from '@treecrdt/sync-protocol/opref';
+import type { SyncBackend } from '@treecrdt/sync-protocol';
+import {
+  createTreecrdtSyncBackendFromClient as createBaseBackend,
+  type TreecrdtSyncBackendClient as OperationClient,
+} from '@treecrdt/sync-protocol/backend';
 
 import { createPendingOpsStore } from './proof-material/index.js';
 
-export type TreecrdtSyncBackendClient = {
+export type TreecrdtSyncBackendClient = OperationClient & {
   runner?: SqliteRunner;
-  meta?: {
-    headLamport?: () => Promise<number> | number;
-  };
-  opRefs: {
-    all: () => Promise<OpRef[]>;
-    children: (parentHex: string) => Promise<OpRef[]>;
-  };
-  ops: {
-    all?: () => Promise<Operation[]>;
-    get: (opRefs: OpRef[]) => Promise<Operation[]>;
-    appendMany: (ops: Operation[]) => Promise<unknown>;
-  };
 };
 
 async function maybeLoadNodePayloadWriterOpRef(opts: {
@@ -103,6 +95,7 @@ export function createTreecrdtSyncBackendFromClient(
     maxLamport?: () => Promise<bigint> | bigint;
   } = {},
 ): SyncBackend<Operation> {
+  const backend = createBaseBackend(client, docId, opts);
   const pending = opts.enablePendingSidecar
     ? (() => {
         if (!client.runner) throw new Error('enablePendingSidecar requires client.runner');
@@ -116,25 +109,11 @@ export function createTreecrdtSyncBackendFromClient(
     pendingReady = true;
   };
 
-  const defaultMaxLamport = async () => {
-    const metaHeadLamport = client.meta?.headLamport;
-    if (metaHeadLamport) return BigInt(await metaHeadLamport());
-    if (client.ops.all) {
-      const ops = await client.ops.all();
-      const max = ops.reduce((acc, op) => Math.max(acc, op.meta.lamport), 0);
-      return BigInt(max);
-    }
-    throw new Error('maxLamport: missing client.meta.headLamport and client.ops.all');
-  };
-
   return {
-    docId,
-
-    maxLamport: async () => (opts.maxLamport ? await opts.maxLamport() : await defaultMaxLamport()),
-
-    listOpRefs: async (filter: Filter) => {
+    ...backend,
+    listOpRefs: async (filter) => {
+      const refs = await backend.listOpRefs(filter);
       if ('all' in filter) {
-        const refs = await client.opRefs.all();
         if (!pending) return refs;
         await ensurePendingReady();
         const pendingRefs = await pending.listPendingOpRefs();
@@ -144,9 +123,6 @@ export function createTreecrdtSyncBackendFromClient(
         for (const r of pendingRefs) byHex.set(bytesToHex(r), r);
         return Array.from(byHex.values());
       }
-
-      const parentHex = bytesToHex(filter.children.parent);
-      const refs = await client.opRefs.children(parentHex);
 
       // Scoped sync often starts at a subtree root where the node's own payload opRef is not
       // discoverable via its parent (which may be outside scope). Include the node's latest
@@ -163,13 +139,6 @@ export function createTreecrdtSyncBackendFromClient(
       const hex = bytesToHex(payloadWriter);
       if (seen.has(hex)) return refs;
       return [...refs, payloadWriter];
-    },
-
-    getOpsByOpRefs: async (opRefs) => client.ops.get(opRefs),
-
-    applyOps: async (ops) => {
-      if (ops.length === 0) return;
-      await client.ops.appendMany(ops);
     },
 
     ...(pending

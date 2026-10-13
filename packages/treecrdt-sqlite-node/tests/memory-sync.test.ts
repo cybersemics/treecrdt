@@ -4,12 +4,12 @@ import { createInMemoryConnectedPeers } from '@treecrdt/sync-protocol/in-memory'
 import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
 import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite/backend';
 import { createMemoryClient } from '@treecrdt/wasm/memory';
-import { createMemorySyncBackend } from '@treecrdt/wasm/sync';
+import { createTreecrdtSyncBackendFromClient as createSyncBackend } from '@treecrdt/sync-protocol/backend';
 import { createTreecrdtClient, loadTreecrdtExtension } from '../dist/index.js';
 
 test('hydrates memory from SQLite and converges exact local operations and incoming edits', async () => {
   const database = new Database(':memory:');
-  const memory = await createMemoryClient();
+  const memory = await createMemoryClient({ docId: 'loopback' });
   const root = '0'.repeat(32);
   const parent = '1'.repeat(32);
   const child = '2'.repeat(32);
@@ -19,7 +19,7 @@ test('hydrates memory from SQLite and converges exact local operations and incom
     const writer = persistent.local.forReplica(new Uint8Array(32).fill(9));
     const initial = await writer.insert(root, parent, { type: 'first' }, Uint8Array.of(1));
     const peers = createInMemoryConnectedPeers({
-      backendA: createMemorySyncBackend(memory, { docId: 'loopback' }),
+      backendA: createSyncBackend(memory, memory.docId),
       backendB: createTreecrdtSyncBackendFromClient(persistent, 'loopback'),
       codec: treecrdtSyncV0ProtobufCodec,
     });

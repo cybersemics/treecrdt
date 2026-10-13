@@ -56,13 +56,6 @@ pub trait Storage {
         }
         Ok(())
     }
-
-    /// Iterate the complete log in canonical op-key order.
-    /// The default preserves positive-clock storage behavior. Backends accepting Lamport zero
-    /// must override this rather than excluding those operations with `scan_since(0)`.
-    fn scan_all(&self, visit: &mut dyn FnMut(Operation) -> Result<()>) -> Result<()> {
-        self.scan_since(0, visit)
-    }
 }
 
 /// Storage adapter used when operations are already provided by the caller.
@@ -302,15 +295,6 @@ impl Storage for MemoryStorage {
 
     fn load_since(&self, lamport: Lamport) -> Result<Vec<Operation>> {
         Ok(self.ops.iter().filter(|&op| op.meta.lamport > lamport).cloned().collect())
-    }
-
-    fn scan_all(&self, visit: &mut dyn FnMut(Operation) -> Result<()>) -> Result<()> {
-        let mut ops = self.ops.clone();
-        ops.sort_by(cmp_ops);
-        for op in ops {
-            visit(op)?;
-        }
-        Ok(())
     }
 
     fn latest_lamport(&self) -> Lamport {

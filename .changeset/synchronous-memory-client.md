@@ -1,9 +1,13 @@
 ---
 "@treecrdt/wasm": minor
 "@treecrdt/interface": patch
+"@treecrdt/sync-protocol": minor
+"@treecrdt/sync-sqlite": patch
 ---
 
 Add a synchronous memory client with current reads, local commands, and a full-document sync backend for exchanging exact operations.
+
+Share the operation-store sync adapter between synchronous memory and persistent clients. SQLite retains its scoped-sync and pending-auth extensions.
 
 Share local command signatures while retaining precise synchronous/asynchronous results and backend-specific write options.
 

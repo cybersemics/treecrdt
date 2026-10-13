@@ -10,7 +10,7 @@ test('shares lazy browser WASM initialization with the codec and retries failed 
   try {
     expect(fetchWasm).not.toHaveBeenCalled();
     await Promise.all([
-      expect(createMemoryClient()).rejects.toBe(unavailable),
+      expect(createMemoryClient({ docId: 'document' })).rejects.toBe(unavailable),
       expect(loadVersionVectorCodec()).rejects.toBe(unavailable),
     ]);
     expect(fetchWasm).toHaveBeenCalledTimes(1);
@@ -20,19 +20,19 @@ test('shares lazy browser WASM initialization with the codec and retries failed 
       async () => new Response(bytes, { headers: { 'Content-Type': 'application/wasm' } }),
     );
     const replica = new Uint8Array(32).fill(7);
-    const first = createMemoryClient({ replicaId: replica });
+    const first = createMemoryClient({ docId: 'document', replicaId: replica });
     replica.fill(99);
     const [codec, source, receiver] = await Promise.all([
       loadVersionVectorCodec(),
       first,
-      createMemoryClient(),
+      createMemoryClient({ docId: 'document' }),
     ]);
     try {
       const operation = source.local.insert('0'.repeat(32), '1'.repeat(32), { type: 'last' }, null);
       expect(operation.meta.id.replica).toEqual(new Uint8Array(32).fill(7));
       expect(source.get('1'.repeat(32))?.parentId).toBe('0'.repeat(32));
       expect(receiver.get('1'.repeat(32))).toBeUndefined();
-      receiver.appendOperations([operation]);
+      receiver.ops.appendMany([operation]);
       expect(receiver.get('1'.repeat(32))?.parentId).toBe('0'.repeat(32));
       expect(codec.decodeVersionVector(codec.encodeVersionVector({ entries: [] }))).toEqual({
         entries: [],

@@ -471,9 +471,9 @@ impl WasmTree {
         serialize_operations(ops).map_err(js_error)
     }
 
-    #[wasm_bindgen(js_name = maxLamport, unchecked_return_type = "number")]
-    pub fn max_lamport(&self) -> Result<JsValue, JsValue> {
-        serialize(&self.inner.lamport()).map_err(js_error)
+    #[wasm_bindgen(js_name = headLamport, unchecked_return_type = "number")]
+    pub fn head_lamport(&self) -> Result<JsValue, JsValue> {
+        serialize(&self.inner.head_op().map_or(0, |op| op.meta.lamport)).map_err(js_error)
     }
 
     #[wasm_bindgen(js_name = appendOp)]

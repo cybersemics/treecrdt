@@ -1,10 +1,11 @@
 import type { Operation } from '@treecrdt/interface';
 import type { TreecrdtLocalCommands, TreecrdtPlacement } from '@treecrdt/interface/engine';
-import { bytesToHex, normalizeNodeId } from '@treecrdt/interface/ids';
+import { bytesToHex, hexToBytes, normalizeNodeId } from '@treecrdt/interface/ids';
+import { deriveOpRefV0 } from '@treecrdt/sync-protocol/opref';
 import type { TreeReadContent, TreeReadRow, WasmTree } from '../pkg/treecrdt_wasm.js';
 import { toWasmOperation } from './operation-input.js';
 
-export type MemoryClientOptions = { replicaId?: Uint8Array };
+export type MemoryClientOptions = { docId: string; replicaId?: Uint8Array };
 export type MemoryContent = Readonly<TreeReadContent>;
 export type MemoryRow = Readonly<Omit<TreeReadRow, 'children'>> & {
   readonly children: Readonly<TreeReadRow['children']>;
@@ -19,12 +20,16 @@ export interface MemoryReader {
   nodeIds(): string[];
 }
 export interface MemoryClient extends MemoryReader {
+  readonly docId: string;
   readonly local: TreecrdtLocalCommands<Operation>;
-  appendOperations(operations: readonly Operation[]): void;
+  readonly ops: {
+    appendMany(operations: readonly Operation[]): void;
+    get(opRefs: Uint8Array[]): Operation[];
+  };
+  readonly opRefs: { all(): Uint8Array[] };
+  readonly meta: { headLamport(): number };
   operationCount(): number;
   operationsFrom(cursor: number): Operation[];
-  operationsAt(indices: readonly number[]): Operation[];
-  maxLamport(): number;
   close(): void;
 }
 
@@ -36,18 +41,25 @@ function normalizePlacement(placement: TreecrdtPlacement): TreecrdtPlacement {
 
 /** Creates clients after loading WASM, capturing replica bytes before the asynchronous boundary. */
 export function createMemoryClientFactory(loadWasm: () => Promise<{ WasmTree: typeof WasmTree }>) {
-  return async (options: MemoryClientOptions = {}): Promise<MemoryClient> => {
-    const replica = options.replicaId ?? crypto.getRandomValues(new Uint8Array(32));
+  return async ({ docId, replicaId }: MemoryClientOptions): Promise<MemoryClient> => {
+    const replica = replicaId ?? crypto.getRandomValues(new Uint8Array(32));
     if (replica.length !== 32) throw new Error('A memory replica id must contain 32 bytes');
     const replicaHex = bytesToHex(replica);
     const { WasmTree } = await loadWasm();
-    return createInitializedMemoryClient(new WasmTree(replicaHex));
+    return createInitializedMemoryClient(new WasmTree(replicaHex), docId);
   };
 }
 
-export function createInitializedMemoryClient(native: WasmTree): MemoryClient {
+export function createInitializedMemoryClient(native: WasmTree, docId: string): MemoryClient {
   let closed = false;
   let writing = false;
+  const indices = new Map<string, number>();
+  let indexed = 0;
+  const refreshOpRefs = () => {
+    for (const operation of native.operationsFrom(indexed)) {
+      indices.set(bytesToHex(deriveOpRefV0(docId, operation.meta.id)), indexed++);
+    }
+  };
   const ensureOpen = () => {
     if (closed) throw new Error('The memory client is closed');
   };
@@ -67,6 +79,7 @@ export function createInitializedMemoryClient(native: WasmTree): MemoryClient {
     }
   };
   return {
+    docId,
     get: (id) => {
       ensureOpen();
       const row = native.readNode(normalizeNodeId(id));
@@ -108,16 +121,37 @@ export function createInitializedMemoryClient(native: WasmTree): MemoryClient {
       payload: (node, payload) => write(() => native.localPayload(normalizeNodeId(node), payload)),
       delete: (node) => write(() => native.localDelete(normalizeNodeId(node))),
     },
-    appendOperations: (operations) =>
-      write(() => native.appendOps(operations.map((operation) => toWasmOperation(operation)))),
+    ops: {
+      appendMany: (operations) =>
+        write(() => native.appendOps(operations.map((operation) => toWasmOperation(operation)))),
+      get: (refs) =>
+        committed(() => {
+          refreshOpRefs();
+          return native.operationsAt(
+            refs.map((ref) => {
+              const hex = bytesToHex(ref);
+              const index = indices.get(hex);
+              if (index === undefined) throw new Error(`Missing memory operation ${hex}`);
+              return index;
+            }),
+          );
+        }),
+    },
+    opRefs: {
+      all: () =>
+        committed(() => {
+          refreshOpRefs();
+          return [...indices.keys()].map(hexToBytes);
+        }),
+    },
+    meta: { headLamport: () => committed(() => native.headLamport()) },
     operationCount: () => committed(() => native.operationCount()),
     operationsFrom: (cursor) => committed(() => native.operationsFrom(cursor)),
-    operationsAt: (indices) => committed(() => native.operationsAt(indices)),
-    maxLamport: () => committed(() => native.maxLamport()),
     close: () => {
       if (closed) return;
       if (writing) throw new Error('Cannot close a memory client during a write');
       closed = true;
+      indices.clear();
       native.free();
     },
   };

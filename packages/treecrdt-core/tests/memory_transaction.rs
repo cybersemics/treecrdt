@@ -26,16 +26,6 @@ fn insert(tree: &mut TreeCrdt<MemoryStorage, LamportClock>, node: u128) -> Opera
 fn rollback_restores_log_clock_counter_and_visibility() {
     let mut actual = tree();
     let mut control = tree();
-    let zero = Operation::insert(
-        &ReplicaId::new(b"remote"),
-        1,
-        0,
-        NodeId::ROOT,
-        NodeId(99),
-        vec![0, 99],
-    );
-    actual.apply_remote(zero.clone()).unwrap();
-    control.apply_remote(zero).unwrap();
     insert(&mut actual, 1);
     insert(&mut control, 1);
     let checkpoint = actual.memory_checkpoint();
@@ -45,19 +35,19 @@ fn rollback_restores_log_clock_counter_and_visibility() {
         .apply_remote(Operation::insert(
             &ReplicaId::new(b"replay"),
             1,
-            0,
+            1,
             NodeId::ROOT,
             NodeId(3),
             vec![0, 3],
         ))
         .unwrap();
     // Even an ignored identity duplicate observes a newer clock/counter envelope.
-    let mut duplicate = actual.operations_at(&[1]).unwrap().remove(0);
+    let mut duplicate = actual.operations_at(&[0]).unwrap().remove(0);
     duplicate.meta.lamport = 500;
     actual.apply_remote(duplicate).unwrap();
     actual.rollback_memory(checkpoint).unwrap();
 
-    assert_eq!(actual.operation_count(), 2);
+    assert_eq!(actual.operation_count(), 1);
     assert_eq!(
         actual.operations_from(0).unwrap(),
         control.operations_from(0).unwrap()
@@ -94,30 +84,22 @@ fn rollback_after_failed_prepare_does_not_consume_an_operation_id() {
 fn indexed_log_reads_preserve_arrival_order_and_accepted_suffix() {
     let mut actual = tree();
     let replica = ReplicaId::new(b"remote");
-    let zero = Operation::insert(
-        &ReplicaId::new(b"zero"),
-        1,
-        0,
-        NodeId::ROOT,
-        NodeId(3),
-        vec![0, 3],
-    );
     let high = Operation::insert(&replica, 2, 20, NodeId::ROOT, NodeId(2), vec![0, 2]);
     let low = Operation::insert(&replica, 1, 10, NodeId::ROOT, NodeId(1), vec![0, 1]);
-    actual.apply_remote_batch([zero.clone(), high.clone()]).unwrap();
+    actual.apply_remote_batch([high.clone()]).unwrap();
     let cursor = actual.operation_count();
     actual.apply_remote_batch(vec![low.clone(), high.clone()]).unwrap();
     assert_eq!(actual.operations_from(cursor).unwrap(), vec![low.clone()]);
     assert_eq!(
-        actual.operations_at(&[2, 0, 1, 2]).unwrap(),
-        vec![low.clone(), zero, high, low]
+        actual.operations_at(&[1, 0, 1]).unwrap(),
+        vec![low.clone(), high, low]
     );
-    assert!(actual.operations_at(&[3]).is_err());
-    assert!(actual.operations_from(4).is_err());
-    assert!(actual.operations_from(3).unwrap().is_empty());
-    assert_eq!(actual.nodes().unwrap().len(), 3);
+    assert!(actual.operations_at(&[2]).is_err());
+    assert!(actual.operations_from(3).is_err());
+    assert!(actual.operations_from(2).unwrap().is_empty());
+    assert_eq!(actual.nodes().unwrap().len(), 2);
     assert_eq!(
         actual.children(NodeId::ROOT).unwrap(),
-        vec![NodeId(1), NodeId(2), NodeId(3)]
+        vec![NodeId(1), NodeId(2)]
     );
 }

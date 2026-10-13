@@ -19,11 +19,7 @@
       "browser": "./dist/memory-browser.js",
       "import": "./dist/memory-node.js"
     },
-    "./treecrdt_wasm_bg.wasm": "./pkg-web/treecrdt_wasm_bg.wasm",
-    "./sync": {
-      "types": "./dist/sync.d.ts",
-      "import": "./dist/sync.js"
-    }
+    "./treecrdt_wasm_bg.wasm": "./pkg-web/treecrdt_wasm_bg.wasm"
   },
   "files": [
     "dist",

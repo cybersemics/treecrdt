@@ -8,7 +8,7 @@ const b = '2'.padStart(32, '0');
 const clients: MemoryClient[] = [];
 function open() {
   const native = new WasmTree('01'.repeat(32));
-  const client = createInitializedMemoryClient(native);
+  const client = createInitializedMemoryClient(native, 'document');
   clients.push(client);
   return { client, native };
 }
@@ -71,19 +71,18 @@ test('operation exchange preserves arrival order, duplicate suppression and owne
   const insert = source.local.insert(root, a, { type: 'last' }, Uint8Array.of(1));
   const payload = source.local.payload(a, Uint8Array.of(42));
   expect(() =>
-    receiver.appendOperations([
+    receiver.ops.appendMany([
       insert,
       { ...payload, meta: { ...payload.meta, id: { replica: Uint8Array.of(1), counter: 2 } } },
     ]),
   ).toThrow();
   expect(receiver.operationCount()).toBe(0);
-  receiver.appendOperations([payload, insert, payload]);
+  receiver.ops.appendMany([payload, insert, payload]);
   expect(receiver.get(a)?.payload).toEqual(Uint8Array.of(42));
   expect(receiver.getChildren(root)).toEqual([a]);
   expect(receiver.operationCount()).toBe(2);
   expect(receiver.operationsFrom(0)).toEqual([payload, insert]);
-  expect(receiver.operationsAt(Object.freeze([1, 0, 1]))).toEqual([insert, payload, insert]);
-  expect(receiver.maxLamport()).toBe(payload.meta.lamport);
+  expect(receiver.meta.headLamport()).toBe(payload.meta.lamport);
   insert.meta.id.replica.fill(99);
   expect(receiver.operationsFrom(1)[0]?.meta.id.replica).toEqual(new Uint8Array(32).fill(1));
   for (const cursor of [NaN, 0.9, 2 ** 32]) {
