@@ -266,27 +266,24 @@ export type TreecrdtPlacement =
   | { type: 'last' }
   | { type: 'after'; after: string };
 
-export type BoundTreecrdtEngineLocal = {
+/** Replica-bound commands with backend-specific return and write-option types. */
+export type TreecrdtLocalCommands<
+  Result extends Operation | Promise<Operation>,
+  Options = never,
+> = {
   insert: (
     parent: string,
     node: string,
     placement: TreecrdtPlacement,
     payload: Uint8Array | null,
-    opts?: LocalWriteOptions,
-  ) => Promise<Operation>;
-  move: (
-    node: string,
-    newParent: string,
-    placement: TreecrdtPlacement,
-    opts?: LocalWriteOptions,
-  ) => Promise<Operation>;
-  delete: (node: string, opts?: LocalWriteOptions) => Promise<Operation>;
-  payload: (
-    node: string,
-    payload: Uint8Array | null,
-    opts?: LocalWriteOptions,
-  ) => Promise<Operation>;
+    opts?: Options,
+  ) => Result;
+  move: (node: string, newParent: string, placement: TreecrdtPlacement, opts?: Options) => Result;
+  delete: (node: string, opts?: Options) => Result;
+  payload: (node: string, payload: Uint8Array | null, opts?: Options) => Result;
 };
+
+export type BoundTreecrdtEngineLocal = TreecrdtLocalCommands<Promise<Operation>, LocalWriteOptions>;
 
 export type TreecrdtEngineLocal = {
   insert: (

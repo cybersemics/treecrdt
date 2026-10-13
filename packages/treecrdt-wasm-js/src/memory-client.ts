@@ -1,5 +1,5 @@
 import type { Operation } from '@treecrdt/interface';
-import type { TreecrdtPlacement } from '@treecrdt/interface/engine';
+import type { TreecrdtLocalCommands, TreecrdtPlacement } from '@treecrdt/interface/engine';
 import { bytesToHex, normalizeNodeId } from '@treecrdt/interface/ids';
 import type { TreeReadContent, TreeReadRow, WasmTree } from '../pkg/treecrdt_wasm.js';
 import { toWasmOperation } from './operation-input.js';
@@ -8,17 +8,6 @@ export type MemoryClientOptions = { replicaId?: Uint8Array };
 export type MemoryContent = Readonly<TreeReadContent>;
 export type MemoryRow = Readonly<Omit<TreeReadRow, 'children'>> & {
   readonly children: Readonly<TreeReadRow['children']>;
-};
-type LocalCommands = {
-  insert(
-    parent: string,
-    node: string,
-    placement: TreecrdtPlacement,
-    payload: Uint8Array | null,
-  ): Operation;
-  move(node: string, parent: string, placement: TreecrdtPlacement): Operation;
-  payload(node: string, payload: Uint8Array | null): Operation;
-  delete(node: string): Operation;
 };
 export interface MemoryReader {
   /** Returns an owned current row. Payload bytes are caller-owned, as with getContent. */
@@ -30,7 +19,7 @@ export interface MemoryReader {
   nodeIds(): string[];
 }
 export interface MemoryClient extends MemoryReader {
-  readonly local: LocalCommands;
+  readonly local: TreecrdtLocalCommands<Operation>;
   appendOperations(operations: readonly Operation[]): void;
   operationCount(): number;
   operationsFrom(cursor: number): Operation[];
