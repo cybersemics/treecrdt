@@ -8,6 +8,7 @@ export type {
   MemoryClient,
   MemoryClientOptions,
   MemoryChanges,
+  MemoryMaterialization,
   MemoryContent,
   MemoryRowChange,
   MemoryRow,

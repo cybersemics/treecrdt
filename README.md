@@ -36,7 +36,7 @@ const { operations } = memory.transact(transaction => {
 })
 ```
 
-Transactions are synchronous: they either commit all operations or roll back, and their handles expire when the callback returns. Reads return owned rows from the current tree, not retained tree versions. `getChanges()` reports cumulative before/after rows within a transaction; `subscribe` publishes committed changes. Use the returned operations for persistence, including operations that leave the view unchanged. Memory commits alone are not durable.
+Transactions are synchronous: they either commit all operations or roll back, and their handles expire when the callback returns. Reads return owned rows from the current tree, not retained tree versions. Transactions return final before/after changes; `subscribe` publishes committed changes. `observeMaterialization` maintains application-owned derived state through incremental updates and rollback; its `flush()` barrier makes pending updates visible before a query. Use the returned operations for persistence, including operations that leave the view unchanged. Memory commits alone are not durable.
 
 `createMemorySyncBackend` from `@treecrdt/wasm/sync` connects the client to the existing sync protocol with full-document (`{ all: {} }`) filters. Partial hydration and eviction are not supported. Call `memory.close()` when finished.
 

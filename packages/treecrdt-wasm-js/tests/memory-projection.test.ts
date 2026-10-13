@@ -4,6 +4,7 @@ import {
   createInitializedMemoryClient,
   type MemoryClient,
   type MemoryContent,
+  type MemoryChanges,
 } from '../src/memory-client.js';
 
 const root = '0'.repeat(32);
@@ -203,3 +204,256 @@ test('incoming operations refresh projections before client subscribers run', ()
   client.appendOperations([remote.local.payload(a, Uint8Array.of(2, 8))]);
   expect(observed).toEqual([8]);
 });
+
+test('materialization scopes coalesce writes until reads and receive incremental owned batches', () => {
+  const { client, native } = open();
+  client.local.insert(root, a, null, Uint8Array.of(1));
+  let value: number | undefined;
+  const batches: Pick<MemoryChanges, 'reset' | 'changes'>[] = [];
+  const rollback = vi.fn();
+  const start = vi.fn(() => {
+    const previous = value;
+    return {
+      apply: (batch: Pick<MemoryChanges, 'reset' | 'changes'>) => {
+        batches.push(batch);
+        if (batch.reset) value = client.getContent(a)?.payload?.[0];
+        else for (const row of batch.changes) if (row.id === a) value = row.after?.payload?.[0];
+      },
+      rollback: () => {
+        rollback();
+        value = previous;
+      },
+    };
+  });
+  const observer = client.observeMaterialization(start);
+  expect(value).toBe(1);
+  expect(batches).toEqual([{ reset: true, changes: [] }]);
+  batches.length = 0;
+  const drain = vi.spyOn(native, 'drainReadChanges');
+  const published = vi.fn(() => value);
+  client.subscribe(published);
+  const result = client.transact(({ local }) => {
+    local.payload(a, Uint8Array.of(2));
+    local.payload(a, Uint8Array.of(3));
+    expect(value).toBe(1);
+    expect(drain).not.toHaveBeenCalled();
+    observer.flush();
+    expect(value).toBe(3);
+    observer.flush();
+    expect(drain).toHaveBeenCalledTimes(1);
+    local.payload(a, Uint8Array.of(1));
+    observer.flush();
+    expect(value).toBe(1);
+  });
+  expect(start).toHaveBeenCalledTimes(2);
+  expect(rollback).not.toHaveBeenCalled();
+  expect(batches.map((batch) => batch.changes.find((change) => change.id === a))).toMatchObject([
+    { before: { payload: Uint8Array.of(1) }, after: { payload: Uint8Array.of(3) } },
+    { before: { payload: Uint8Array.of(3) }, after: { payload: Uint8Array.of(1) } },
+  ]);
+  expect(() => (batches[0].changes as unknown[]).push(null)).toThrow();
+  const held = batches[0].changes.find((change) => change.id === a)!;
+  held.after!.payload!.fill(99);
+  expect(held.after!.payload).toEqual(Uint8Array.of(3));
+  expect(result.changes.changes).toEqual([]);
+  expect(published).not.toHaveBeenCalled();
+  const { client: remote } = open('02');
+  remote.appendOperations(client.operationsFrom(0));
+  client.appendOperations([remote.local.payload(a, Uint8Array.of(4))]);
+  expect(published).toHaveReturnedWith(4);
+  client.close();
+  expect(() => observer.flush()).toThrow('closed');
+});
+
+test('caught partial apply failures restore every scope and poison further writes', () => {
+  const { client } = open();
+  client.local.insert(root, a, null, Uint8Array.of(1));
+  const values = [0, 0];
+  const rollbacks = [vi.fn(), vi.fn()];
+  const observers = values.map((_, index) =>
+    client.observeMaterialization(() => {
+      const previous = values[index];
+      return {
+        apply: () => {
+          values[index] = client.getContent(a)!.payload![0];
+          if (index === 1 && values[index] === 9) throw new Error('invalid derived value');
+        },
+        rollback: () => {
+          rollbacks[index]();
+          values[index] = previous;
+        },
+      };
+    }),
+  );
+  const count = client.operationCount();
+  expect(() =>
+    client.transact(({ local }) => {
+      local.payload(a, Uint8Array.of(9));
+      expect(() => observers[0].flush()).toThrow('invalid derived value');
+      expect(() => local.payload(a, Uint8Array.of(2))).toThrow('failed');
+    }),
+  ).toThrow('failed');
+  expect(values).toEqual([1, 1]);
+  expect(rollbacks.every((rollback) => rollback.mock.calls.length === 1)).toBe(true);
+  expect(client.operationCount()).toBe(count);
+  expect(client.getContent(a)?.payload).toEqual(Uint8Array.of(1));
+  client.local.payload(a, Uint8Array.of(2));
+  expect(values).toEqual([2, 2]);
+});
+
+test('reset scopes roll back after a callback abort; failed bootstrap does not register', () => {
+  const { client, native } = open();
+  client.local.insert(root, a, null, Uint8Array.of(1));
+  let value = 0;
+  const observer = client.observeMaterialization(() => {
+    const previous = value;
+    return {
+      apply: () => {
+        value = client.getContent(a)!.payload![0];
+      },
+      rollback: () => {
+        value = previous;
+      },
+    };
+  });
+  expect(() =>
+    client.transact(({ local }) => {
+      native.enableReadTracking();
+      local.payload(a, Uint8Array.of(2));
+      observer.flush();
+      expect(value).toBe(2);
+      throw new Error('abort reset');
+    }),
+  ).toThrow('abort reset');
+  expect(value).toBe(1);
+  const rollback = vi.fn();
+  const start = vi.fn(() => ({
+    apply: () => {
+      throw new Error('invalid bootstrap');
+    },
+    rollback,
+  }));
+  expect(() => client.observeMaterialization(start)).toThrow('invalid bootstrap');
+  expect(rollback).toHaveBeenCalledTimes(1);
+  client.local.payload(a, Uint8Array.of(3));
+  expect(start).toHaveBeenCalledTimes(1);
+  expect(value).toBe(3);
+});
+
+test.each(['write', 'projection', 'observer', 'topology'])(
+  'materialization callbacks cannot reenter %s even if caught',
+  (action) => {
+    const { client } = open();
+    client.local.insert(root, a, null, Uint8Array.of(1));
+    const projection = client.createProjection(options);
+    const observer = client.observeMaterialization(() => ({
+      apply: () => {
+        if (client.getContent(a)?.payload?.[0] !== 9) return;
+        expect(() => {
+          if (action === 'write') client.local.payload(a, Uint8Array.of(2));
+          else if (action === 'projection') projection.get(a);
+          else if (action === 'observer') observer.flush();
+          else client.getChildren(root);
+        }).toThrow('cannot');
+      },
+      rollback: () => {},
+    }));
+    expect(() => client.local.payload(a, Uint8Array.of(9))).toThrow('cannot');
+    expect(client.getContent(a)?.payload).toEqual(Uint8Array.of(1));
+    expect(() =>
+      client.transact(() => client.observeMaterialization(() => ({ apply() {}, rollback() {} }))),
+    ).toThrow('during a transaction');
+  },
+);
+
+test('materialization start and apply callbacks must be synchronous', () => {
+  const { client } = open();
+  expect(() =>
+    client.observeMaterialization(
+      // @ts-expect-error Asynchronous start violates the synchronous callback contract.
+      async () => ({ apply() {}, rollback() {} }),
+    ),
+  ).toThrow('synchronous');
+  const rollback = vi.fn();
+  expect(() => client.observeMaterialization(() => ({ apply: async () => {}, rollback }))).toThrow(
+    'synchronous',
+  );
+  expect(rollback).toHaveBeenCalledTimes(1);
+  client.local.insert(root, a);
+});
+
+test.each(['start', 'drain'])(
+  '%s failure restores earlier scopes and the native transaction',
+  (failure) => {
+    const { client, native } = open();
+    const rollback = vi.fn();
+    const observer = client.observeMaterialization(() => ({ apply() {}, rollback }));
+    let failStart = false;
+    client.observeMaterialization(() => {
+      if (failStart) throw new Error('start failed');
+      return { apply() {}, rollback() {} };
+    });
+    failStart = failure === 'start';
+    if (failure === 'drain')
+      vi.spyOn(native, 'drainReadChanges').mockImplementationOnce(() => {
+        throw new Error('drain failed');
+      });
+    expect(() =>
+      client.transact(({ local }) => {
+        local.insert(root, a);
+        expect(() => observer.flush()).toThrow('drain failed');
+      }),
+    ).toThrow('failed');
+    expect(rollback).toHaveBeenCalledTimes(1);
+    expect(client.get(a)).toBeUndefined();
+    expect(client.operationCount()).toBe(0);
+    failStart = false;
+    client.local.insert(root, b);
+    expect(client.get(b)).toBeDefined();
+  },
+);
+
+test.each(['throw', 'async'])(
+  'failed %s rollback recovers other scopes and fails closed without preventing cleanup',
+  (failure) => {
+    const { client, native } = open();
+    client.local.insert(root, a, null, Uint8Array.of(1));
+    let value = 0;
+    const observer = client.observeMaterialization(() => {
+      const previous = value;
+      return {
+        apply: () => {
+          value = client.getContent(a)!.payload![0];
+        },
+        rollback: () => {
+          value = previous;
+        },
+      };
+    });
+    client.observeMaterialization(() => ({
+      apply: () => {},
+      rollback:
+        failure === 'async'
+          ? async () => {}
+          : () => {
+              throw new Error('broken rollback');
+            },
+    }));
+    expect(() =>
+      client.transact(({ local }) => {
+        local.payload(a, Uint8Array.of(9));
+        observer.flush();
+        expect(value).toBe(9);
+        throw new Error('abort');
+      }),
+    ).toThrow('could not restore materialized state');
+    expect(value).toBe(1);
+    expect(native.readContent(a)?.payload).toEqual(Uint8Array.of(1));
+    expect(() => client.local.payload(a, Uint8Array.of(2))).toThrow('could not restore');
+    expect(() => client.getContent(a)).toThrow('could not restore');
+    expect(() => observer.flush()).toThrow('could not restore');
+    const free = vi.spyOn(native, 'free');
+    client.close();
+    expect(free).toHaveBeenCalledTimes(1);
+  },
+);

@@ -41,6 +41,12 @@ export type MemoryChanges = {
   readonly reset: boolean;
   readonly changes: readonly MemoryRowChange[];
 };
+export type MemoryMaterialization = {
+  /** Applies incremental materialized rows, or rebuilds from current content when reset is true. */
+  apply(batch: Pick<MemoryChanges, 'reset' | 'changes'>): void;
+  /** Restores this scope's changes. Must succeed even after a partially applied batch. */
+  rollback(): void;
+};
 export interface MemoryReader {
   /** Returns an owned row from the current tree, not a retained tree version. */
   get(id: string): MemoryRow | undefined;
@@ -56,13 +62,18 @@ export interface MemoryTransaction extends MemoryReader {
   readonly local: LocalCommands;
   /** Appends compensating operations; revert their IDs to redo. May overwrite intervening writes. */
   revert(operationIds: readonly OperationId[]): Operation[];
-  /** Cumulative changes; repeated reads retain identity until another write is attempted. */
-  getChanges(): MemoryChanges;
 }
 export interface MemoryClient extends MemoryReader {
   readonly revision: number;
   /** Creates a client-owned live projection outside transactions, enumerating existing content once. */
   createProjection<T>(options: MemoryProjectionOptions<T>): MemoryProjection<T>;
+  /**
+   * Registers client-owned synchronous derived state outside transactions. Starts one bootstrap
+   * scope with reset=true, then one scope per transaction; successful scopes are simply released.
+   * start only allocates rollback state. Callbacks may read raw content, but cannot write or flush
+   * projections/observers. Call flush before reading derived state; writes remain coalesced.
+   */
+  observeMaterialization(start: () => MemoryMaterialization): { flush(): void };
   readonly local: LocalCommands;
   revert(operationIds: readonly OperationId[]): Operation[];
   transact<T>(work: (transaction: MemoryTransaction) => T): {
@@ -171,34 +182,66 @@ export function createInitializedMemoryClient(native: WasmTree): MemoryClient {
   let pending: PendingChanges | undefined;
   let needsDrain = false;
   let failed = false;
-  let cachedChanges: MemoryChanges | undefined;
+  let fault: Error | undefined;
   let notifications: MemoryChanges[] | undefined;
   const projections = new Set<ReturnType<typeof createMemoryProjection>>();
-  let evaluatingProjection = false;
+  const materializations: (() => MemoryMaterialization)[] = [];
+  let scopes: MemoryMaterialization[] = [];
+  let evaluatingCallback: string | undefined;
+  let callbackViolation: Error | undefined;
   const listeners = new Set<(changes: MemoryChanges) => void>();
   const ensureOpen = () => {
     if (closed) throw new Error('The memory client is closed');
+    if (fault) throw fault;
+  };
+  const outsideCallback = () => {
+    if (evaluatingCallback) {
+      if (pending) failed = true;
+      throw (callbackViolation ??= new Error(
+        `${evaluatingCallback} cannot mutate the memory client or read derived state`,
+      ));
+    }
   };
   const ensureMutable = () => {
     ensureOpen();
-    if (evaluatingProjection) {
-      if (pending) failed = true;
-      throw new Error('Projection callbacks cannot mutate the memory client');
-    }
+    outsideCallback();
+    if (failed) throw new Error('The memory transaction has failed');
   };
-  const evaluateProjection = <T>(callback: () => T): T => {
-    evaluatingProjection = true;
+  const evaluateCallback = <T>(callback: () => T, context: string, recovering = false): T => {
+    outsideCallback();
+    evaluatingCallback = context;
     try {
       const value = callback();
-      assertSynchronous(value, 'Projection callbacks');
-      if (failed) throw new Error('The memory transaction has failed');
+      assertSynchronous(value, context);
+      if (callbackViolation) throw callbackViolation;
+      if (failed && !recovering) throw new Error('The memory transaction has failed');
       return value;
     } catch (error) {
       if (pending) failed = true;
       throw error;
     } finally {
-      evaluatingProjection = false;
+      evaluatingCallback = undefined;
+      callbackViolation = undefined;
     }
+  };
+  const recover = (work: () => void) => {
+    try {
+      work();
+    } catch (error) {
+      fault ??= new Error(
+        `The memory client could not restore materialized state: ${String(error)}`,
+      );
+    }
+  };
+  const rollbackScopes = (active: readonly MemoryMaterialization[]) => {
+    for (const scope of [...active].reverse())
+      recover(() => evaluateCallback(() => scope.rollback(), 'Materialization callbacks', true));
+  };
+  const flush = () => {
+    ensureOpen();
+    outsideCallback();
+    if (failed) throw new Error('The memory transaction has failed');
+    if (pending) drain();
   };
   const committed = <T>(read: () => T): T => {
     ensureOpen();
@@ -218,12 +261,7 @@ export function createInitializedMemoryClient(native: WasmTree): MemoryClient {
   const topology = createTopologyReader(
     (id) => native.readChildren(id),
     (id) => native.readParent(id),
-    () => {
-      ensureOpen();
-      if (failed) throw new Error('The memory transaction has failed');
-      // Queries inside a transaction must see writes even before the caller asks for change records.
-      if (pending) drain();
-    },
+    flush,
   );
   const nodeIds = () => {
     ensureOpen();
@@ -252,35 +290,43 @@ export function createInitializedMemoryClient(native: WasmTree): MemoryClient {
   });
   const drain = () => {
     if (!needsDrain) return;
-    const batch = native.drainReadChanges();
-    topology.invalidate(batch);
-    const changes = batch.changes.map((change) =>
-      Object.freeze({
-        id: change.id,
-        before: change.before ? immutableRow(change.before) : null,
-        after: change.after ? immutableRow(change.after) : null,
-      }),
-    );
-    pending!.reset ||= batch.reset;
-    for (const change of changes) {
-      const previous = pending!.changes.get(change.id);
-      pending!.changes.set(
-        change.id,
-        previous ? Object.freeze({ ...change, before: previous.before }) : change,
+    try {
+      const batch = native.drainReadChanges();
+      topology.invalidate(batch);
+      const changes = batch.changes.map((change) =>
+        Object.freeze({
+          id: change.id,
+          before: change.before ? immutableRow(change.before) : null,
+          after: change.after ? immutableRow(change.after) : null,
+        }),
       );
+      pending!.reset ||= batch.reset;
+      for (const change of changes) {
+        const previous = pending!.changes.get(change.id);
+        pending!.changes.set(
+          change.id,
+          previous ? Object.freeze({ ...change, before: previous.before }) : change,
+        );
+      }
+      needsDrain = false;
+      const effective = Object.freeze({ reset: batch.reset, changes: Object.freeze(changes) });
+      for (const projection of projections) projection.apply(effective);
+      for (const scope of scopes)
+        evaluateCallback(() => scope.apply(effective), 'Materialization callbacks');
+    } catch (error) {
+      failed = true;
+      throw error;
     }
-    needsDrain = false;
-    for (const projection of projections) projection.apply({ reset: batch.reset, changes });
   };
   const collect = (): MemoryChanges => {
     drain();
-    return (cachedChanges ??= Object.freeze({
+    return Object.freeze({
       revision,
       reset: pending!.reset,
       changes: Object.freeze(
         [...pending!.changes.values()].filter(({ before, after }) => !equalRows(before, after)),
       ),
-    }));
+    });
   };
   const transact = <T>(work: (transaction: MemoryTransaction) => T) => {
     ensureMutable();
@@ -290,7 +336,6 @@ export function createInitializedMemoryClient(native: WasmTree): MemoryClient {
     pending = { changes: new Map(), reset: false };
     needsDrain = true;
     failed = false;
-    for (const projection of projections) projection.begin();
     let active = true;
     const during = <V>(work: () => V): V => {
       if (!active) throw new Error('The memory transaction has finished');
@@ -299,6 +344,9 @@ export function createInitializedMemoryClient(native: WasmTree): MemoryClient {
     let value: T;
     let changes: MemoryChanges;
     try {
+      for (const projection of projections) projection.begin();
+      for (const start of materializations)
+        scopes.push(evaluateCallback(start, 'Materialization callbacks'));
       value = work({
         local: local((work) => during(() => write(work))),
         revert: (ids) => during(() => write(() => native.revertOperations(ids))),
@@ -307,7 +355,6 @@ export function createInitializedMemoryClient(native: WasmTree): MemoryClient {
         getChildren: (id) => during(() => topology.getChildren(id)),
         getPosition: (id) => during(() => topology.getPosition(id)),
         nodeIds: () => during(nodeIds),
-        getChanges: () => during(collect),
       });
       assertSynchronous(value, 'Memory transactions');
       if (failed) throw new Error('The memory transaction failed; its writes were rolled back');
@@ -315,19 +362,17 @@ export function createInitializedMemoryClient(native: WasmTree): MemoryClient {
       native.commitTransaction();
       for (const projection of projections) projection.commit();
     } catch (error) {
-      try {
-        native.rollbackTransaction();
-      } finally {
-        topology.clear();
-        for (const projection of projections) projection.rollback();
-      }
-      throw error;
+      recover(() => native.rollbackTransaction());
+      topology.clear();
+      for (const projection of projections) recover(() => projection.rollback());
+      rollbackScopes(scopes);
+      throw fault ?? error;
     } finally {
       active = false;
       pending = undefined;
       needsDrain = false;
       failed = false;
-      cachedChanges = undefined;
+      scopes = [];
     }
     const operations = native.operationsFrom(cursor);
     if (changes.reset || changes.changes.length) {
@@ -355,7 +400,6 @@ export function createInitializedMemoryClient(native: WasmTree): MemoryClient {
   const write = <T>(work: () => T): T => {
     ensureMutable();
     if (!pending) return transact(() => write(work)).value;
-    cachedChanges = undefined;
     needsDrain = true;
     try {
       return work();
@@ -365,6 +409,22 @@ export function createInitializedMemoryClient(native: WasmTree): MemoryClient {
     }
   };
   return {
+    observeMaterialization: (start) => {
+      ensureMutable();
+      if (pending) throw new Error('Cannot observe materialization during a transaction');
+      const initial = evaluateCallback(start, 'Materialization callbacks');
+      try {
+        evaluateCallback(
+          () => initial.apply(Object.freeze({ reset: true, changes: Object.freeze([]) })),
+          'Materialization callbacks',
+        );
+      } catch (error) {
+        rollbackScopes([initial]);
+        throw fault ?? error;
+      }
+      materializations.push(start);
+      return { flush };
+    },
     createProjection: (options) => {
       ensureMutable();
       if (pending) throw new Error('Cannot create a projection during a transaction');
@@ -375,13 +435,8 @@ export function createInitializedMemoryClient(native: WasmTree): MemoryClient {
           nodeIds,
         },
         options,
-        () => {
-          ensureOpen();
-          if (evaluatingProjection) throw new Error('Projection callbacks cannot read projections');
-          if (failed) throw new Error('The memory transaction has failed');
-          if (pending) drain();
-        },
-        evaluateProjection,
+        flush,
+        (callback) => evaluateCallback(callback, 'Projection callbacks'),
       );
       projections.add(projection);
       return projection.projection;
@@ -392,6 +447,7 @@ export function createInitializedMemoryClient(native: WasmTree): MemoryClient {
     getPosition: topology.getPosition,
     nodeIds,
     get revision() {
+      ensureOpen();
       return revision;
     },
     local: local(write),
@@ -518,13 +574,14 @@ export function createInitializedMemoryClient(native: WasmTree): MemoryClient {
     },
     close: () => {
       if (closed) return;
-      ensureMutable();
+      outsideCallback();
       if (pending) throw new Error('Cannot close a memory client during a transaction');
       closed = true;
       listeners.clear();
       topology.clear();
       for (const projection of projections) projection.close();
       projections.clear();
+      materializations.length = 0;
       native.free();
     },
   };

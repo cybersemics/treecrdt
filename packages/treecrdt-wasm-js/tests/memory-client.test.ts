@@ -194,17 +194,14 @@ test('composed commands read live rows and publish only owned changed records', 
     expect(transaction.getPosition(a)).toBe(0);
     expect(transaction.getPosition(b)).toBe(0);
     drainChanges.mockClear();
-    const moved = transaction.getChanges();
-    expect(transaction.getChanges()).toBe(moved);
+    const moved = transaction.get(a)!;
+    expect(transaction.getChildren(b)).toBe(children);
     expect(drainChanges).not.toHaveBeenCalled();
     transaction.local.payload(a, Uint8Array.of(2));
-    expect(transaction.getChanges()).not.toBe(moved);
     expect(transaction.get(a)?.payload).toEqual(Uint8Array.of(2));
     expect(transaction.getContent(a)?.payload).toEqual(Uint8Array.of(2));
     expect(transaction.getChildren(b)).toBe(children);
-    expect(moved.changes.find((change) => change.id === a)?.after?.payload).toEqual(
-      Uint8Array.of(1),
-    );
+    expect(moved.payload).toEqual(Uint8Array.of(1));
     expect(listener).not.toHaveBeenCalled();
     expect(() => client.operationsFrom(0)).toThrow('during a transaction');
   });
@@ -232,7 +229,6 @@ test('composed commands read live rows and publish only owned changed records', 
   expect(() => escaped.getChildren(b)).toThrow('finished');
   expect(() => escaped.getPosition(a)).toThrow('finished');
   expect(() => escaped.local.insert(root, a)).toThrow('finished');
-  expect(() => escaped.getChanges()).toThrow('finished');
   for (const cursor of [NaN, 0.9, 2 ** 32]) {
     expect(() => client.operationsFrom(cursor)).toThrow();
   }
@@ -250,7 +246,6 @@ test.each(['callback', 'caught native error', 'caught boundary error'])(
         transaction.local.insert(root, a);
         expect(transaction.getChildren(root)).toEqual([a]);
         expect(transaction.getPosition(a)).toBe(0);
-        transaction.getChanges();
         if (failure === 'callback') throw new Error('abort');
         try {
           if (failure === 'caught native error') transaction.local.move(a, root, b);
@@ -267,7 +262,7 @@ test.each(['callback', 'caught native error', 'caught boundary error'])(
     expect(client.operationsFrom(0)).toEqual([]);
     expect(client.revision).toBe(0);
     expect(listener).not.toHaveBeenCalled();
-    expect(client.transact(({ getChanges }) => getChanges()).value.changes).toEqual([]);
+    expect(client.transact(() => {}).changes.changes).toEqual([]);
     expect(client.local.insert(root, b)).toEqual(control.local.insert(root, b));
     expect(client.getChildren(root)).toEqual([b]);
     expect(client.getPosition(b)).toBe(0);
@@ -298,22 +293,21 @@ test('net-unchanged edits retain operations without publishing a new revision', 
   const revision = client.revision;
   const listener = vi.fn();
   client.subscribe(listener);
-  const result = client.transact(({ local, getChanges, getChildren, getPosition }) => {
+  const result = client.transact(({ local, get, getChildren, getPosition }) => {
     local.payload(a, Uint8Array.of(2));
     local.move(a, b);
     expect(getChildren(root)).toEqual([b]);
     expect(getChildren(b)).toEqual([a]);
     expect(getPosition(b)).toBe(0);
-    const changed = getChanges();
+    const changed = get(a);
+    expect(changed).toMatchObject({ parentId: b, payload: Uint8Array.of(2) });
     local.payload(a, Uint8Array.of(1));
     local.move(a, root, null);
     expect(getChildren(root)).toEqual([a, b]);
     expect(getChildren(b)).toEqual([]);
     expect(getPosition(b)).toBe(1);
-    const restored = getChanges();
-    expect(restored).not.toBe(changed);
-    expect(restored.changes).toEqual([]);
-    expect(getChanges()).toBe(restored);
+    expect(get(a)).toMatchObject({ parentId: root, payload: Uint8Array.of(1) });
+    expect(changed).toMatchObject({ parentId: b, payload: Uint8Array.of(2) });
   });
   expect(result.operations).toHaveLength(4);
   expect(result.changes.changes).toEqual([]);
@@ -333,21 +327,21 @@ test('undo and redo publish real row changes and roll back together with a faile
     local.payload(a, Uint8Array.of(2));
   });
   const undone = client.transact((transaction) => {
-    transaction.getChanges();
+    transaction.getChildren(root);
     const inverses = transaction.revert(edits.operations.map((op) => op.meta.id));
     expect(transaction.get(a)).toMatchObject({ parentId: root, payload: Uint8Array.of(1) });
-    expect(transaction.getChanges().changes.find((change) => change.id === a)).toMatchObject({
-      before: { parentId: b, payload: Uint8Array.of(2) },
-      after: { parentId: root, payload: Uint8Array.of(1) },
-    });
     return inverses.map((op) => op.meta.id);
+  });
+  expect(undone.changes.changes.find((change) => change.id === a)).toMatchObject({
+    before: { parentId: b, payload: Uint8Array.of(2) },
+    after: { parentId: root, payload: Uint8Array.of(1) },
   });
   const operations = client.operationsFrom(0);
   const revision = client.revision;
   expect(() =>
     client.transact((transaction) => {
       transaction.revert(undone.value);
-      transaction.getChanges();
+      transaction.getChildren(root);
       throw new Error('cancel');
     }),
   ).toThrow('cancel');
