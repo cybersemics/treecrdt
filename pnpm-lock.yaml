@@ -486,6 +486,10 @@ importers:
         version: 1.6.1(@types/node@20.19.25)
 
   packages/treecrdt-ts:
+    dependencies:
+      cborg:
+        specifier: ^4.3.2
+        version: 4.3.2
     devDependencies:
       typescript:
         specifier: ^5.3.3

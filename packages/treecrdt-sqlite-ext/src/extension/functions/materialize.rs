@@ -1,4 +1,4 @@
-use super::append::JsonAppendOp;
+use super::append::AppendOp;
 use super::node_store::SqliteNodeStore;
 use super::op_index::SqliteParentOpIndex;
 use super::payload_store::SqlitePayloadStore;
@@ -184,7 +184,7 @@ fn parse_optional_node_id(bytes: &Option<Vec<u8>>) -> Result<Option<NodeId>, c_i
     }
 }
 
-fn json_append_op_to_operation(op: &JsonAppendOp) -> Result<treecrdt_core::Operation, c_int> {
+fn append_op_to_operation(op: &AppendOp) -> Result<treecrdt_core::Operation, c_int> {
     use treecrdt_core::{Operation, OperationId, OperationKind, OperationMetadata, ReplicaId};
 
     let node = parse_node_id(&op.node)?;
@@ -381,7 +381,7 @@ pub(super) fn append_ops_impl(
     db: *mut sqlite3,
     doc_id: &[u8],
     savepoint_name: &str,
-    ops: &[JsonAppendOp],
+    ops: &[AppendOp],
 ) -> Result<MaterializationOutcome, c_int> {
     if ops.is_empty() {
         let meta = load_tree_meta(db)?;
@@ -405,7 +405,7 @@ pub(super) fn append_ops_impl(
     let mut inserted_ops: Vec<treecrdt_core::Operation> = Vec::with_capacity(ops.len());
 
     for op in ops {
-        let operation = match json_append_op_to_operation(op) {
+        let operation = match append_op_to_operation(op) {
             Ok(v) => v,
             Err(rc) => {
                 sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
