@@ -522,17 +522,19 @@ impl NodeStore for MemoryNodeStore {
             return Ok(());
         }
 
-        let existing = self.get_state(parent)?.children.clone();
-        let mut idx = existing.len();
-        for (i, child) in existing.iter().enumerate() {
+        let children = &self.get_state(parent)?.children;
+        let at_or_before = |child: &NodeId| {
             let child_key =
                 self.nodes.get(child).and_then(|s| s.order_key.as_deref()).unwrap_or_default();
-            let cmp = child_key.cmp(order_key.as_slice()).then_with(|| child.cmp(&node));
-            if cmp == Ordering::Greater {
-                idx = i;
-                break;
-            }
-        }
+            child_key.cmp(order_key.as_slice()).then_with(|| child.cmp(&node)) != Ordering::Greater
+        };
+        let idx = if children.last().is_some_and(at_or_before) {
+            children.len()
+        } else if children.first().is_some_and(|child| !at_or_before(child)) {
+            0
+        } else {
+            children.partition_point(at_or_before)
+        };
 
         let parent_state = self.get_state_mut(parent)?;
         parent_state.children.insert(idx, node);
