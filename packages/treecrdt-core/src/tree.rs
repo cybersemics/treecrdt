@@ -519,7 +519,7 @@ where
     ///
     /// Persist in arrival order so duplicates retain the same first envelope as `apply_remote`.
     /// Apply newly accepted operations in canonical order, without a history scan when they are
-    /// all newer than the current head.
+    /// all newer than the current head or only update payloads.
     ///
     /// Like `apply_remote`, this is not an atomic transaction. On error, callers must restore
     /// the complete state or rebuild the replica from storage before continuing.
@@ -536,14 +536,20 @@ where
             }
         }
         accepted.sort_by(cmp_ops);
-        if accepted.first().is_some_and(|op| !self.is_in_order(op)) {
+        // Payload-only batches commute through their per-node LWW register; they do not
+        // require replaying unrelated structural history.
+        if accepted.first().is_some_and(|op| !self.is_in_order(op))
+            && accepted.iter().any(|op| !matches!(op.kind, OperationKind::Payload { .. }))
+        {
             return self.replay_from_storage();
         }
         for op in accepted {
             self.capture_read_paths(&op)?;
             Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
             self.op_count += 1;
-            self.head = Some(op);
+            if self.is_in_order(&op) {
+                self.head = Some(op);
+            }
         }
         Ok(())
     }
