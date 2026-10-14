@@ -199,6 +199,61 @@ fn assert_same_state<S: Storage, T: Storage>(
 }
 
 #[test]
+fn late_payload_batches_match_replay_without_scanning_history() {
+    for newer_head in [false, true] {
+        let local = ReplicaId::new(b"local");
+        let remote = ReplicaId::new(b"remote");
+        let (mut tree, trace) = counting_tree(&local);
+        tree.local_insert(NodeId::ROOT, NodeId(1), LocalPlacement::Last, None).unwrap();
+        tree.local_insert(NodeId(1), NodeId(2), LocalPlacement::Last, Some(vec![0]))
+            .unwrap();
+        tree.local_delete(NodeId(1)).unwrap();
+        // A newer unrelated operation makes the concurrent payload writes out of order.
+        tree.apply_remote(insert(&local, 100, 100)).unwrap();
+        assert!(tree.is_tombstoned(NodeId(1)).unwrap());
+        let (mut replay, _) = counting_tree(&local);
+        replay.apply_remote_batch(tree.operations_since(0).unwrap()).unwrap();
+
+        let mut batch = vec![
+            Operation::set_payload(&remote, 2, 10, NodeId(2), b"winner"),
+            Operation::set_payload(&remote, 1, 10, NodeId(2), b"older"),
+            Operation::set_payload(&local, 101, 10, NodeId(2), b"losing replica"),
+            // A payload can precede the node's insert, and a clear must retain its writer.
+            Operation::set_payload(&remote, 3, 11, NodeId(99), b"unplaced"),
+            Operation::clear_payload(&remote, 4, 12, NodeId(99)),
+        ];
+        if newer_head {
+            batch.push(Operation::set_payload(
+                &remote,
+                5,
+                101,
+                NodeId(2),
+                b"new head",
+            ));
+        }
+        tree.apply_remote_batch(batch.clone()).unwrap();
+        // The single-op delta path independently replays late operations.
+        for op in batch {
+            replay.apply_remote_with_delta(op).unwrap();
+        }
+
+        assert_eq!(trace.borrow().scans, 0);
+        assert!(!tree.is_tombstoned(NodeId(1)).unwrap());
+        assert_same_state(&tree, &replay);
+        assert_eq!(
+            tree.prepare_local_delete(NodeId(1)).unwrap().op,
+            replay.prepare_local_delete(NodeId(1)).unwrap().op
+        );
+        // Retaining the newer head must still trigger replay for a later-arriving old move.
+        let moved = Operation::move_node(&remote, 6, 50, NodeId(2), NodeId::ROOT, vec![2]);
+        tree.apply_remote(moved.clone()).unwrap();
+        replay.apply_remote_with_delta(moved).unwrap();
+        assert_eq!(trace.borrow().scans, 1);
+        assert_same_state(&tree, &replay);
+    }
+}
+
+#[test]
 fn mixed_history_matches_sequential_ingestion_and_cold_batch() {
     let replica = ReplicaId::new(b"author");
     let (mut author, _) = counting_tree(&replica);
