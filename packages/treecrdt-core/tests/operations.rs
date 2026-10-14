@@ -28,6 +28,48 @@ fn inserts_and_moves_nodes() {
 }
 
 #[test]
+fn siblings_order_by_key_then_node_id_after_insert_and_move() {
+    let replica = ReplicaId::new(b"a");
+    let mut crdt = TreeCrdt::new(
+        replica.clone(),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+    let root = NodeId::ROOT;
+    let entries = [
+        (3, vec![1]),
+        (5, vec![2]),
+        (1, vec![1]),
+        (4, vec![1, 0]),
+        (2, vec![]),
+    ];
+    for (i, (node, key)) in entries.into_iter().enumerate() {
+        crdt.apply_remote(Operation::insert(
+            &replica,
+            i as u64 + 1,
+            i as u64 + 1,
+            root,
+            NodeId(node),
+            key,
+        ))
+        .unwrap();
+    }
+    assert_eq!(crdt.children(root).unwrap(), [2, 1, 3, 4, 5].map(NodeId));
+
+    crdt.apply_remote(Operation::move_node(
+        &replica,
+        6,
+        6,
+        NodeId(5),
+        root,
+        vec![1],
+    ))
+    .unwrap();
+    assert_eq!(crdt.children(root).unwrap(), [2, 1, 3, 5, 4].map(NodeId));
+}
+
+#[test]
 fn duplicate_operations_are_ignored() {
     let mut crdt = TreeCrdt::new(
         ReplicaId::new(b"a"),
