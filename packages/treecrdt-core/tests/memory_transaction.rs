@@ -89,6 +89,74 @@ fn rollback_after_failed_prepare_does_not_consume_an_operation_id() {
 }
 
 #[test]
+fn independent_late_moves_preserve_read_changes_across_rollback() {
+    let mut actual = tree();
+    let mut control = tree();
+    let remote = ReplicaId::new(b"remote");
+    for tree in [&mut actual, &mut control] {
+        for id in 1..=3 {
+            insert(tree, id);
+        }
+        tree.apply_remote(Operation::move_node(
+            &remote,
+            2,
+            30,
+            NodeId(2),
+            NodeId(3),
+            vec![2],
+        ))
+        .unwrap();
+        tree.drain_read_changes().unwrap();
+    }
+    let late = Operation::move_node(&remote, 1, 20, NodeId(1), NodeId(3), vec![1]);
+    let checkpoint = actual.memory_checkpoint();
+    actual.apply_remote(late.clone()).unwrap();
+    assert_eq!(
+        actual
+            .drain_read_changes()
+            .unwrap()
+            .changes
+            .iter()
+            .map(|change| change.id)
+            .collect::<Vec<_>>(),
+        vec![NodeId::ROOT, NodeId(1), NodeId(3)]
+    );
+    // Rollback must rebuild the placement bound after a provisional newer placement.
+    actual
+        .apply_remote(Operation::move_node(
+            &remote,
+            3,
+            40,
+            NodeId(2),
+            NodeId::ROOT,
+            vec![2],
+        ))
+        .unwrap();
+    actual.rollback_memory(checkpoint).unwrap();
+    assert_eq!(actual.head_op(), control.head_op());
+    assert_eq!(
+        actual.operations_from(0).unwrap(),
+        control.operations_from(0).unwrap()
+    );
+    assert_eq!(
+        actual.pending_read_changes().unwrap(),
+        control.pending_read_changes().unwrap()
+    );
+
+    actual.apply_remote(late.clone()).unwrap();
+    control.apply_remote(late).unwrap();
+    assert_eq!(
+        actual.drain_read_changes().unwrap(),
+        control.drain_read_changes().unwrap()
+    );
+    assert_eq!(actual.nodes().unwrap(), control.nodes().unwrap());
+    assert_eq!(
+        actual.subtree_version_vector(NodeId::ROOT).unwrap(),
+        control.subtree_version_vector(NodeId::ROOT).unwrap()
+    );
+}
+
+#[test]
 fn indexed_log_reads_preserve_arrival_order_and_historical_tail() {
     let mut actual = tree();
     let replica = ReplicaId::new(b"remote");
