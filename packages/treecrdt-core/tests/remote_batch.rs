@@ -3,8 +3,8 @@ use std::rc::Rc;
 
 use treecrdt_core::{
     Error, Lamport, LamportClock, LocalPlacement, MemoryNodeStore, MemoryPayloadStore,
-    MemoryStorage, NodeId, Operation, OperationId, PayloadStore, ReplicaId, Result, Storage,
-    TreeCrdt, VersionVector,
+    MemoryStorage, NodeId, NodeStore, Operation, OperationId, PayloadStore, ReplicaId, Result,
+    Storage, TreeCrdt, VersionVector,
 };
 
 #[derive(Default)]
@@ -188,6 +188,12 @@ fn assert_same_state<S: Storage, T: Storage>(
         assert_eq!(left_node.last_change, right_node.last_change);
         assert_eq!(left_node.deleted_at, right_node.deleted_at);
         let node = left_node.node;
+        assert_eq!(left.parent(node).unwrap(), right.parent(node).unwrap());
+        assert_eq!(left.children(node).unwrap(), right.children(node).unwrap());
+        assert_eq!(
+            left.subtree_version_vector(node).unwrap(),
+            right.subtree_version_vector(node).unwrap()
+        );
         assert_eq!(left.payload(node).unwrap(), right.payload(node).unwrap());
         assert_eq!(
             left.payload_last_writer(node).unwrap(),
@@ -254,6 +260,233 @@ fn late_payload_batches_match_replay_without_scanning_history() {
 }
 
 #[test]
+fn late_moves_after_structural_history_match_replay_without_scanning() {
+    let local = ReplicaId::new(b"local");
+    let remote = ReplicaId::new(b"remote");
+    let (mut tree, trace) = counting_tree(&local);
+    for (parent, node) in [
+        (NodeId::ROOT, NodeId(1)),
+        (NodeId::ROOT, NodeId(2)),
+        (NodeId(1), NodeId(3)),
+    ] {
+        tree.local_insert(parent, node, LocalPlacement::Last, Some(vec![0])).unwrap();
+    }
+    tree.local_delete(NodeId(1)).unwrap();
+    let head = Operation::clear_payload(&remote, 20, 100, NodeId(3));
+    tree.apply_remote(head.clone()).unwrap();
+    let (mut replay, _) = counting_tree(&local);
+    replay.apply_remote_batch(tree.operations_since(0).unwrap()).unwrap();
+
+    let moved = Operation::move_node(&remote, 1, 10, NodeId(3), NodeId(2), vec![1]);
+    let reordered = Operation::move_node(&remote, 2, 11, NodeId(1), NodeId::ROOT, vec![0]);
+    // Rejected in canonical order after `moved`, but still part of structural history.
+    let cycle = Operation::move_node(&remote, 3, 14, NodeId(2), NodeId(3), vec![2]);
+    let batch = vec![cycle, reordered, moved];
+    tree.apply_remote_batch(batch.clone()).unwrap();
+    for op in batch {
+        replay.apply_remote_with_delta(op).unwrap();
+    }
+    assert_eq!(trace.borrow().scans, 0);
+    assert_eq!(tree.head_op(), Some(&head));
+    assert_eq!(
+        tree.children(NodeId::ROOT).unwrap(),
+        vec![NodeId(1), NodeId(2)]
+    );
+    assert_eq!(tree.children(NodeId(2)).unwrap(), vec![NodeId(3)]);
+    assert_same_state(&tree, &replay);
+    assert_eq!(
+        tree.prepare_local_delete(NodeId(2)).unwrap().op,
+        replay.prepare_local_delete(NodeId(2)).unwrap().op
+    );
+
+    // This earlier move makes the formerly rejected cycle operation valid on replay.
+    let earlier = Operation::move_node(
+        &ReplicaId::new(b"late"),
+        1,
+        13,
+        NodeId(3),
+        NodeId::ROOT,
+        vec![3],
+    );
+    tree.apply_remote(earlier.clone()).unwrap();
+    replay.apply_remote_with_delta(earlier).unwrap();
+    assert_eq!(trace.borrow().scans, 1);
+    assert_eq!(tree.parent(NodeId(2)).unwrap(), Some(NodeId(3)));
+    assert_same_state(&tree, &replay);
+
+    // An old payload does not force replay for a new, in-order structural operation.
+    let batch = vec![
+        Operation::set_payload(&ReplicaId::new(b"payload"), 1, 5, NodeId(3), b"older"),
+        insert(&ReplicaId::new(b"insert"), 4, 101),
+    ];
+    tree.apply_remote_batch(batch.clone()).unwrap();
+    for op in batch {
+        replay.apply_remote_with_delta(op).unwrap();
+    }
+    assert_eq!(trace.borrow().scans, 1);
+    assert_same_state(&tree, &replay);
+}
+
+#[test]
+fn late_moves_compare_the_complete_placement_key() {
+    let author = ReplicaId::new(b"a");
+    for (replica, counter, lamport, scans) in [
+        (b"0".as_slice(), 1, 20, 1),
+        (b"a", 4, 20, 1),
+        (b"a", 6, 20, 0),
+        (b"z", 1, 20, 0),
+        (b"z", 1, 19, 1),
+    ] {
+        let (mut tree, trace) = counting_tree(&ReplicaId::new(b"local"));
+        tree.apply_remote_batch(vec![insert(&author, 1, 5), insert(&author, 5, 20)])
+            .unwrap();
+        tree.apply_remote(Operation::set_payload(&author, 7, 100, NodeId(5), b"newer"))
+            .unwrap();
+        let (mut replay, _) = counting_tree(&ReplicaId::new(b"local"));
+        replay.apply_remote_batch(tree.operations_since(0).unwrap()).unwrap();
+        let op = Operation::move_node(
+            &ReplicaId::new(replica),
+            counter,
+            lamport,
+            NodeId(5),
+            NodeId::ROOT,
+            vec![3],
+        );
+        tree.apply_remote(op.clone()).unwrap();
+        replay.apply_remote_with_delta(op).unwrap();
+        assert_eq!(trace.borrow().scans, scans);
+        assert_same_state(&tree, &replay);
+    }
+}
+
+#[test]
+fn placement_bound_survives_other_apply_paths_and_opaque_stores() {
+    for path in ["local", "delta", "sorted", "replay", "stored", "opaque"] {
+        for lamport in [15, 20] {
+            let local = ReplicaId::new(b"local");
+            let remote = ReplicaId::new(b"remote");
+            let (mut tree, trace) = counting_tree(&local);
+            tree.apply_remote(insert(&remote, 1, 10)).unwrap();
+            let structural = Operation::move_node(&remote, 2, 20, NodeId(1), NodeId::ROOT, vec![2]);
+            match path {
+                "local" => {
+                    tree.apply_remote(Operation::set_payload(&remote, 2, 19, NodeId(1), b"clock"))
+                        .unwrap();
+                    tree.local_move(NodeId(1), NodeId::ROOT, LocalPlacement::Last).unwrap();
+                }
+                "delta" => {
+                    tree.apply_remote_with_delta(structural).unwrap();
+                }
+                "sorted" => {
+                    tree.apply_sorted_remote_with_materialization(
+                        structural,
+                        &mut treecrdt_core::NoopParentOpIndex,
+                        2,
+                    )
+                    .unwrap();
+                }
+                "replay" => {
+                    tree.apply_remote(structural).unwrap();
+                    tree.replay_from_storage().unwrap();
+                }
+                "stored" => {
+                    let mut inner = MemoryStorage::default();
+                    inner.apply(structural).unwrap();
+                    tree = TreeCrdt::new(
+                        local.clone(),
+                        CountingStorage {
+                            inner,
+                            trace: trace.clone(),
+                        },
+                        LamportClock::default(),
+                    )
+                    .unwrap();
+                }
+                "opaque" => {
+                    let mut nodes = MemoryNodeStore::default();
+                    nodes.attach(NodeId(1), NodeId::ROOT, vec![1]).unwrap();
+                    // A supplied materialized prefix need not have a corresponding operation log.
+                    tree = TreeCrdt::with_stores(
+                        local.clone(),
+                        CountingStorage {
+                            inner: MemoryStorage::default(),
+                            trace: trace.clone(),
+                        },
+                        LamportClock::default(),
+                        nodes,
+                        MemoryPayloadStore::default(),
+                    )
+                    .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            tree.apply_remote(Operation::set_payload(&remote, 3, 100, NodeId(1), b"head"))
+                .unwrap();
+            trace.borrow_mut().scans = 0;
+            tree.apply_remote(Operation::move_node(
+                &remote,
+                4,
+                lamport,
+                NodeId(1),
+                NodeId::ROOT,
+                vec![3],
+            ))
+            .unwrap();
+            let scans = usize::from(lamport < 20 || matches!(path, "stored" | "opaque"));
+            assert_eq!(trace.borrow().scans, scans, "{path} at {lamport}");
+            if path == "opaque" {
+                // Replay reconstructs a known prefix and enables the shortcut again.
+                trace.borrow_mut().scans = 0;
+                tree.apply_remote(Operation::move_node(
+                    &remote,
+                    5,
+                    lamport + 1,
+                    NodeId(1),
+                    NodeId::ROOT,
+                    vec![4],
+                ))
+                .unwrap();
+                assert_eq!(trace.borrow().scans, 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn late_deletes_and_placements_match_replay_without_scanning() {
+    let local = ReplicaId::new(b"local");
+    let remote = ReplicaId::new(b"remote");
+    let (mut tree, trace) = counting_tree(&local);
+    tree.local_insert(NodeId::ROOT, NodeId(1), LocalPlacement::Last, None).unwrap();
+    tree.local_insert(NodeId(1), NodeId(2), LocalPlacement::Last, None).unwrap();
+    let delete = tree.prepare_local_delete(NodeId(1)).unwrap().op;
+    tree.local_move(NodeId(2), NodeId::ROOT, LocalPlacement::Last).unwrap();
+    tree.apply_remote(Operation::delete(&remote, 1, 80, NodeId(99), None)).unwrap();
+    tree.apply_remote(Operation::clear_payload(&remote, 2, 100, NodeId(99)))
+        .unwrap();
+    let (mut replay, _) = counting_tree(&local);
+    replay.apply_remote_batch(tree.operations_since(0).unwrap()).unwrap();
+
+    // These placements cross the newer deletion; the older delete crosses a move.
+    let batch = vec![
+        Operation::move_node(&remote, 4, 70, NodeId(2), NodeId(99), vec![1]),
+        Operation::insert_with_payload(&remote, 3, 60, NodeId(1), NodeId(99), vec![1], b"older"),
+        Operation::tombstone(&remote, 5, 75, NodeId(1)),
+        delete,
+    ];
+    tree.apply_remote_batch(batch.clone()).unwrap();
+    for op in batch {
+        replay.apply_remote_with_delta(op).unwrap();
+    }
+    assert_eq!(trace.borrow().scans, 0);
+    assert_same_state(&tree, &replay);
+    assert_eq!(
+        tree.prepare_local_delete(NodeId(1)).unwrap().op,
+        replay.prepare_local_delete(NodeId(1)).unwrap().op
+    );
+}
+
+#[test]
 fn mixed_history_matches_sequential_ingestion_and_cold_batch() {
     let replica = ReplicaId::new(b"author");
     let (mut author, _) = counting_tree(&replica);
@@ -280,7 +513,7 @@ fn mixed_history_matches_sequential_ingestion_and_cold_batch() {
     let (mut batch, trace) = counting_tree(&replica);
     let (mut sequential, _) = counting_tree(&replica);
     let mut arrival = Vec::new();
-    // Seed the late payload clear so older structural operations require a replay.
+    // Seed the late payload clear before the older moves and deletion metadata arrive.
     for index in [0, 1, 2, 7] {
         let op = history[index].clone();
         batch.apply_remote(op.clone()).unwrap();
@@ -296,7 +529,7 @@ fn mixed_history_matches_sequential_ingestion_and_cold_batch() {
     let (mut cold, cold_trace) = counting_tree(&replica);
     cold.apply_remote_batch(arrival).unwrap();
 
-    assert_eq!(trace.borrow().scans, 1);
+    assert_eq!(trace.borrow().scans, 0);
     assert_eq!(cold_trace.borrow().scans, 0);
     assert_same_state(&batch, &sequential);
     assert_same_state(&batch, &cold);

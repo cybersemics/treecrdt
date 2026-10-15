@@ -22,6 +22,41 @@ struct NodeSnapshot {
     order_key: Option<Vec<u8>>,
 }
 
+// Upper bound on applied Insert/Move keys. Without an id, all keys at this Lamport
+// are covered, so an unknown materialized prefix never enables the shortcut.
+struct PlacementHead {
+    lamport: Lamport,
+    id: Option<OperationId>,
+}
+
+impl PlacementHead {
+    fn precedes(&self, op: &Operation) -> bool {
+        match &self.id {
+            Some(id) => cmp_op_key(
+                self.lamport,
+                id.replica.as_bytes(),
+                id.counter,
+                op.meta.lamport,
+                op.meta.id.replica.as_bytes(),
+                op.meta.id.counter,
+            )
+            .is_lt(),
+            None => self.lamport < op.meta.lamport,
+        }
+    }
+
+    fn observe(&mut self, op: &Operation) {
+        if matches!(
+            op.kind,
+            OperationKind::Insert { .. } | OperationKind::Move { .. }
+        ) && self.precedes(op)
+        {
+            self.lamport = op.meta.lamport;
+            self.id = Some(op.meta.id.clone());
+        }
+    }
+}
+
 fn attach_source_if_missing(
     change: &mut MaterializationChange,
     next_source: Option<MaterializationSource>,
@@ -55,6 +90,7 @@ where
     version_vector: VersionVector,
     payloads: P,
     head: Option<Operation>,
+    placement_head: PlacementHead,
     op_count: u64,
 }
 
@@ -64,13 +100,15 @@ where
     C: Clock,
 {
     pub fn new(replica_id: ReplicaId, storage: S, clock: C) -> Result<Self> {
-        Self::with_stores(
+        let mut tree = Self::with_stores(
             replica_id,
             storage,
             clock,
             MemoryNodeStore::default(),
             MemoryPayloadStore::default(),
-        )
+        )?;
+        tree.placement_head.lamport = tree.clock.now();
+        Ok(tree)
     }
 }
 
@@ -100,6 +138,11 @@ where
             version_vector: VersionVector::new(),
             payloads,
             head: None,
+            // Supplied stores may contain an unknown prefix, even with NoopStorage.
+            placement_head: PlacementHead {
+                lamport: Lamport::MAX,
+                id: None,
+            },
             op_count: 0,
         })
     }
@@ -317,8 +360,9 @@ where
     /// Apply a received batch, replaying retained history at most once.
     ///
     /// Persist in arrival order so duplicates retain the same first envelope as `apply_remote`.
-    /// Apply newly accepted operations in canonical order, without a history scan when they are
-    /// all newer than the current head or only update payloads.
+    /// Apply newly accepted operations in canonical order, without a history scan when all
+    /// Insert/Move operations are ordered after all applied placements. Payload and deletion
+    /// metadata commute independently of placement order.
     ///
     /// Like `apply_remote`, this is not an atomic transaction. On error, callers must restore
     /// the complete state or rebuild the replica from storage before continuing.
@@ -335,15 +379,24 @@ where
             }
         }
         accepted.sort_by(cmp_ops);
-        // Payload-only batches commute through their per-node LWW register; they do not
-        // require replaying unrelated structural history.
-        if accepted.first().is_some_and(|op| !self.is_in_order(op))
-            && accepted.iter().any(|op| !matches!(op.kind, OperationKind::Payload { .. }))
-        {
+        // Payloads use LWW registers and deletes merge fixed version vectors. Only
+        // placements depend on earlier topology, cycle decisions, and parent metadata.
+        if accepted.iter().any(|op| {
+            !self.is_in_order(op)
+                && match op.kind {
+                    OperationKind::Insert { .. } | OperationKind::Move { .. } => {
+                        !self.placement_head.precedes(op)
+                    }
+                    OperationKind::Payload { .. }
+                    | OperationKind::Delete { .. }
+                    | OperationKind::Tombstone { .. } => false,
+                }
+        }) {
             return self.replay_from_storage();
         }
         for op in accepted {
             Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
+            self.placement_head.observe(&op);
             self.op_count += 1;
             if self.is_in_order(&op) {
                 self.head = Some(op);
@@ -374,6 +427,7 @@ where
 
         if self.is_in_order(&op) {
             let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
+            self.placement_head.observe(&op);
             self.op_count += 1;
             self.head = Some(op.clone());
 
@@ -437,6 +491,7 @@ where
         self.observe_remote(&op);
 
         let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
+        self.placement_head.observe(&op);
         self.op_count = seq;
         self.head = Some(op.clone());
 
@@ -623,6 +678,10 @@ where
         self.nodes.reset()?;
         self.payloads.reset()?;
         self.head = None;
+        self.placement_head = PlacementHead {
+            lamport: 0,
+            id: None,
+        };
         self.op_count = 0;
 
         let storage = &self.storage;
@@ -630,6 +689,7 @@ where
         let payloads = &mut self.payloads;
         let clock = &mut self.clock;
         let version_vector = &mut self.version_vector;
+        let placement_head = &mut self.placement_head;
 
         let mut seq: u64 = 0;
         let mut head: Option<Operation> = None;
@@ -637,6 +697,7 @@ where
             clock.observe(op.meta.lamport);
             version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
             let _ = Self::apply_forward(nodes, payloads, &op)?;
+            placement_head.observe(&op);
             seq += 1;
             head = Some(op);
             Ok(())
@@ -764,6 +825,7 @@ where
             return Ok(op);
         }
         let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
+        self.placement_head.observe(&op);
         let mut starts = affected_parents(snapshot.parent, &op.kind);
         starts.push(op.kind.node());
         self.refresh_tombstones_upward(starts)?;
