@@ -91,6 +91,8 @@ where
     payloads: P,
     head: Option<Operation>,
     placement_head: PlacementHead,
+    // Sorted adapter-owned applies may bypass storage while advancing placement_head.
+    placement_history_complete: bool,
     op_count: u64,
 }
 
@@ -112,6 +114,7 @@ where
             MemoryPayloadStore::default(),
         )?;
         tree.placement_head.lamport = tree.clock.now();
+        tree.placement_history_complete = true;
         Ok(tree)
     }
 }
@@ -147,6 +150,7 @@ where
                 lamport: Lamport::MAX,
                 id: None,
             },
+            placement_history_complete: false,
             op_count: 0,
         })
     }
@@ -395,7 +399,8 @@ where
                     | OperationKind::Delete { .. }
                     | OperationKind::Tombstone { .. } => false,
                 }
-        }) {
+        }) && !self.independent_late_moves(&accepted)?
+        {
             return self.replay_from_storage();
         }
         for op in accepted {
@@ -407,6 +412,79 @@ where
             }
         }
         Ok(())
+    }
+
+    // Prove independence only when every overlapping placement uses an unchanged
+    // destination ancestor chain. Otherwise retain canonical full replay.
+    fn independent_late_moves(&self, accepted: &[Operation]) -> Result<bool> {
+        if !self.placement_history_complete
+            || accepted.iter().any(|op| matches!(op.kind, OperationKind::Insert { .. }))
+        {
+            return Ok(false);
+        }
+        let Some(head_id) = &self.placement_head.id else {
+            return Ok(false);
+        };
+        let moves: Vec<_> = accepted
+            .iter()
+            .filter(|op| matches!(op.kind, OperationKind::Move { .. }))
+            .collect();
+        let Some(first) = moves.first() else {
+            return Ok(false);
+        };
+        // The storage visit is exclusive; include operations with equal Lamport keys.
+        let Some(since) = first.meta.lamport.checked_sub(1) else {
+            return Ok(false);
+        };
+        let new_ids: HashSet<_> = accepted.iter().map(|op| &op.meta.id).collect();
+        let mut suffix = Vec::new();
+        let mut head_seen = false;
+        let supported = self.storage.try_visit_since(since, &mut |op| {
+            let placement = match op.kind {
+                OperationKind::Insert { node, parent, .. } => (node, parent),
+                OperationKind::Move {
+                    node, new_parent, ..
+                } => (node, new_parent),
+                _ => return Ok(()),
+            };
+            if cmp_ops(op, first).is_lt() || new_ids.contains(&op.meta.id) {
+                return Ok(());
+            }
+            head_seen |= &op.meta.id == head_id;
+            suffix.push(placement);
+            Ok(())
+        })?;
+        if !supported || !head_seen {
+            return Ok(false);
+        }
+        let mut targets: HashSet<_> = moves.iter().map(|op| op.kind.node()).collect();
+        if suffix.iter().any(|(node, _)| targets.contains(node)) {
+            return Ok(false);
+        }
+        targets.extend(suffix.iter().map(|(node, _)| node));
+        if targets.contains(&NodeId::ROOT) || targets.contains(&NodeId::TRASH) {
+            return Ok(false);
+        }
+        let destinations = moves
+            .into_iter()
+            .map(|op| match op.kind {
+                OperationKind::Move { new_parent, .. } => new_parent,
+                _ => unreachable!(),
+            })
+            .chain(suffix.iter().map(|(_, parent)| *parent));
+        for parent in destinations {
+            let mut ancestor = Some(parent);
+            while let Some(node) = ancestor {
+                if node == NodeId::ROOT || node == NodeId::TRASH {
+                    break;
+                }
+                if targets.contains(&node) {
+                    return Ok(false);
+                }
+                ancestor = self.nodes.parent(node)?;
+            }
+        }
+        Ok(true)
     }
 
     fn observe_remote(&mut self, op: &Operation) {
@@ -493,6 +571,12 @@ where
         seq: u64,
     ) -> Result<ApplyDelta> {
         self.observe_remote(&op);
+        if matches!(
+            op.kind,
+            OperationKind::Insert { .. } | OperationKind::Move { .. }
+        ) {
+            self.placement_history_complete = false;
+        }
 
         let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
         self.placement_head.observe(&op);
@@ -708,6 +792,7 @@ where
         })?;
 
         self.head = head;
+        self.placement_history_complete = true;
         self.op_count = seq;
         self.counter = self.counter.max(self.version_vector.get(&self.replica_id));
         Ok(())
