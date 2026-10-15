@@ -1,16 +1,19 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use proptest::prelude::*;
 use treecrdt_core::{
     Error, Lamport, LamportClock, LocalPlacement, MemoryNodeStore, MemoryPayloadStore,
-    MemoryStorage, NodeId, NodeStore, Operation, OperationId, PayloadStore, ReplicaId, Result,
-    Storage, TreeCrdt, VersionVector,
+    MemoryStorage, NodeId, NodeStore, Operation, OperationId, OperationKind, PayloadStore,
+    ReplicaId, Result, Storage, TreeCrdt, VersionVector,
 };
 
 #[derive(Default)]
 struct StorageTrace {
     attempts: Vec<Operation>,
     scans: usize,
+    owned_loads: usize,
+    borrowed_visits: usize,
     fail_on_attempt: Option<usize>,
 }
 
@@ -30,7 +33,17 @@ impl Storage for CountingStorage {
     }
 
     fn load_since(&self, lamport: Lamport) -> Result<Vec<Operation>> {
+        self.trace.borrow_mut().owned_loads += 1;
         self.inner.load_since(lamport)
+    }
+
+    fn try_visit_since(
+        &self,
+        lamport: Lamport,
+        visit: &mut dyn FnMut(&Operation) -> Result<()>,
+    ) -> Result<bool> {
+        self.trace.borrow_mut().borrowed_visits += 1;
+        self.inner.try_visit_since(lamport, visit)
     }
 
     fn latest_lamport(&self) -> Lamport {
@@ -75,6 +88,65 @@ fn insert(replica: &ReplicaId, counter: u64, lamport: Lamport) -> Operation {
         NodeId(counter as u128),
         vec![counter as u8],
     )
+}
+
+#[test]
+fn memory_storage_visits_borrowed_suffix_and_propagates_callback_errors() {
+    let replica = ReplicaId::new(b"remote");
+    let mut storage = MemoryStorage::default();
+    let mut payload_addresses = Vec::new();
+    // Arrival order is deliberately different from canonical order.
+    for lamport in [30, 10, 20, 21] {
+        let payload = vec![lamport as u8; 8];
+        payload_addresses.push((lamport, payload.as_ptr()));
+        storage
+            .apply(Operation::set_payload(
+                &replica,
+                lamport,
+                lamport,
+                NodeId(1),
+                payload,
+            ))
+            .unwrap();
+    }
+    for (since, expected) in [(0, vec![10, 20, 21, 30]), (20, vec![21, 30]), (30, vec![])] {
+        let mut visited = Vec::new();
+        assert!(storage
+            .try_visit_since(since, &mut |op| {
+                let OperationKind::Payload {
+                    payload: Some(payload),
+                    ..
+                } = &op.kind
+                else {
+                    return Err(Error::Storage("expected stored payload".into()));
+                };
+                let (_, address) = payload_addresses
+                    .iter()
+                    .find(|(lamport, _)| *lamport == op.meta.lamport)
+                    .unwrap();
+                assert_eq!(
+                    payload.as_ptr(),
+                    *address,
+                    "visitor must borrow stored bytes"
+                );
+                assert_eq!(payload.as_slice(), &[op.meta.lamport as u8; 8]);
+                visited.push(op.meta.lamport);
+                Ok(())
+            })
+            .unwrap());
+        visited.sort_unstable();
+        assert_eq!(visited, expected);
+    }
+
+    let mut calls = 0;
+    let error = storage
+        .try_visit_since(20, &mut |_| {
+            calls += 1;
+            Err(Error::Storage("injected visitor failure".into()))
+        })
+        .unwrap_err();
+    assert!(matches!(error, Error::Storage(message) if message == "injected visitor failure"));
+    assert_eq!(calls, 1);
 }
 
 #[test]
@@ -244,8 +316,8 @@ fn late_payload_batches_match_replay_without_scanning_history() {
             tree.prepare_local_delete(NodeId(1)).unwrap().op,
             replay.prepare_local_delete(NodeId(1)).unwrap().op
         );
-        // Retaining the newer head must still trigger replay for a later-arriving old move.
-        let moved = Operation::move_node(&remote, 6, 50, NodeId(2), NodeId::ROOT, vec![2]);
+        // An older move of the node inserted by the newer placement still requires replay.
+        let moved = Operation::move_node(&remote, 6, 50, NodeId(100), NodeId::ROOT, vec![2]);
         tree.apply_remote(moved.clone()).unwrap();
         replay.apply_remote_with_delta(moved).unwrap();
         assert_eq!(trace.borrow().scans, 1);
@@ -351,6 +423,281 @@ fn late_moves_compare_the_complete_placement_key() {
         assert_eq!(trace.borrow().scans, scans);
         assert_same_state(&tree, &replay);
     }
+}
+
+#[test]
+fn independent_late_moves_avoid_replay() {
+    for shared_parent in [false, true] {
+        for suffix_insert in [false, true] {
+            let local = ReplicaId::new(b"local");
+            let remote = ReplicaId::new(b"remote");
+            let (mut tree, trace) = counting_tree(&local);
+            for (parent, node) in [(0, 1), (0, 2), (0, 3), (0, 4), (1, 10), (2, 11)] {
+                tree.local_insert(
+                    NodeId(parent),
+                    NodeId(node),
+                    LocalPlacement::Last,
+                    Some(vec![1]),
+                )
+                .unwrap();
+            }
+            let parent = NodeId(if shared_parent { 3 } else { 4 });
+            let newer = if suffix_insert {
+                Operation::insert_with_payload(&remote, 2, 30, parent, NodeId(11), vec![2], b"new")
+            } else {
+                Operation::move_node(&remote, 2, 30, NodeId(11), parent, vec![2])
+            };
+            tree.apply_remote(newer.clone()).unwrap();
+            let (mut replay, _) = counting_tree(&local);
+            replay.apply_remote_batch(tree.operations_since(0).unwrap()).unwrap();
+            trace.borrow_mut().owned_loads = 0;
+
+            // Both incoming moves are persisted before the independence check. Their
+            // IDs must be excluded from the stored suffix, including the repeated target.
+            let batch = vec![
+                Operation::move_node(&remote, 3, 21, NodeId(10), NodeId(3), vec![1]),
+                Operation::move_node(&remote, 1, 20, NodeId(10), NodeId(3), vec![3]),
+            ];
+            tree.apply_remote_batch(batch.clone()).unwrap();
+            for op in batch {
+                replay.apply_remote_with_delta(op).unwrap();
+            }
+
+            assert_eq!(trace.borrow().scans, 0);
+            assert_eq!(trace.borrow().owned_loads, 0);
+            assert_eq!(trace.borrow().borrowed_visits, 1);
+            assert_eq!(tree.head_op(), Some(&newer));
+            assert_eq!(tree.parent(NodeId(10)).unwrap(), Some(NodeId(3)));
+            if shared_parent {
+                assert_eq!(
+                    tree.children(NodeId(3)).unwrap(),
+                    vec![NodeId(10), NodeId(11)]
+                );
+            }
+            assert_same_state(&tree, &replay);
+        }
+    }
+}
+
+#[test]
+fn unsupported_borrowed_visitation_falls_back_to_replay() {
+    struct UnsupportedStorage(CountingStorage);
+
+    impl Storage for UnsupportedStorage {
+        fn apply(&mut self, op: Operation) -> Result<bool> {
+            self.0.apply(op)
+        }
+
+        fn load_since(&self, lamport: Lamport) -> Result<Vec<Operation>> {
+            self.0.load_since(lamport)
+        }
+
+        fn latest_lamport(&self) -> Lamport {
+            self.0.latest_lamport()
+        }
+
+        fn latest_counter(&self, replica: &ReplicaId) -> Result<u64> {
+            self.0.latest_counter(replica)
+        }
+
+        fn scan_since(
+            &self,
+            lamport: Lamport,
+            visit: &mut dyn FnMut(Operation) -> Result<()>,
+        ) -> Result<()> {
+            self.0.scan_since(lamport, visit)
+        }
+    }
+
+    let local = ReplicaId::new(b"local");
+    let remote = ReplicaId::new(b"remote");
+    let trace = Rc::new(RefCell::new(StorageTrace::default()));
+    let mut storage = UnsupportedStorage(CountingStorage {
+        inner: MemoryStorage::default(),
+        trace: trace.clone(),
+    });
+    let history = vec![
+        insert(&local, 1, 1),
+        insert(&local, 2, 2),
+        Operation::move_node(&remote, 2, 30, NodeId(2), NodeId::ROOT, vec![2]),
+    ];
+    for op in &history {
+        storage.apply(op.clone()).unwrap();
+    }
+    assert!(!storage
+        .try_visit_since(0, &mut |_| {
+            Err(Error::Storage(
+                "unsupported visitor must not call back".into(),
+            ))
+        })
+        .unwrap());
+    let mut tree = TreeCrdt::new(local.clone(), storage, LamportClock::default()).unwrap();
+    tree.replay_from_storage().unwrap();
+    trace.borrow_mut().scans = 0;
+    let (mut replay, _) = counting_tree(&local);
+    replay.apply_remote_batch(history).unwrap();
+
+    let late = Operation::move_node(&remote, 1, 20, NodeId(1), NodeId::ROOT, vec![3]);
+    tree.apply_remote(late.clone()).unwrap();
+    replay.apply_remote_with_delta(late).unwrap();
+    assert_eq!(trace.borrow().scans, 1);
+    assert_eq!(trace.borrow().owned_loads, 0);
+    assert_eq!(trace.borrow().borrowed_visits, 0);
+    assert_same_state(&tree, &replay);
+}
+
+#[test]
+fn independent_move_suffix_filters_the_complete_equal_lamport_key() {
+    for same_replica in [false, true] {
+        let a = ReplicaId::new(b"a");
+        let m = if same_replica {
+            a.clone()
+        } else {
+            ReplicaId::new(b"m")
+        };
+        let z = if same_replica {
+            a.clone()
+        } else {
+            ReplicaId::new(b"z")
+        };
+        let local = ReplicaId::new(b"local");
+        let (mut tree, trace) = counting_tree(&local);
+        tree.apply_remote_batch(vec![insert(&local, 1, 1), insert(&local, 2, 2)])
+            .unwrap();
+        tree.apply_remote_batch(vec![
+            Operation::move_node(&a, 10, 20, NodeId(1), NodeId::ROOT, vec![1]),
+            Operation::move_node(&z, 30, 20, NodeId(2), NodeId::ROOT, vec![2]),
+        ])
+        .unwrap();
+        let (mut replay, _) = counting_tree(&local);
+        replay.apply_remote_batch(tree.operations_since(0).unwrap()).unwrap();
+        trace.borrow_mut().owned_loads = 0;
+
+        // The earlier equal-Lamport placement touches this target, but is not
+        // part of the overlapping suffix. The later placement must be included.
+        let late = Operation::move_node(&m, 20, 20, NodeId(1), NodeId::ROOT, vec![3]);
+        tree.apply_remote(late.clone()).unwrap();
+        replay.apply_remote_with_delta(late).unwrap();
+        assert_eq!(trace.borrow().scans, 0);
+        assert_eq!(trace.borrow().owned_loads, 0);
+        assert_eq!(trace.borrow().borrowed_visits, 1);
+        assert_same_state(&tree, &replay);
+    }
+}
+
+#[test]
+fn dependent_late_moves_replay_cycle_decisions_and_defensive_delete_metadata() {
+    for case in ["ancestor", "rejected_cycle", "defensive_delete"] {
+        let local = ReplicaId::new(b"local");
+        let early = ReplicaId::new(b"early");
+        let later = ReplicaId::new(b"later");
+        let (mut tree, trace) = counting_tree(&local);
+        let initial = match case {
+            "ancestor" => vec![(0, 1), (1, 3), (0, 2), (2, 4)],
+            "rejected_cycle" => vec![(0, 1), (1, 2)],
+            _ => vec![(0, 1), (0, 2)],
+        };
+        for (parent, node) in initial {
+            tree.local_insert(NodeId(parent), NodeId(node), LocalPlacement::Last, None)
+                .unwrap();
+        }
+        let (destination, newer_parent) = match case {
+            "ancestor" => (NodeId(4), NodeId(3)),
+            "rejected_cycle" => (NodeId(2), NodeId::ROOT),
+            _ => (NodeId(2), NodeId(1)),
+        };
+        tree.apply_remote(Operation::move_node(
+            &later,
+            1,
+            30,
+            NodeId(2),
+            newer_parent,
+            vec![1],
+        ))
+        .unwrap();
+        if case == "defensive_delete" {
+            tree.apply_remote(Operation::move_node(
+                &later,
+                2,
+                40,
+                NodeId(2),
+                NodeId::ROOT,
+                vec![2],
+            ))
+            .unwrap();
+            let mut known_state = VersionVector::new();
+            known_state.observe(&local, 1);
+            known_state.observe(&local, 2);
+            known_state.observe(&early, 1);
+            tree.apply_remote(Operation::delete(
+                &ReplicaId::new(b"deleter"),
+                1,
+                50,
+                NodeId(1),
+                Some(known_state),
+            ))
+            .unwrap();
+        }
+        let (mut replay, _) = counting_tree(&local);
+        replay.apply_remote_batch(tree.operations_since(0).unwrap()).unwrap();
+        trace.borrow_mut().owned_loads = 0;
+        let late = Operation::move_node(&early, 1, 20, NodeId(1), destination, vec![3]);
+        tree.apply_remote(late.clone()).unwrap();
+        replay.apply_remote_with_delta(late).unwrap();
+
+        assert_eq!(trace.borrow().scans, 1, "{case}");
+        assert_eq!(trace.borrow().owned_loads, 0, "{case}");
+        assert_eq!(trace.borrow().borrowed_visits, 1, "{case}");
+        assert_same_state(&tree, &replay);
+        let expected = if case == "rejected_cycle" {
+            NodeId::ROOT
+        } else {
+            destination
+        };
+        let raw_parent = tree
+            .export_nodes()
+            .unwrap()
+            .into_iter()
+            .find(|node| node.node == NodeId(1))
+            .unwrap()
+            .parent;
+        assert_eq!(raw_parent, Some(expected), "{case}");
+        if case == "defensive_delete" {
+            // Final topology alone would agree without replay, but the rejected
+            // newer move must not leave parent last_change metadata behind.
+            assert!(tree.is_tombstoned(NodeId(1)).unwrap());
+        }
+    }
+}
+
+#[test]
+fn hidden_sorted_placement_still_disables_independence_after_a_stored_head() {
+    let local = ReplicaId::new(b"local");
+    let remote = ReplicaId::new(b"remote");
+    let (mut tree, trace) = counting_tree(&local);
+    tree.apply_remote_batch((1..=3).map(|id| insert(&local, id, id))).unwrap();
+    let hidden = Operation::move_node(&remote, 2, 20, NodeId(1), NodeId(2), vec![2]);
+    tree.apply_sorted_remote_with_materialization(
+        hidden.clone(),
+        &mut treecrdt_core::NoopParentOpIndex,
+        4,
+    )
+    .unwrap();
+    let stored_head = Operation::move_node(&remote, 3, 30, NodeId(3), NodeId::ROOT, vec![3]);
+    tree.apply_remote(stored_head.clone()).unwrap();
+    let history = tree.operations_since(0).unwrap();
+    assert!(history.contains(&stored_head));
+    assert!(!history.contains(&hidden));
+    let (mut replay, _) = counting_tree(&local);
+    replay.apply_remote_batch(history).unwrap();
+
+    // A suffix containing the current placement head can still omit an earlier
+    // sorted placement. Reconstruct from the persisted log, including metadata.
+    let late = Operation::move_node(&remote, 1, 10, NodeId(1), NodeId::ROOT, vec![4]);
+    tree.apply_remote(late.clone()).unwrap();
+    replay.apply_remote_with_delta(late).unwrap();
+    assert_eq!(trace.borrow().scans, 1);
+    assert_same_state(&tree, &replay);
 }
 
 #[test]
@@ -551,6 +898,70 @@ fn mixed_history_matches_sequential_ingestion_and_cold_batch() {
     let next_cold = cold.prepare_local_delete(sibling).unwrap().op;
     assert_eq!(next_batch, next_sequential);
     assert_eq!(next_batch, next_cold);
+}
+
+proptest! {
+    #[test]
+    fn mixed_operation_batches_match_canonical_replay(
+        generated in prop::collection::vec(
+            (0u8..5, 7u64..=12, 0usize..3, 1u128..=6, 0u128..=6,
+             any::<u8>(), any::<u16>(), any::<bool>()),
+            5..=40,
+        ),
+    ) {
+        let local = ReplicaId::new(b"local");
+        let replicas = [ReplicaId::new(b"a"), ReplicaId::new(b"b"), ReplicaId::new(b"c")];
+        let (mut tree, _) = counting_tree(&local);
+        let mut history: Vec<_> = (1..=6).map(|id| insert(&local, id, id)).collect();
+        tree.apply_remote_batch(history.clone()).unwrap();
+        let mut deliveries: Vec<_> = generated.into_iter().enumerate().map(
+            |(index, (kind, lamport, author, node, parent, value, priority, batch_end))| {
+                // IDs stay unique across arbitrary delivery order and equal Lamport keys.
+                let counter = index as u64 + 1;
+                let replica = &replicas[author];
+                let op = match kind {
+                    0 => Operation::insert_with_payload(
+                        replica, counter, lamport, NodeId(parent), NodeId(node), vec![value], vec![value],
+                    ),
+                    1 => Operation::move_node(
+                        replica, counter, lamport, NodeId(node), NodeId(parent), vec![value],
+                    ),
+                    2 => Operation::set_payload(replica, counter, lamport, NodeId(node), vec![value]),
+                    3 => {
+                        // This fixed envelope is independent of each receiver's delivery state.
+                        let mut known_state = VersionVector::new();
+                        for id in 1..=6 {
+                            known_state.observe(&local, id);
+                        }
+                        known_state.observe(&replicas[(author + 1) % replicas.len()], counter / 2);
+                        Operation::delete(replica, counter, lamport, NodeId(node), Some(known_state))
+                    }
+                    _ => Operation::clear_payload(replica, counter, lamport, NodeId(node)),
+                };
+                (priority, batch_end, op)
+            },
+        ).collect();
+        deliveries.sort_by_key(|(priority, _, _)| *priority);
+        let mut batch = Vec::new();
+        let delivery_count = deliveries.len();
+        for (index, (_, batch_end, op)) in deliveries.into_iter().enumerate() {
+            batch.push(op);
+            if !batch_end && index + 1 < delivery_count {
+                continue;
+            }
+            tree.apply_remote_batch(batch.clone()).unwrap();
+            history.append(&mut batch);
+
+            // Rebuild a fresh oracle after every batch; do not use the optimized ingestion path.
+            let mut storage = MemoryStorage::default();
+            for op in &history {
+                storage.apply(op.clone()).unwrap();
+            }
+            let mut replay = TreeCrdt::new(local.clone(), storage, LamportClock::default()).unwrap();
+            replay.replay_from_storage().unwrap();
+            assert_same_state(&tree, &replay);
+        }
+    }
 }
 
 #[test]

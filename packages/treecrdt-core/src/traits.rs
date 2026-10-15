@@ -25,6 +25,16 @@ pub trait Storage {
     /// already present (idempotent).
     fn apply(&mut self, op: Operation) -> Result<bool>;
     fn load_since(&self, lamport: Lamport) -> Result<Vec<Operation>>;
+    /// Optionally visit operations with Lamport strictly greater than `lamport`, in any order,
+    /// without first copying their payloads. References are valid only during each callback.
+    /// Return `true` after a complete visit, or `false` without callbacks when unsupported.
+    fn try_visit_since(
+        &self,
+        _lamport: Lamport,
+        _visit: &mut dyn FnMut(&Operation) -> Result<()>,
+    ) -> Result<bool> {
+        Ok(false)
+    }
     fn latest_lamport(&self) -> Lamport;
     /// Return the maximum counter observed for `replica`, or 0 if absent.
     ///
@@ -258,6 +268,17 @@ impl Storage for MemoryStorage {
 
     fn load_since(&self, lamport: Lamport) -> Result<Vec<Operation>> {
         Ok(self.ops.iter().filter(|&op| op.meta.lamport > lamport).cloned().collect())
+    }
+
+    fn try_visit_since(
+        &self,
+        lamport: Lamport,
+        visit: &mut dyn FnMut(&Operation) -> Result<()>,
+    ) -> Result<bool> {
+        for op in self.ops.iter().filter(|op| op.meta.lamport > lamport) {
+            visit(op)?;
+        }
+        Ok(true)
     }
 
     fn latest_lamport(&self) -> Lamport {
