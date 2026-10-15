@@ -142,6 +142,10 @@ where
     S: Storage,
     C: Clock,
 {
+    /// Create a replica with empty in-memory node and payload stores.
+    ///
+    /// Restores the counter and clock, but does not materialize stored operations. If storage
+    /// is nonempty, call [`Self::replay_from_storage`] before reading or modifying the tree.
     pub fn new(replica_id: ReplicaId, storage: S, clock: C) -> Result<Self> {
         let mut tree = Self::with_stores(
             replica_id,
