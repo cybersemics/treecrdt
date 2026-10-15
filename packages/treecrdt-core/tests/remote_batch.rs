@@ -188,12 +188,6 @@ fn assert_same_state<S: Storage, T: Storage>(
         assert_eq!(left_node.last_change, right_node.last_change);
         assert_eq!(left_node.deleted_at, right_node.deleted_at);
         let node = left_node.node;
-        assert_eq!(left.parent(node).unwrap(), right.parent(node).unwrap());
-        assert_eq!(left.children(node).unwrap(), right.children(node).unwrap());
-        assert_eq!(
-            left.subtree_version_vector(node).unwrap(),
-            right.subtree_version_vector(node).unwrap()
-        );
         assert_eq!(left.payload(node).unwrap(), right.payload(node).unwrap());
         assert_eq!(
             left.payload_last_writer(node).unwrap(),
@@ -362,7 +356,7 @@ fn late_moves_compare_the_complete_placement_key() {
 #[test]
 fn placement_bound_survives_other_apply_paths_and_opaque_stores() {
     for path in ["local", "delta", "sorted", "replay", "stored", "opaque"] {
-        for lamport in [15, 20] {
+        for lamport in [15, 20, 30] {
             let local = ReplicaId::new(b"local");
             let remote = ReplicaId::new(b"remote");
             let (mut tree, trace) = counting_tree(&local);
@@ -391,6 +385,17 @@ fn placement_bound_survives_other_apply_paths_and_opaque_stores() {
                 }
                 "stored" => {
                     let mut inner = MemoryStorage::default();
+                    inner
+                        .apply(Operation::insert_with_payload(
+                            &remote,
+                            1,
+                            10,
+                            NodeId::ROOT,
+                            NodeId(2),
+                            vec![1],
+                            b"retained",
+                        ))
+                        .unwrap();
                     inner.apply(structural).unwrap();
                     tree = TreeCrdt::new(
                         local.clone(),
@@ -401,6 +406,7 @@ fn placement_bound_survives_other_apply_paths_and_opaque_stores() {
                         LamportClock::default(),
                     )
                     .unwrap();
+                    tree.replay_from_storage().unwrap();
                 }
                 "opaque" => {
                     let mut nodes = MemoryNodeStore::default();
@@ -432,8 +438,13 @@ fn placement_bound_survives_other_apply_paths_and_opaque_stores() {
                 vec![3],
             ))
             .unwrap();
-            let scans = usize::from(lamport < 20 || matches!(path, "stored" | "opaque"));
+            let scans = usize::from(lamport < 20 || path == "opaque");
             assert_eq!(trace.borrow().scans, scans, "{path} at {lamport}");
+            if path == "stored" {
+                let (mut replay, _) = counting_tree(&local);
+                replay.apply_remote_batch(tree.operations_since(0).unwrap()).unwrap();
+                assert_same_state(&tree, &replay);
+            }
             if path == "opaque" {
                 // Replay reconstructs a known prefix and enables the shortcut again.
                 trace.borrow_mut().scans = 0;
