@@ -118,7 +118,7 @@ fn memory_storage_visits_borrowed_suffix_and_propagates_callback_errors() {
                     ..
                 } = &op.kind
                 else {
-                    panic!("expected stored payload");
+                    return Err(Error::Storage("expected stored payload".into()));
                 };
                 let (_, address) = payload_addresses
                     .iter()
@@ -525,7 +525,11 @@ fn unsupported_borrowed_visitation_falls_back_to_replay() {
         storage.apply(op.clone()).unwrap();
     }
     assert!(!storage
-        .try_visit_since(0, &mut |_| panic!("unsupported visitor must not call back"))
+        .try_visit_since(0, &mut |_| {
+            Err(Error::Storage(
+                "unsupported visitor must not call back".into(),
+            ))
+        })
         .unwrap());
     let mut tree = TreeCrdt::new(local.clone(), storage, LamportClock::default()).unwrap();
     tree.replay_from_storage().unwrap();
