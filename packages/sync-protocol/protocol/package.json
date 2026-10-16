@@ -17,6 +17,14 @@
       "import": "./dist/in-memory.js",
       "types": "./dist/in-memory.d.ts"
     },
+    "./backend": {
+      "import": "./dist/backend.js",
+      "types": "./dist/backend.d.ts"
+    },
+    "./opref": {
+      "import": "./dist/opref.js",
+      "types": "./dist/opref.d.ts"
+    },
     "./proof-material": {
       "import": "./dist/proof-material/index.js",
       "types": "./dist/proof-material/index.d.ts"

@@ -8,7 +8,6 @@ import {
   decodeSqliteOps,
   decodeSqliteTreeRows,
   type SqliteRunner,
-  type TreecrdtSqlitePlacement,
   type TreecrdtSqliteWriter,
 } from '@treecrdt/interface/sqlite';
 import {
@@ -23,7 +22,12 @@ import {
   createTreecrdtEngineLocal,
   createTreecrdtTreeNodes,
 } from '@treecrdt/interface/engine';
-import type { LocalWriteOptions, TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
+import type {
+  LocalWriteOptions,
+  TreecrdtEngine,
+  TreecrdtPlacement,
+  WriteOptions,
+} from '@treecrdt/interface/engine';
 import {
   createTreecrdtSqliteAuthApi,
   type TreecrdtSqliteAuthApi,
@@ -183,7 +187,7 @@ export function createTreecrdtClient(
     replica: ReplicaId,
     parent: string,
     node: string,
-    placement: TreecrdtSqlitePlacement,
+    placement: TreecrdtPlacement,
     payload: Uint8Array | null,
     writeOpts?: LocalWriteOptions,
   ) =>
@@ -195,7 +199,7 @@ export function createTreecrdtClient(
     replica: ReplicaId,
     node: string,
     newParent: string,
-    placement: TreecrdtSqlitePlacement,
+    placement: TreecrdtPlacement,
     writeOpts?: LocalWriteOptions,
   ) => localWriterFor(replica).move(node, newParent, placement, writeOpts);
   const localDeleteImpl = async (replica: ReplicaId, node: string, writeOpts?: LocalWriteOptions) =>

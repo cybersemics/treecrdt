@@ -1,0 +1,66 @@
+import Database from 'better-sqlite3';
+import { expect, test, vi } from 'vitest';
+import { createInMemoryConnectedPeers } from '@treecrdt/sync-protocol/in-memory';
+import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
+import { createTreecrdtSyncBackendFromClient } from '@treecrdt/sync-sqlite/backend';
+import { createMemoryClient } from '@treecrdt/wasm/memory';
+import { createTreecrdtSyncBackendFromClient as createSyncBackend } from '@treecrdt/sync-protocol/backend';
+import { createTreecrdtClient, loadTreecrdtExtension } from '../dist/index.js';
+
+test('hydrates memory from SQLite and converges exact local operations and incoming edits', async () => {
+  const database = new Database(':memory:');
+  const memory = await createMemoryClient({ docId: 'loopback' });
+  const root = '0'.repeat(32);
+  const parent = '1'.repeat(32);
+  const child = '2'.repeat(32);
+  try {
+    loadTreecrdtExtension(database);
+    const persistent = await createTreecrdtClient(database, { docId: 'loopback' });
+    const writer = persistent.local.forReplica(new Uint8Array(32).fill(9));
+    const initial = await writer.insert(root, parent, { type: 'first' }, Uint8Array.of(1));
+    const peers = createInMemoryConnectedPeers({
+      backendA: createSyncBackend(memory, memory.docId),
+      backendB: createTreecrdtSyncBackendFromClient(persistent, 'loopback'),
+      codec: treecrdtSyncV0ProtobufCodec,
+    });
+    let syncTail = Promise.resolve();
+    const unsubscribe = persistent.onMaterialized(() => {
+      syncTail = syncTail.then(() => peers.peerB.notifyLocalUpdate());
+    });
+    const subscription = peers.peerA.subscribe(peers.transportA, { all: {} });
+    try {
+      await subscription.ready;
+      expect(memory.get(parent)?.payload).toEqual(Uint8Array.of(1));
+      expect(memory.operationsFrom(0)).toEqual([initial]);
+
+      const operations = [
+        memory.local.insert(parent, child, { type: 'first' }, Uint8Array.of(2)),
+        memory.local.payload(child, Uint8Array.of(3)),
+      ];
+      expect(memory.get(child)?.payload).toEqual(Uint8Array.of(3));
+      expect(await persistent.tree.get(child)).toBeUndefined();
+
+      // Persistence retains the authored IDs, rather than minting the same edits a second time.
+      await persistent.ops.appendMany(operations);
+      await syncTail;
+      expect(await persistent.ops.all()).toEqual([initial, ...operations]);
+
+      await writer.move(child, root, { type: 'after', after: parent });
+      await writer.payload(child, Uint8Array.of(4));
+      await syncTail;
+      await vi.waitFor(() => {
+        expect(memory.getChildren(root)).toEqual([parent, child]);
+        expect(memory.get(child)?.payload).toEqual(Uint8Array.of(4));
+      });
+      expect(memory.operationsFrom(0)).toEqual(await persistent.ops.all());
+    } finally {
+      unsubscribe();
+      subscription.stop();
+      await subscription.done;
+      peers.detach();
+    }
+  } finally {
+    memory.close();
+    database.close();
+  }
+});

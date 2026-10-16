@@ -5,8 +5,12 @@ import {
   createTreecrdtEngineLocal,
   createTreecrdtTreeNodes,
 } from '@treecrdt/interface/engine';
-import type { LocalWriteOptions, TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
-import type { TreecrdtSqlitePlacement } from '@treecrdt/interface/sqlite';
+import type {
+  LocalWriteOptions,
+  TreecrdtEngine,
+  TreecrdtPlacement,
+  WriteOptions,
+} from '@treecrdt/interface/engine';
 
 import {
   nativeToMaterializationOutcome,
@@ -33,7 +37,7 @@ function bigintToSafeNumber(name: string, value: bigint): number {
   return Number(value);
 }
 
-function placementToArgs(placement: TreecrdtSqlitePlacement): {
+function placementToArgs(placement: TreecrdtPlacement): {
   type: string;
   after: Uint8Array | null;
 } {
@@ -155,7 +159,7 @@ export async function createTreecrdtPostgresClient(
     replica: ReplicaId,
     parent: string,
     node: string,
-    placement: TreecrdtSqlitePlacement,
+    placement: TreecrdtPlacement,
     payload: Uint8Array | null,
     writeOpts?: LocalWriteOptions,
   ) => {
@@ -175,7 +179,7 @@ export async function createTreecrdtPostgresClient(
     replica: ReplicaId,
     node: string,
     newParent: string,
-    placement: TreecrdtSqlitePlacement,
+    placement: TreecrdtPlacement,
     writeOpts?: LocalWriteOptions,
   ) => {
     const { type, after } = placementToArgs(placement);

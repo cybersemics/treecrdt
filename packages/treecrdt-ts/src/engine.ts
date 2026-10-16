@@ -1,5 +1,5 @@
 import type { Operation, ReplicaId } from './index.js';
-import type { SqliteTreeRow, TreecrdtSqlitePlacement } from './sqlite.js';
+import type { SqliteTreeRow } from './sqlite.js';
 import { ROOT_NODE_ID_HEX } from './ids.js';
 
 export type MaterializationSource = {
@@ -261,34 +261,36 @@ export type TreecrdtEngineMeta = {
   replicaMaxCounter: (replica: ReplicaId) => Promise<number>;
 };
 
-export type BoundTreecrdtEngineLocal = {
+export type TreecrdtPlacement =
+  | { type: 'first' }
+  | { type: 'last' }
+  | { type: 'after'; after: string };
+
+/** Replica-bound commands with backend-specific return and write-option types. */
+export type TreecrdtLocalCommands<
+  Result extends Operation | Promise<Operation>,
+  Options = never,
+> = {
   insert: (
     parent: string,
     node: string,
-    placement: TreecrdtSqlitePlacement,
+    placement: TreecrdtPlacement,
     payload: Uint8Array | null,
-    opts?: LocalWriteOptions,
-  ) => Promise<Operation>;
-  move: (
-    node: string,
-    newParent: string,
-    placement: TreecrdtSqlitePlacement,
-    opts?: LocalWriteOptions,
-  ) => Promise<Operation>;
-  delete: (node: string, opts?: LocalWriteOptions) => Promise<Operation>;
-  payload: (
-    node: string,
-    payload: Uint8Array | null,
-    opts?: LocalWriteOptions,
-  ) => Promise<Operation>;
+    opts?: Options,
+  ) => Result;
+  move: (node: string, newParent: string, placement: TreecrdtPlacement, opts?: Options) => Result;
+  delete: (node: string, opts?: Options) => Result;
+  payload: (node: string, payload: Uint8Array | null, opts?: Options) => Result;
 };
+
+export type BoundTreecrdtEngineLocal = TreecrdtLocalCommands<Promise<Operation>, LocalWriteOptions>;
 
 export type TreecrdtEngineLocal = {
   insert: (
     replica: ReplicaId,
     parent: string,
     node: string,
-    placement: TreecrdtSqlitePlacement,
+    placement: TreecrdtPlacement,
     payload: Uint8Array | null,
     opts?: LocalWriteOptions,
   ) => Promise<Operation>;
@@ -296,7 +298,7 @@ export type TreecrdtEngineLocal = {
     replica: ReplicaId,
     node: string,
     newParent: string,
-    placement: TreecrdtSqlitePlacement,
+    placement: TreecrdtPlacement,
     opts?: LocalWriteOptions,
   ) => Promise<Operation>;
   delete: (replica: ReplicaId, node: string, opts?: LocalWriteOptions) => Promise<Operation>;

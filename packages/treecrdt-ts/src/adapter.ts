@@ -4,7 +4,7 @@ import type { MaterializationOutcome } from './engine.js';
 export type SerializeNodeId = (id: string) => Uint8Array;
 export type SerializeReplica = (replica: Operation['meta']['id']['replica']) => Uint8Array;
 
-export interface TreecrdtAdapter {
+export interface TreecrdtAdapter<StoredOperation = unknown> {
   /**
    * Set the document id used for v0 sync (`op_ref` derivation).
    *
@@ -30,9 +30,9 @@ export interface TreecrdtAdapter {
   /**
    * Fetch operations by opRef (16-byte values).
    *
-   * Returns raw JSON-decoded operation rows (same shape as `opsSince`).
+   * Returns the adapter's operation format (same shape as `opsSince`).
    */
-  opsByOpRefs(opRefs: Uint8Array[]): Promise<unknown[]>;
+  opsByOpRefs(opRefs: Uint8Array[]): Promise<StoredOperation[]>;
   /**
    * Fetch materialized live (non-tombstoned) children for a parent node (16-byte id).
    *
@@ -92,6 +92,6 @@ export interface TreecrdtAdapter {
     serializeNodeId: SerializeNodeId,
     serializeReplica: SerializeReplica,
   ): Promise<MaterializationOutcome> | MaterializationOutcome;
-  opsSince(lamport: number, root?: string): Promise<unknown[]>;
+  opsSince(lamport: number, root?: string): Promise<StoredOperation[]>;
   close?(): Promise<void> | void;
 }
