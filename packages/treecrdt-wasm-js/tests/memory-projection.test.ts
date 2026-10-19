@@ -45,6 +45,8 @@ test('validates existing rows once and reuses unaffected decoded values and chil
   enumerate.mockClear();
   decode.mockClear();
   expect(projection.get(c)).toBe(held);
+  expect(projection.get('3')).toBe(held);
+  expect(() => projection.get('not-an-id')).toThrow('NodeId');
   expect(projection.getChildren('1')).toBe(children);
   expect(decode).not.toHaveBeenCalled();
 

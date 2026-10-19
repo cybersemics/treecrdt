@@ -44,6 +44,7 @@ export function createMemoryProjection<T>(
     content ? evaluate(() => options.decode(content)) : undefined;
   const get = (id: string): T | undefined => {
     check();
+    if (entries.has(id)) return entries.get(id);
     const key = normalizeNodeId(id);
     if (!entries.has(key)) entries.set(key, decode(reader.getContent(key)));
     return entries.get(key);
