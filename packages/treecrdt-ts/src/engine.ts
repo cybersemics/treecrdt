@@ -1,6 +1,6 @@
 import type { Operation, ReplicaId } from './index.js';
 import type { SqliteTreeRow, TreecrdtSqlitePlacement } from './sqlite.js';
-import { ROOT_NODE_ID_HEX } from './ids.js';
+import { normalizeNodeId, ROOT_NODE_ID_HEX } from './ids.js';
 
 export type MaterializationSource = {
   /**
@@ -191,6 +191,7 @@ export function normalizeChildrenSlice(
  * Lazy materialized-tree handle. Methods issue fresh queries; no local cache.
  */
 export type TreecrdtNode = {
+  /** Canonical 16-byte NodeId encoded as 32 lowercase hex characters. */
   readonly id: string;
   /** Parent handle, or undefined when this node or its parent is not visible. */
   parent: () => Promise<TreecrdtNode | undefined>;
@@ -213,7 +214,7 @@ export type TreecrdtNodePrimitives = {
 };
 
 export type TreecrdtEngineTree = {
-  /** Undefined when the node is absent (tombstoned or never inserted). */
+  /** Resolves ROOT aliases to `root`; undefined when any other node is absent. */
   get: (node: string) => Promise<TreecrdtNode | undefined>;
   /** Always-available ROOT handle; does not check existence. */
   root: TreecrdtNode;
@@ -228,7 +229,8 @@ export type TreecrdtEngineTree = {
 export function createTreecrdtTreeNodes(
   primitives: TreecrdtNodePrimitives,
 ): Pick<TreecrdtEngineTree, 'get' | 'root'> {
-  const createNode = (id: string): TreecrdtNode => {
+  const createNode = (nodeId: string): TreecrdtNode => {
+    const id = normalizeNodeId(nodeId);
     const node: TreecrdtNode = {
       id,
       parent: async () => {
@@ -247,12 +249,16 @@ export function createTreecrdtTreeNodes(
     return node;
   };
 
+  const root = createNode(ROOT_NODE_ID_HEX);
+
   return {
     get: async (nodeId) => {
-      if (!(await primitives.exists(nodeId))) return undefined;
-      return createNode(nodeId);
+      const node = createNode(nodeId);
+      if (node.id === root.id) return root;
+      if (!(await primitives.exists(node.id))) return undefined;
+      return node;
     },
-    root: createNode(ROOT_NODE_ID_HEX),
+    root,
   };
 }
 
