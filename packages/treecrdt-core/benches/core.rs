@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use treecrdt_core::{
-    Lamport, LamportClock, LocalPlacement, MemoryStorage, NodeId, ReplicaId, TreeCrdt,
+    Lamport, LamportClock, LocalPlacement, MemoryStorage, NodeId, OperationKind, ReplicaId,
+    TreeCrdt,
 };
 
 const BENCH_CONFIG: &[(u64, u64)] = &[(100, 10), (1_000, 10), (10_000, 10)];
@@ -33,6 +34,8 @@ struct Extra {
     iterations: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     avg_duration_ms: Option<f64>,
+    order_key_max_bytes: usize,
+    order_key_total_bytes: usize,
 }
 
 fn hex_id(n: u64) -> NodeId {
@@ -50,7 +53,7 @@ fn default_out_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("benchmarks/core"))
 }
 
-fn run_benchmark(replica: &ReplicaId, count: u64) -> f64 {
+fn run_benchmark(replica: &ReplicaId, count: u64) -> (f64, usize, usize) {
     let storage = MemoryStorage::default();
     let mut tree = TreeCrdt::new(replica.clone(), storage, LamportClock::default()).unwrap();
 
@@ -65,8 +68,18 @@ fn run_benchmark(replica: &ReplicaId, count: u64) -> f64 {
         let node = hex_id(i + 1);
         let _ = tree.local_move(node, NodeId::ROOT, LocalPlacement::First).unwrap();
     }
-    let _ = tree.operations_since(0 as Lamport).unwrap();
-    start.elapsed().as_secs_f64() * 1000.0
+    let ops = tree.operations_since(0 as Lamport).unwrap();
+    let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let (mut max_bytes, mut total_bytes) = (0, 0);
+    for op in &ops {
+        if let OperationKind::Insert { order_key, .. } | OperationKind::Move { order_key, .. } =
+            &op.kind
+        {
+            max_bytes = max_bytes.max(order_key.len());
+            total_bytes += order_key.len();
+        }
+    }
+    (duration_ms, max_bytes, total_bytes)
 }
 
 fn main() {
@@ -98,15 +111,16 @@ fn main() {
     for &(count, iterations) in config {
         let (duration_ms, iterations_opt, avg_duration_ms) = if iterations > 1 {
             let mut durations: Vec<f64> =
-                (0..iterations).map(|_| run_benchmark(&replica, count)).collect();
+                (0..iterations).map(|_| run_benchmark(&replica, count).0).collect();
             durations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             let median = durations[durations.len() / 2];
             (median, Some(iterations), Some(median))
         } else {
             // Single run
-            let duration = run_benchmark(&replica, count);
+            let duration = run_benchmark(&replica, count).0;
             (duration, None, None)
         };
+        let (_, order_key_max_bytes, order_key_total_bytes) = run_benchmark(&replica, count);
 
         let workload_name = format!("insert-move-{}", count);
         let out_path = out_dir.join(format!("memory-{}.json", workload_name));
@@ -129,6 +143,8 @@ fn main() {
                 mode: "sequential",
                 iterations: iterations_opt,
                 avg_duration_ms,
+                order_key_max_bytes,
+                order_key_total_bytes,
             },
             source_file: Some(out_path.display().to_string()),
         };
