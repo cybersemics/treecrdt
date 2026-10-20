@@ -1,10 +1,8 @@
 use proptest::prelude::*;
 use treecrdt_core::order_key::allocate_between;
 
-// Every run stays at 4-6 bytes; the previous allocator passed this within a few dozen inserts.
 const MAX_KEY_BYTES: usize = 16;
 
-/// Allocates with a `TreeCrdt`-style seed and checks that the key sorts between its bounds.
 fn allocate(left: Option<&[u8]>, right: Option<&[u8]>, counter: u64) -> Vec<u8> {
     let seed = [b"replica".as_slice(), &counter.to_be_bytes()].concat();
     let key = allocate_between(left, right, &seed).unwrap();
@@ -13,7 +11,6 @@ fn allocate(left: Option<&[u8]>, right: Option<&[u8]>, counter: u64) -> Vec<u8> 
     key
 }
 
-/// Allocates 10,000 keys, each placed relative to the previous one, and returns the longest.
 fn longest_chained(first: &[u8], mut next: impl FnMut(&[u8], u64) -> Vec<u8>) -> usize {
     let mut previous = first.to_vec();
     let mut longest = 0;
@@ -28,7 +25,6 @@ fn longest_chained(first: &[u8], mut next: impl FnMut(&[u8], u64) -> Vec<u8>) ->
 fn repeated_placements_keep_keys_short() {
     let start = allocate(None, None, 0);
     let end = allocate(Some(&start), None, 1);
-    // The previous allocator nested each append under the previous key.
     let long: Vec<u8> =
         [0xfffe].into_iter().chain(1..=500_u16).flat_map(u16::to_be_bytes).collect();
     let append = |last: &[u8], counter| allocate(Some(last), None, counter);
