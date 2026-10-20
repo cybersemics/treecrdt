@@ -34,6 +34,31 @@ async function tick(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
+function createGate(): { promise: Promise<void>; release: () => void } {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
+function createPause(): {
+  started: Promise<void>;
+  wait: () => Promise<void>;
+  release: () => void;
+} {
+  const started = createGate();
+  const resume = createGate();
+  return {
+    started: started.promise,
+    wait: async () => {
+      started.release();
+      await resume.promise;
+    },
+    release: resume.release,
+  };
+}
+
 function orderKeyFromPosition(position: number): Uint8Array {
   if (!Number.isInteger(position) || position < 0) throw new Error(`invalid position: ${position}`);
   const n = position + 1;
@@ -49,6 +74,15 @@ function replicaFromLabel(label: string): Uint8Array {
   const out = new Uint8Array(32);
   for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
   return out;
+}
+
+function makeInsertOp(replica: Uint8Array, counter: number): Operation {
+  return makeOp(replica, counter, counter, {
+    type: 'insert',
+    parent: '0'.repeat(32),
+    node: nodeIdFromInt(counter),
+    orderKey: orderKeyFromPosition(counter - 1),
+  });
 }
 
 const replicas = {
@@ -1146,6 +1180,142 @@ test('pushOps uploads direct ops without reconcile roundtrips', async () => {
     detachA();
     detachB();
   }
+});
+
+test('pushOps with an already-aborted signal starts no auth or transport work', async () => {
+  const docId = 'doc-push-pre-aborted';
+  let helloCapabilitiesCalls = 0;
+  let signCalls = 0;
+  const control = createCloseControlledTransport<SyncMessage<Operation>>();
+  const peer = new SyncPeer(new MemoryBackend(docId), {
+    auth: {
+      helloCapabilities: async () => {
+        helloCapabilitiesCalls += 1;
+        return [];
+      },
+      signOps: async (ops) => {
+        signCalls += 1;
+        return ops.map(() => ({ sig: new Uint8Array([1]) }));
+      },
+    },
+  });
+  const controller = new AbortController();
+  controller.abort(new Error('cancelled before push'));
+
+  await expect(
+    peer.pushOps(control.transport, [makeInsertOp(replicas.a, 1)], {
+      signal: controller.signal,
+    }),
+  ).rejects.toThrow('cancelled before push');
+
+  expect(helloCapabilitiesCalls).toBe(0);
+  expect(signCalls).toBe(0);
+  expect(control.sent).toHaveLength(0);
+});
+
+test('pushOps aborted during capability creation does not send Hello', async () => {
+  const docId = 'doc-push-abort-before-hello';
+  const capabilityPause = createPause();
+  const control = createCloseControlledTransport<SyncMessage<Operation>>();
+  const peer = new SyncPeer(new MemoryBackend(docId), {
+    auth: {
+      helloCapabilities: async () => {
+        await capabilityPause.wait();
+        return [];
+      },
+    },
+  });
+  const controller = new AbortController();
+
+  const push = peer.pushOps(control.transport, [makeInsertOp(replicas.a, 1)], {
+    signal: controller.signal,
+  });
+  await capabilityPause.started;
+  controller.abort(new Error('cancelled before Hello'));
+
+  await expect(push).rejects.toThrow('cancelled before Hello');
+  capabilityPause.release();
+  await tick();
+
+  expect(control.sent).toHaveLength(0);
+});
+
+test('pushOps retries capability negotiation after cancellation while waiting for HelloAck', async () => {
+  const docId = 'doc-push-abort-before-hello-ack';
+  const control = createCloseControlledTransport<SyncMessage<Operation>>();
+  const peer = new SyncPeer(new MemoryBackend(docId), {
+    auth: { helloCapabilities: async () => [] },
+  });
+  const detach = peer.attach(control.transport);
+  const controller = new AbortController();
+
+  try {
+    const firstPush = peer.pushOps(control.transport, [makeInsertOp(replicas.a, 1)], {
+      signal: controller.signal,
+    });
+    await waitUntil(
+      () => control.sent.filter((message) => message.payload.case === 'hello').length === 1,
+    );
+    controller.abort(new Error('cancelled before HelloAck'));
+    await expect(firstPush).rejects.toThrow('cancelled before HelloAck');
+
+    const retry = peer.pushOps(control.transport, [makeInsertOp(replicas.a, 1)]);
+    await waitUntil(
+      () => control.sent.filter((message) => message.payload.case === 'hello').length === 2,
+    );
+    control.receive({
+      v: 0,
+      docId,
+      payload: {
+        case: 'helloAck',
+        value: { capabilities: [], acceptedFilters: [], rejectedFilters: [], maxLamport: 0n },
+      },
+    });
+    await retry;
+
+    expect(control.sent.map((message) => message.payload.case)).toEqual([
+      'hello',
+      'hello',
+      'opsBatch',
+    ]);
+  } finally {
+    detach();
+  }
+});
+
+test('pushOps aborts an in-flight chunk without sending later chunks', async () => {
+  const docId = 'doc-push-abort';
+  const root = '0'.repeat(32);
+  const ops = [1, 2].map((counter) =>
+    makeOp(replicas.a, counter, counter, {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(counter),
+      orderKey: orderKeyFromPosition(counter - 1),
+    }),
+  );
+  const control = createCloseControlledTransport<SyncMessage<Operation>>();
+  let releaseFirstSend!: () => void;
+  const firstSend = new Promise<void>((resolve) => {
+    releaseFirstSend = resolve;
+  });
+  control.transport.send = async (message) => {
+    control.sent.push(message);
+    if (control.sent.length === 1) await firstSend;
+  };
+  const peer = new SyncPeer(new MemoryBackend(docId), { maxOpsPerBatch: 1 });
+  const controller = new AbortController();
+
+  const push = peer.pushOps(control.transport, ops, { signal: controller.signal });
+  await waitUntil(() => control.sent.length === 1);
+  controller.abort(new Error('push timed out'));
+
+  await expect(push).rejects.toThrow('push timed out');
+  releaseFirstSend();
+  await tick();
+
+  expect(control.sent).toHaveLength(1);
+  expect(control.sent[0]?.payload.case).toBe('opsBatch');
 });
 
 test('pushOps refreshes replay capabilities before uploading newly authorized ops', async () => {
