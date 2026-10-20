@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use treecrdt_core::{
-    Lamport, LamportClock, LocalPlacement, MemoryStorage, NodeId, ReplicaId, TreeCrdt,
+    Lamport, LamportClock, LocalPlacement, MemoryStorage, NodeId, Operation, OperationKind,
+    ReplicaId, TreeCrdt,
 };
 
 const BENCH_CONFIG: &[(u64, u64)] = &[(100, 10), (1_000, 10), (10_000, 10)];
@@ -33,6 +34,27 @@ struct Extra {
     iterations: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     avg_duration_ms: Option<f64>,
+    order_key_max_bytes: usize,
+    order_key_total_bytes: usize,
+}
+
+#[derive(Clone, Copy, Default)]
+struct OrderKeyBytes {
+    max: usize,
+    total: usize,
+}
+
+fn order_key_bytes(ops: &[Operation]) -> OrderKeyBytes {
+    let mut bytes = OrderKeyBytes::default();
+    for op in ops {
+        if let OperationKind::Insert { order_key, .. } | OperationKind::Move { order_key, .. } =
+            &op.kind
+        {
+            bytes.max = bytes.max.max(order_key.len());
+            bytes.total += order_key.len();
+        }
+    }
+    bytes
 }
 
 fn hex_id(n: u64) -> NodeId {
@@ -50,7 +72,7 @@ fn default_out_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("benchmarks/core"))
 }
 
-fn run_benchmark(replica: &ReplicaId, count: u64) -> f64 {
+fn run_benchmark(replica: &ReplicaId, count: u64) -> (f64, OrderKeyBytes) {
     let storage = MemoryStorage::default();
     let mut tree = TreeCrdt::new(replica.clone(), storage, LamportClock::default()).unwrap();
 
@@ -65,8 +87,9 @@ fn run_benchmark(replica: &ReplicaId, count: u64) -> f64 {
         let node = hex_id(i + 1);
         let _ = tree.local_move(node, NodeId::ROOT, LocalPlacement::First).unwrap();
     }
-    let _ = tree.operations_since(0 as Lamport).unwrap();
-    start.elapsed().as_secs_f64() * 1000.0
+    let ops = tree.operations_since(0 as Lamport).unwrap();
+    let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+    (duration_ms, order_key_bytes(&ops))
 }
 
 fn main() {
@@ -96,15 +119,21 @@ fn main() {
 
     let replica = ReplicaId::new(b"core");
     for &(count, iterations) in config {
+        // Every run allocates the same keys, so any run's key sizes describe the workload.
+        let mut order_keys = OrderKeyBytes::default();
+        let mut run = || {
+            let (duration_ms, keys) = run_benchmark(&replica, count);
+            order_keys = keys;
+            duration_ms
+        };
         let (duration_ms, iterations_opt, avg_duration_ms) = if iterations > 1 {
-            let mut durations: Vec<f64> =
-                (0..iterations).map(|_| run_benchmark(&replica, count)).collect();
+            let mut durations: Vec<f64> = (0..iterations).map(|_| run()).collect();
             durations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             let median = durations[durations.len() / 2];
             (median, Some(iterations), Some(median))
         } else {
             // Single run
-            let duration = run_benchmark(&replica, count);
+            let duration = run();
             (duration, None, None)
         };
 
@@ -129,6 +158,8 @@ fn main() {
                 mode: "sequential",
                 iterations: iterations_opt,
                 avg_duration_ms,
+                order_key_max_bytes: order_keys.max,
+                order_key_total_bytes: order_keys.total,
             },
             source_file: Some(out_path.display().to_string()),
         };

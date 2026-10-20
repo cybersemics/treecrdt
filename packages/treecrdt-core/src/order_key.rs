@@ -67,19 +67,23 @@ fn choose_in_range(seed: &[u8], depth: usize, lo: u16, hi: u16) -> u16 {
 /// Allocate a stable ordering key strictly between `left` and `right` (lexicographic order).
 ///
 /// Keys are encoded as a variable-length sequence of big-endian `u16` digits, compared
-/// lexicographically. The generator is LSEQ-inspired: it prefers allocating within a bounded
-/// interval near one side to reduce expected key growth in repeated "insert between the same
-/// neighbors" workloads.
+/// lexicographically. The generator is LSEQ-inspired: it allocates within a bounded interval
+/// next to one bound so that runs of appends, prepends, or inserts at one anchor reuse a digit
+/// level instead of adding one per insert.
 pub fn allocate_between(left: Option<&[u8]>, right: Option<&[u8]>, seed: &[u8]) -> Result<Vec<u8>> {
     let left_digits = decode_digits(left.unwrap_or_default())?;
     let right_digits = decode_digits(right.unwrap_or_default())?;
 
     let mut out: Vec<u16> = Vec::new();
     let mut depth: usize = 0;
+    // `right` bounds the next digit only while `out` is still a prefix of it.
+    let mut right_bounded = true;
 
     loop {
-        let ld = left_digits.get(depth).copied().unwrap_or(0);
-        let rd = right_digits.get(depth).copied().unwrap_or(u16::MAX);
+        let left_digit = left_digits.get(depth).copied();
+        let right_digit = right_digits.get(depth).copied().filter(|_| right_bounded);
+        let ld = left_digit.unwrap_or(0);
+        let rd = right_digit.unwrap_or(u16::MAX);
         if rd < ld {
             return Err(Error::InvalidOperation(
                 "cannot allocate order_key: right < left".into(),
@@ -89,31 +93,33 @@ pub fn allocate_between(left: Option<&[u8]>, right: Option<&[u8]>, seed: &[u8]) 
         if u32::from(rd) > u32::from(ld) + 1 {
             let gap = rd - ld - 1;
             let boundary = DEFAULT_BOUNDARY.min(gap);
-            let choose_left = choose_side(seed, depth);
+            let near_left = (ld + 1, ld + boundary);
+            let near_right = (rd - boundary, rd - 1);
 
-            let (lo, hi) = if gap > boundary {
-                if choose_left {
-                    (ld + 1, ld + boundary)
-                } else {
-                    (rd - boundary, rd - 1)
+            // Allocate next to the bound that has a digit at this depth and leave the open side
+            // free: appends and typing advance from the left, while prepends and repeated inserts
+            // after one anchor move down from the right. Without such a bound, start in the
+            // middle; with both, the seed picks a side.
+            let (lo, hi) = match (left_digit, right_digit) {
+                (Some(_), None) => near_left,
+                (None, Some(_)) => near_right,
+                (None, None) => {
+                    let lo = ld + 1 + (gap - boundary) / 2;
+                    (lo, lo + boundary - 1)
                 }
-            } else {
-                (ld + 1, rd - 1)
+                (Some(_), Some(_)) if choose_side(seed, depth) => near_left,
+                (Some(_), Some(_)) => near_right,
             };
 
             out.push(choose_in_range(seed, depth, lo, hi));
             break;
         }
 
-        // Once a concrete left digit is immediately below the upper digit, its remaining suffix
-        // can be extended without comparing it against the right key's suffix.
-        if rd > ld && depth < left_digits.len() {
-            out.extend_from_slice(&left_digits[depth..]);
-            out.push(choose_in_range(seed, left_digits.len(), 1, u16::MAX));
-            break;
+        // No room at this level; extend the prefix and continue deeper. Taking `ld < rd` here
+        // already orders every deeper suffix below `right`.
+        if rd > ld {
+            right_bounded = false;
         }
-
-        // No room at this level; extend the prefix and continue deeper.
         out.push(ld);
         depth += 1;
     }
