@@ -1,8 +1,6 @@
 use proptest::prelude::*;
 use treecrdt_core::order_key::allocate_between;
 
-const MAX_KEY_BYTES: usize = 16;
-
 fn allocate(left: Option<&[u8]>, right: Option<&[u8]>, counter: u64) -> Vec<u8> {
     let seed = [b"replica".as_slice(), &counter.to_be_bytes()].concat();
     let key = allocate_between(left, right, &seed).unwrap();
@@ -11,14 +9,12 @@ fn allocate(left: Option<&[u8]>, right: Option<&[u8]>, counter: u64) -> Vec<u8> 
     key
 }
 
-fn longest_chained(first: &[u8], mut next: impl FnMut(&[u8], u64) -> Vec<u8>) -> usize {
-    let mut previous = first.to_vec();
-    let mut longest = 0;
+fn assert_keys_short(case: &str, first: &[u8], mut next: impl FnMut(&[u8], u64) -> Vec<u8>) {
+    let mut key = first.to_vec();
     for counter in 1..=10_000 {
-        previous = next(&previous, counter);
-        longest = longest.max(previous.len());
+        key = next(&key, counter);
+        assert!(key.len() <= 16, "{case}: {} bytes", key.len());
     }
-    longest
 }
 
 #[test]
@@ -29,78 +25,25 @@ fn repeated_placements_keep_keys_short() {
         [0xfffe].into_iter().chain(1..=500_u16).flat_map(u16::to_be_bytes).collect();
     let append = |last: &[u8], counter| allocate(Some(last), None, counter);
 
-    let longest = [
-        ("appends", longest_chained(&start, append)),
-        ("appends after a 1 KB key", longest_chained(&long, append)),
-        (
-            "prepends",
-            longest_chained(&start, |first, counter| {
-                allocate(None, Some(first), counter)
-            }),
-        ),
-        (
-            "typing between siblings",
-            longest_chained(&start, |previous, counter| {
-                allocate(Some(previous), Some(&end), counter)
-            }),
-        ),
-        (
-            "inserts after one anchor",
-            longest_chained(&end, |previous, counter| {
-                allocate(Some(&start), Some(previous), counter)
-            }),
-        ),
-    ];
-    assert!(
-        longest.iter().all(|(_, bytes)| *bytes <= MAX_KEY_BYTES),
-        "{longest:?}"
-    );
-}
-
-#[test]
-fn allocates_between_adjacent_prefixes_with_opposite_suffix_order() {
-    // Once fffd < fffe, later digits must not be compared across the bounds, even when the right
-    // suffix is smaller.
-    let left = [0xff, 0xfd, 0xff, 0xfe];
-    let right = [0xff, 0xfe, 0xff, 0xfc];
-
-    let allocated = allocate_between(Some(&left), Some(&right), b"em-undo-redo").unwrap();
-
-    assert!(allocated.as_slice() > left.as_slice());
-    assert!(allocated.as_slice() < right.as_slice());
-}
-
-#[test]
-fn allocates_after_maximum_digit_without_overflow() {
-    let left = [0xff, 0xff];
-
-    let allocated = allocate_between(Some(&left), None, b"append-after-ffff").unwrap();
-
-    assert!(allocated.as_slice() > left.as_slice());
-}
-
-fn digit() -> impl Strategy<Value = u16> {
-    // Extreme digits make adjacent and saturated bounds common.
-    prop_oneof![
-        Just(0),
-        Just(1),
-        Just(2),
-        Just(0xfffd),
-        Just(0xfffe),
-        Just(0xffff),
-        any::<u16>(),
-    ]
+    assert_keys_short("appends", &start, append);
+    assert_keys_short("appends after a 1 KB key", &long, append);
+    assert_keys_short("prepends", &start, |first, counter| {
+        allocate(None, Some(first), counter)
+    });
+    assert_keys_short("typing between siblings", &start, |previous, counter| {
+        allocate(Some(previous), Some(&end), counter)
+    });
+    assert_keys_short("inserts after one anchor", &end, |previous, counter| {
+        allocate(Some(&start), Some(previous), counter)
+    });
 }
 
 fn order_key() -> impl Strategy<Value = Vec<u8>> {
-    (
-        prop::collection::vec(digit(), 0..5),
-        digit().prop_filter("final digit is non-zero", |digit| *digit != 0),
-    )
-        .prop_map(|(mut digits, last)| {
-            digits.push(last);
-            digits.iter().flat_map(|digit| digit.to_be_bytes()).collect()
-        })
+    // Extreme digits make adjacent and saturated bounds common.
+    let digit = prop_oneof![3 => 0..=2_u16, 3 => 0xfffd..=u16::MAX, 1 => any::<u16>()];
+    prop::collection::vec(digit, 1..6)
+        .prop_filter("non-zero last digit", |digits| digits.last() != Some(&0))
+        .prop_map(|digits| digits.into_iter().flat_map(u16::to_be_bytes).collect())
 }
 
 proptest! {

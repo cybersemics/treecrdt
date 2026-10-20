@@ -67,22 +67,19 @@ fn choose_in_range(seed: &[u8], depth: usize, lo: u16, hi: u16) -> u16 {
 /// Allocate a stable ordering key strictly between `left` and `right` (lexicographic order).
 ///
 /// Keys are encoded as a variable-length sequence of big-endian `u16` digits, compared
-/// lexicographically. The generator is LSEQ-inspired: it allocates within a bounded interval
-/// next to one bound, so repeated appends, prepends, or inserts at one anchor share a digit level.
+/// lexicographically. The generator is LSEQ-inspired: it prefers allocating within a bounded
+/// interval near one side to reduce expected key growth in repeated "insert between the same
+/// neighbors" workloads.
 pub fn allocate_between(left: Option<&[u8]>, right: Option<&[u8]>, seed: &[u8]) -> Result<Vec<u8>> {
     let left_digits = decode_digits(left.unwrap_or_default())?;
-    let right_digits = decode_digits(right.unwrap_or_default())?;
+    let mut right_digits = decode_digits(right.unwrap_or_default())?;
 
     let mut out: Vec<u16> = Vec::new();
     let mut depth: usize = 0;
-    // `right` bounds the next digit only while `out` is still a prefix of it.
-    let mut right_bounded = true;
 
     loop {
-        let left_digit = left_digits.get(depth).copied();
-        let right_digit = right_digits.get(depth).copied().filter(|_| right_bounded);
-        let ld = left_digit.unwrap_or(0);
-        let rd = right_digit.unwrap_or(u16::MAX);
+        let ld = left_digits.get(depth).copied().unwrap_or(0);
+        let rd = right_digits.get(depth).copied().unwrap_or(u16::MAX);
         if rd < ld {
             return Err(Error::InvalidOperation(
                 "cannot allocate order_key: right < left".into(),
@@ -92,29 +89,25 @@ pub fn allocate_between(left: Option<&[u8]>, right: Option<&[u8]>, seed: &[u8]) 
         if u32::from(rd) > u32::from(ld) + 1 {
             let gap = rd - ld - 1;
             let boundary = DEFAULT_BOUNDARY.min(gap);
-            let near_left = (ld + 1, ld + boundary);
-            let near_right = (rd - boundary, rd - 1);
 
-            // Stay next to the bound that has a digit here, leaving the open side for the next
-            // insert at the same position.
-            let (lo, hi) = match (left_digit, right_digit) {
-                (Some(_), None) => near_left,
-                (None, Some(_)) => near_right,
-                (None, None) => {
-                    let lo = ld + 1 + (gap - boundary) / 2;
-                    (lo, lo + boundary - 1)
-                }
-                (Some(_), Some(_)) if choose_side(seed, depth) => near_left,
-                (Some(_), Some(_)) => near_right,
+            // Pick a `boundary`-wide band next to the bound that has a digit here, leaving the
+            // open side for the next insert at the same position.
+            let lo = match (left_digits.get(depth), right_digits.get(depth)) {
+                (Some(_), None) => ld + 1,
+                (None, Some(_)) => rd - boundary,
+                (None, None) => ld + 1 + (gap - boundary) / 2,
+                (Some(_), Some(_)) if choose_side(seed, depth) => ld + 1,
+                (Some(_), Some(_)) => rd - boundary,
             };
 
-            out.push(choose_in_range(seed, depth, lo, hi));
+            out.push(choose_in_range(seed, depth, lo, lo + boundary - 1));
             break;
         }
 
         // No room at this level; extend the prefix and continue deeper.
         if rd > ld {
-            right_bounded = false;
+            // `ld` is below `rd`, so `right` no longer bounds deeper digits.
+            right_digits.clear();
         }
         out.push(ld);
         depth += 1;
