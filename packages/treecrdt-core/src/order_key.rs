@@ -68,8 +68,7 @@ fn choose_in_range(seed: &[u8], depth: usize, lo: u16, hi: u16) -> u16 {
 ///
 /// Keys are encoded as a variable-length sequence of big-endian `u16` digits, compared
 /// lexicographically. The generator is LSEQ-inspired: it allocates within a bounded interval
-/// next to one bound so that runs of appends, prepends, or inserts at one anchor reuse a digit
-/// level instead of adding one per insert.
+/// next to one bound, so repeated appends, prepends, or inserts at one anchor share a digit level.
 pub fn allocate_between(left: Option<&[u8]>, right: Option<&[u8]>, seed: &[u8]) -> Result<Vec<u8>> {
     let left_digits = decode_digits(left.unwrap_or_default())?;
     let right_digits = decode_digits(right.unwrap_or_default())?;
@@ -96,10 +95,8 @@ pub fn allocate_between(left: Option<&[u8]>, right: Option<&[u8]>, seed: &[u8]) 
             let near_left = (ld + 1, ld + boundary);
             let near_right = (rd - boundary, rd - 1);
 
-            // Allocate next to the bound that has a digit at this depth and leave the open side
-            // free: appends and typing advance from the left, while prepends and repeated inserts
-            // after one anchor move down from the right. Without such a bound, start in the
-            // middle; with both, the seed picks a side.
+            // Stay next to the bound that has a digit here, leaving the open side for the next
+            // insert at the same position.
             let (lo, hi) = match (left_digit, right_digit) {
                 (Some(_), None) => near_left,
                 (None, Some(_)) => near_right,
@@ -115,8 +112,7 @@ pub fn allocate_between(left: Option<&[u8]>, right: Option<&[u8]>, seed: &[u8]) 
             break;
         }
 
-        // No room at this level; extend the prefix and continue deeper. Taking `ld < rd` here
-        // already orders every deeper suffix below `right`.
+        // No room at this level; extend the prefix and continue deeper.
         if rd > ld {
             right_bounded = false;
         }
