@@ -253,6 +253,86 @@ pub fn out_of_order_insert_and_move_before_head_catches_up_immediately<
     assert_eq!(harness.payload(p2), Some(vec![4]));
 }
 
+pub fn replayed_conflicting_moves_report_final_parents<H: MaterializationConformanceHarness>(
+    harness: &H,
+    full_replay: bool,
+) {
+    let replica = ReplicaId::new(b"conflicting-moves");
+    let a = node(1);
+    let b = node(2);
+    harness.append_ops(&[
+        Operation::insert(&replica, 1, 1, NodeId::ROOT, a, order_key_from_position(0)),
+        Operation::insert(&replica, 2, 2, NodeId::ROOT, b, order_key_from_position(1)),
+        Operation::move_node(&replica, 4, 4, b, a, order_key_from_position(0)),
+    ]);
+    if full_replay {
+        let c = node(3);
+        let mut known_state = treecrdt_core::VersionVector::new();
+        known_state.observe(&replica, 5);
+        harness.append_ops(&[
+            Operation::insert(&replica, 5, 5, NodeId::ROOT, c, order_key_from_position(2)),
+            Operation::delete(&replica, 6, 6, c, Some(known_state)),
+        ]);
+    }
+
+    // Canonical replay accepts the earlier A -> B move and rejects B -> A as a cycle.
+    let late_move = Operation::move_node(&replica, 3, 3, a, b, order_key_from_position(0));
+    let outcome = harness.append_ops_with_materialization_outcome(&[late_move]);
+    let moves: Vec<_> = outcome
+        .changes
+        .iter()
+        .filter_map(|change| match change {
+            MaterializationChange::Move {
+                node,
+                parent_before,
+                parent_after,
+                source,
+            } => Some((*node, *parent_before, *parent_after, source.is_none())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        moves,
+        vec![
+            (a, Some(NodeId::ROOT), b, false),
+            (b, Some(a), NodeId::ROOT, true)
+        ]
+    );
+    assert_eq!(harness.visible_children(NodeId::ROOT), vec![b]);
+    assert_eq!(harness.visible_children(b), vec![a]);
+}
+
+pub fn replayed_delete_is_reported_once<H: MaterializationConformanceHarness>(harness: &H) {
+    let replica = ReplicaId::new(b"delete-events");
+    let a = node(1);
+    let b = node(2);
+    let mut known_state = treecrdt_core::VersionVector::new();
+    known_state.observe(&replica, 1);
+    harness.append_ops(&[
+        Operation::insert(&replica, 1, 1, NodeId::ROOT, a, order_key_from_position(0)),
+        Operation::insert(&replica, 2, 2, NodeId::ROOT, b, order_key_from_position(1)),
+        Operation::set_payload(&replica, 4, 4, b, vec![9]),
+    ]);
+
+    // A delete in the replay suffix requires the full-replay fallback.
+    let late_delete = Operation::delete(&replica, 3, 3, a, Some(known_state));
+    let outcome = harness.append_ops_with_materialization_outcome(&[late_delete]);
+    let deletions: Vec<_> = outcome
+        .changes
+        .iter()
+        .filter_map(|change| match change {
+            MaterializationChange::Delete {
+                node,
+                parent_before,
+                ..
+            } => Some((*node, *parent_before)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(deletions, vec![(a, Some(NodeId::ROOT))]);
+    assert_eq!(harness.visible_children(NodeId::ROOT), vec![b]);
+}
+
 pub fn replay_from_start_frontier_catches_up_immediately<H: MaterializationConformanceHarness>(
     harness: &H,
 ) {

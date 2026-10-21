@@ -237,6 +237,27 @@ fn postgres_backend_out_of_order_insert_and_move_before_head_catches_up_immediat
 }
 
 #[test]
+fn postgres_replayed_conflicting_moves_report_final_parents() {
+    for full_replay in [false, true] {
+        let Some(harness) = setup_conformance_harness() else {
+            return;
+        };
+        materialization_conformance::replayed_conflicting_moves_report_final_parents(
+            &harness,
+            full_replay,
+        );
+    }
+}
+
+#[test]
+fn postgres_replayed_delete_is_reported_once() {
+    let Some(harness) = setup_conformance_harness() else {
+        return;
+    };
+    materialization_conformance::replayed_delete_is_reported_once(&harness);
+}
+
+#[test]
 fn postgres_backend_replay_from_start_frontier_catches_up_immediately() {
     let Some(harness) = setup_conformance_harness() else {
         return;
