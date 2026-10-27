@@ -1,3 +1,4 @@
+import { blake3 } from '@noble/hashes/blake3';
 import { concatBytes, utf8ToBytes } from '@noble/hashes/utils';
 
 import type { Operation } from '@treecrdt/interface';
@@ -8,9 +9,16 @@ import { signEd25519, verifyEd25519 } from '../ed25519.js';
 import { u32be, u64be, u8 } from './bytes.js';
 
 const OP_SIG_DOMAIN = utf8ToBytes('treecrdt/op-sig/v1');
+const PAYLOAD_COMMITMENT_DOMAIN = utf8ToBytes('treecrdt/payload-commitment/v1');
 const MAX_KNOWN_STATE_BYTES = 1024 * 1024;
 const MAX_KNOWN_STATE_ENTRIES = 4096;
 const ED25519_PUBLIC_KEY_LEN = 32;
+
+// Signing a commitment instead of the body lets a payload be detached later without
+// invalidating the operation signature.
+function payloadCommitment(payload: Uint8Array): Uint8Array {
+  return blake3(concatBytes(PAYLOAD_COMMITMENT_DOMAIN, u8(0), payload));
+}
 
 function prepareOpSignature(opts: { docId: string; op: Operation }): {
   message: Uint8Array;
@@ -54,8 +62,7 @@ function prepareOpSignature(opts: { docId: string; op: Operation }): {
           orderKeyLen,
           orderKey,
           u8(1),
-          u32be(payload.length),
-          payload,
+          payloadCommitment(payload),
         );
       } else {
         kindFields = concatBytes(parent, node, orderKeyLen, orderKey, u8(0));
@@ -90,7 +97,7 @@ function prepareOpSignature(opts: { docId: string; op: Operation }): {
       if (payload === null) {
         kindFields = concatBytes(node, u8(0));
       } else {
-        kindFields = concatBytes(node, u8(1), u32be(payload.length), payload);
+        kindFields = concatBytes(node, u8(1), payloadCommitment(payload));
       }
       break;
     }

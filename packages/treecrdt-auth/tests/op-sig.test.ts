@@ -7,6 +7,7 @@ import {
   utils as ed25519Utils,
 } from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha512';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 
 import type { Operation } from '@treecrdt/interface';
 import { loadVersionVectorCodec, type VersionVectorCodec } from '@treecrdt/wasm/codec';
@@ -15,6 +16,7 @@ import {
   signTreecrdtOp,
   verifyTreecrdtOp,
 } from '../dist/treecrdt-auth.js';
+import fixture from '../../../fixtures/op-sig-v1.json';
 
 ed25519Hashes.sha512 = sha512;
 
@@ -280,4 +282,56 @@ test('signature policy only allows knownState on deletes', async () => {
 
   const tombstone = operation({ type: 'tombstone', node });
   expect((await encodeTreecrdtOpSigInput({ docId: 'doc', op: tombstone })).at(-1)).toBe(0);
+});
+
+// The fixture's documented test-only seed.
+const fixturePrivateKey = new Uint8Array(32).fill(2);
+const fixturePublicKey = hexToBytes(fixture.replicaPublicKeyHex);
+
+// The fixture stores byte fields as `<field>Hex`; decode them back into an Operation.
+function fixtureOperation(vector: (typeof fixture.vectors)[number]): Operation {
+  const kind = Object.fromEntries(
+    Object.entries(vector.kind).map(([key, value]) =>
+      key.endsWith('Hex')
+        ? [key.slice(0, -3), value === null ? null : hexToBytes(value)]
+        : [key, value],
+    ),
+  ) as Operation['kind'];
+  return {
+    meta: {
+      id: { replica: fixturePublicKey, counter: vector.counter },
+      lamport: vector.lamport,
+      ...(vector.knownStateHex === undefined
+        ? {}
+        : { knownState: hexToBytes(vector.knownStateHex) }),
+    },
+    kind,
+  };
+}
+
+test.each(fixture.vectors)('shared operation signature vector: $name', async (vector) => {
+  const { docId } = fixture;
+  const op = fixtureOperation(vector);
+  expect(bytesToHex(await encodeTreecrdtOpSigInput({ docId, op }))).toBe(vector.signatureInputHex);
+
+  const signature = await signTreecrdtOp({ docId, op, privateKey: fixturePrivateKey });
+  expect(bytesToHex(signature)).toBe(vector.signatureHex);
+  await expect(
+    verifyTreecrdtOp({ docId, op, signature, publicKey: fixturePublicKey }),
+  ).resolves.toBe(true);
+});
+
+test('the signature still binds the payload body through its commitment', async () => {
+  const vector = fixture.vectors.find(({ name }) => name === 'payload set')!;
+  const op = fixtureOperation(vector);
+  op.kind = { type: 'payload', node: vector.kind.node, payload: new TextEncoder().encode('World') };
+
+  await expect(
+    verifyTreecrdtOp({
+      docId: fixture.docId,
+      op,
+      signature: hexToBytes(vector.signatureHex),
+      publicKey: fixturePublicKey,
+    }),
+  ).resolves.toBe(false);
 });
