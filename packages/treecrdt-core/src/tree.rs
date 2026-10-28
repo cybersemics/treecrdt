@@ -343,7 +343,8 @@ where
             return self.replay_from_storage();
         }
         for op in accepted {
-            Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
+            self.nodes.ensure_node(op.kind.node())?;
+            Self::apply_operation(&mut self.nodes, &mut self.payloads, &op)?;
             self.op_count += 1;
             if self.is_in_order(&op) {
                 self.head = Some(op);
@@ -636,7 +637,8 @@ where
         storage.scan_since(0, &mut |op| {
             clock.observe(op.meta.lamport);
             version_vector.observe(&op.meta.id.replica, op.meta.id.counter);
-            let _ = Self::apply_forward(nodes, payloads, &op)?;
+            nodes.ensure_node(op.kind.node())?;
+            Self::apply_operation(nodes, payloads, &op)?;
             seq += 1;
             head = Some(op);
             Ok(())
@@ -835,6 +837,11 @@ where
 
     fn apply_forward(nodes: &mut N, payloads: &mut P, op: &Operation) -> Result<NodeSnapshot> {
         let snapshot = Self::snapshot(nodes, op)?;
+        Self::apply_operation(nodes, payloads, op)?;
+        Ok(snapshot)
+    }
+
+    fn apply_operation(nodes: &mut N, payloads: &mut P, op: &Operation) -> Result<()> {
         match &op.kind {
             OperationKind::Insert {
                 parent,
@@ -858,7 +865,7 @@ where
                 Self::apply_payload(nodes, payloads, op, *node, payload.as_deref())?
             }
         }
-        Ok(snapshot)
+        Ok(())
     }
 
     fn snapshot(nodes: &mut N, op: &Operation) -> Result<NodeSnapshot> {
