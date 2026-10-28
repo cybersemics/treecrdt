@@ -134,6 +134,8 @@ export type SyncOnceOptions = {
 export type SyncPushOptions = {
   /** Split a direct push into smaller wire batches to avoid giant frames. */
   maxOpsPerBatch?: number;
+  /** Abort an in-flight direct push before it sends any later chunks. */
+  signal?: AbortSignal;
   /**
    * Reuse an existing opsBatch stream id for a direct push.
    *
@@ -220,6 +222,56 @@ function waitForAbort(signal: AbortSignal): Promise<void> {
   return new Promise<void>((resolve) =>
     signal.addEventListener('abort', () => resolve(), { once: true }),
   );
+}
+
+function syncAbortReason(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) return signal.reason;
+  const error = new Error(signal.reason === undefined ? 'sync aborted' : String(signal.reason));
+  error.name = 'AbortError';
+  return error;
+}
+
+function throwIfSyncAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw syncAbortReason(signal);
+}
+
+function awaitSyncStep<T>(run: () => T | PromiseLike<T>, signal?: AbortSignal): Promise<T> {
+  if (signal?.aborted) return Promise.reject(syncAbortReason(signal));
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      if (signal) reject(syncAbortReason(signal));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+
+    let promise: Promise<T>;
+    try {
+      promise = Promise.resolve(run());
+    } catch (error) {
+      signal?.removeEventListener('abort', onAbort);
+      reject(error);
+      return;
+    }
+
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 type ResponderSubscription<Op> = {
@@ -464,14 +516,19 @@ export class SyncPeer<Op> {
 
   private async refreshHelloCapabilities(
     transport: DuplexTransport<SyncMessage<Op>>,
-    opts: { force?: boolean; waitForAck?: boolean } = {},
+    opts: { force?: boolean; waitForAck?: boolean; signal?: AbortSignal } = {},
   ): Promise<void> {
+    throwIfSyncAborted(opts.signal);
     if (!this.auth?.helloCapabilities) return;
 
-    const [maxLamport, capabilities] = await Promise.all([
-      this.backend.maxLamport(),
-      this.auth.helloCapabilities({ docId: this.backend.docId }),
-    ]);
+    const [maxLamport, capabilities] = await awaitSyncStep(
+      () =>
+        Promise.all([
+          this.backend.maxLamport(),
+          this.auth!.helloCapabilities!({ docId: this.backend.docId }),
+        ]),
+      opts.signal,
+    );
     const fingerprint = capabilitySetFingerprint(capabilities);
     if (!opts.force && this.transportLastSentHelloCaps.get(transport) === fingerprint) return;
 
@@ -484,14 +541,21 @@ export class SyncPeer<Op> {
     }
 
     try {
-      await transport.send({
-        v: 0,
-        docId: this.backend.docId,
-        payload: { case: 'hello', value: { capabilities, filters: [], maxLamport } },
-      });
+      await awaitSyncStep(
+        () =>
+          transport.send({
+            v: 0,
+            docId: this.backend.docId,
+            payload: { case: 'hello', value: { capabilities, filters: [], maxLamport } },
+          }),
+        opts.signal,
+      );
       this.transportLastSentHelloCaps.set(transport, fingerprint);
-      await waiter?.promise;
+      if (waiter) await awaitSyncStep(() => waiter.promise, opts.signal);
     } catch (err) {
+      // A cancelled waiter has not observed the acknowledgement. Force the next attempt to
+      // advertise again instead of treating this capability set as fully negotiated.
+      this.transportLastSentHelloCaps.delete(transport);
       if (waiter) {
         const waiters = this.transportHelloAckWaiters.get(transport);
         waiters?.delete(waiter);
@@ -891,7 +955,10 @@ export class SyncPeer<Op> {
   ): Promise<void> {
     if (ops.length === 0) return;
 
-    await this.refreshHelloCapabilities(transport, { waitForAck: true });
+    const signal = opts.signal;
+    const step = <T>(run: () => T | PromiseLike<T>) => awaitSyncStep(run, signal);
+    throwIfSyncAborted(signal);
+    await this.refreshHelloCapabilities(transport, { waitForAck: true, signal });
 
     const streamId = this.resolveDirectPushStreamId(transport, opts.filterId);
     const batchSize = this.resolveMaxOpsPerBatch(opts.maxOpsPerBatch);
@@ -900,33 +967,38 @@ export class SyncPeer<Op> {
     const shouldAttachAuth = peerAdvertisedOpAuth(peerCapabilities);
 
     for (let start = 0; start < ops.length; start += batchSize) {
+      throwIfSyncAborted(signal);
       const chunk = ops.slice(start, start + batchSize);
       const auth =
         shouldAttachAuth && this.auth?.signOps
-          ? await this.auth.signOps(chunk, {
-              docId: this.backend.docId,
-              purpose: 'reconcile',
-              filterId: streamId,
-            })
+          ? await step(() =>
+              this.auth!.signOps!(chunk, {
+                docId: this.backend.docId,
+                purpose: 'reconcile',
+                filterId: streamId,
+              }),
+            )
           : undefined;
       if (auth && auth.length !== chunk.length) {
         throw new Error(`signOps returned ${auth.length} entries for ${chunk.length} ops`);
       }
 
-      await transport.send({
-        v: 0,
-        docId: this.backend.docId,
-        payload: {
-          case: 'opsBatch',
-          value: {
-            filterId: streamId,
-            ops: [...chunk],
-            ...(auth ? { auth } : {}),
-            done: start + batchSize >= ops.length,
+      await step(() =>
+        transport.send({
+          v: 0,
+          docId: this.backend.docId,
+          payload: {
+            case: 'opsBatch',
+            value: {
+              filterId: streamId,
+              ops: [...chunk],
+              ...(auth ? { auth } : {}),
+              done: start + batchSize >= ops.length,
+            },
           },
-        },
-      });
-      await yieldToMacrotask();
+        }),
+      );
+      await step(yieldToMacrotask);
     }
   }
 
