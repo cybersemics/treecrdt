@@ -35,7 +35,8 @@ import { createTreecrdtClient } from '@treecrdt/wa-sqlite';
 const memoryClient = await createTreecrdtClient({ docId: 'my-doc' });
 
 // Durable: OPFS storage in a dedicated worker. Throws when OPFS is unavailable
-// (e.g. missing cross-origin isolation) — there is no silent memory fallback.
+// (e.g. on an insecure origin) — there is no silent memory fallback. Cross-origin
+// isolation (COOP/COEP headers) is not required.
 const persistentClient = await createTreecrdtClient({ docId: 'my-doc', persistent: true });
 
 // Override the OPFS filename when an existing application owns the file naming scheme.
