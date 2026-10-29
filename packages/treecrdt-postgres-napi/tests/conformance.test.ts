@@ -138,7 +138,7 @@ maybeDescribe('engine conformance scenarios (postgres-napi engine)', () => {
   });
 
   for (const scenario of treecrdtEngineConformanceScenarios()) {
-    test(`postgres engine conformance: ${scenario.name}`, async () => {
+    test(`postgres engine conformance: ${scenario.name}`, async (ctx) => {
       const persistentInternal = new Map<string, string>();
       let ephemeralIndex = 0;
 
@@ -170,6 +170,7 @@ maybeDescribe('engine conformance scenarios (postgres-napi engine)', () => {
 
       await runTreecrdtEngineConformanceScenario(scenario, {
         docIdPrefix: 'treecrdt-postgres-conformance',
+        skip: () => ctx.skip(),
         openEngine: ({ docId }) => openWrapped({ docId }),
         openPersistentEngine: ({ docId, name }) => openWrapped({ docId, persistentName: name }),
       });

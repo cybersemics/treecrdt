@@ -59,9 +59,10 @@ test('createTreecrdtClient rejects an empty docId', async () => {
 });
 
 for (const scenario of treecrdtEngineConformanceScenarios()) {
-  test(`wa-sqlite engine conformance (node, memory): ${scenario.name}`, async () => {
+  test(`wa-sqlite engine conformance (node, memory): ${scenario.name}`, async (ctx) => {
     await runTreecrdtEngineConformanceScenario(scenario, {
       docIdPrefix: 'treecrdt-wa-node-conformance',
+      skip: () => ctx.skip(),
       openEngine: ({ docId }) => createWaEngine({ docId }),
     });
   });

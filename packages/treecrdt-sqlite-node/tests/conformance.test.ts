@@ -94,7 +94,7 @@ test('sqlite auth-aware local write emits materialization after auth succeeds', 
 });
 
 for (const scenario of treecrdtEngineConformanceScenarios()) {
-  test(`sqlite engine conformance (node): ${scenario.name}`, async () => {
+  test(`sqlite engine conformance (node): ${scenario.name}`, async (ctx) => {
     let persistentDir: string | null = null;
     const persistentPaths = new Map<string, string>();
     const ensurePersistentDir = () => {
@@ -105,6 +105,7 @@ for (const scenario of treecrdtEngineConformanceScenarios()) {
 
     await runTreecrdtEngineConformanceScenario(scenario, {
       docIdPrefix: 'treecrdt-node-conformance',
+      skip: () => ctx.skip(),
       openEngine: ({ docId }) => createNodeEngine({ docId }),
       openPersistentEngine: ({ docId, name }) => {
         const dir = ensurePersistentDir();

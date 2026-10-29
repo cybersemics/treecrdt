@@ -45,6 +45,8 @@ export type TreecrdtEngineConformanceContext = {
   engine: TreecrdtEngine;
   createEngine: (opts: { docId: string; name?: string }) => Promise<TreecrdtEngine>;
   createPersistentEngine?: (opts: { docId: string; name: string }) => Promise<TreecrdtEngine>;
+  /** Marks the scenario skipped when the engine lacks what it tests; call as `return ctx.skip(reason)`. */
+  skip: (reason: string) => void;
 };
 
 export type TreecrdtEngineConformanceScenario = {
@@ -56,6 +58,8 @@ export type TreecrdtEngineConformanceRunner = {
   docIdPrefix: string;
   openEngine: (opts: { docId: string; name?: string }) => Promise<TreecrdtEngine>;
   openPersistentEngine?: (opts: { docId: string; name: string }) => Promise<TreecrdtEngine>;
+  /** Reports a skipped scenario, e.g. with vitest's `ctx.skip`. Without it, a skipped scenario passes. */
+  skip?: (reason: string) => void;
   cleanup?: () => Promise<void> | void;
 };
 
@@ -125,6 +129,7 @@ export async function runTreecrdtEngineConformanceScenario(
       engine,
       createEngine: openEngine,
       createPersistentEngine: openPersistentEngine,
+      skip: (reason) => runner.skip?.(reason),
     });
   } finally {
     await closeTrackedConformanceEngines(engines);
@@ -1095,7 +1100,7 @@ async function scenarioChangedSinceReportsChangedNodes(
   ctx: TreecrdtEngineConformanceContext,
 ): Promise<void> {
   const engine = ctx.engine;
-  if (!engine.tree.changedSince) return;
+  if (!engine.tree.changedSince) return ctx.skip('engine has no tree.changedSince');
   const replica = replicaFromLabel('r-changed');
   const encoder = new TextEncoder();
   const root = nodeIdFromInt(0);
@@ -1158,7 +1163,7 @@ async function scenarioChangedSincePagesUnderFixedHead(
   ctx: TreecrdtEngineConformanceContext,
 ): Promise<void> {
   const engine = ctx.engine;
-  if (!engine.tree.changedSince) return;
+  if (!engine.tree.changedSince) return ctx.skip('engine has no tree.changedSince');
   const replica = replicaFromLabel('r-pages');
   const root = nodeIdFromInt(0);
   const seed = nodeIdFromInt(40);
@@ -1200,7 +1205,7 @@ async function scenarioChangedSinceSkipsInvisibleOps(
   ctx: TreecrdtEngineConformanceContext,
 ): Promise<void> {
   const engine = ctx.engine;
-  if (!engine.tree.changedSince) return;
+  if (!engine.tree.changedSince) return ctx.skip('engine has no tree.changedSince');
   const local = replicaFromLabel('r-local');
   const remote = replicaFromLabel('r-remote');
   const encoder = new TextEncoder();
@@ -1231,7 +1236,9 @@ async function scenarioChangedSinceSurvivesRebuild(
 ): Promise<void> {
   const engine = ctx.engine;
   const runner = engineRunnerOrNull(engine);
-  if (!engine.tree.changedSince || !runner) return;
+  if (!engine.tree.changedSince || !runner) {
+    return ctx.skip('needs tree.changedSince and a SQLite runner');
+  }
   const replica = replicaFromLabel('r-rebuild');
   const encoder = new TextEncoder();
   const root = nodeIdFromInt(0);
@@ -1261,7 +1268,7 @@ async function scenarioChangedSinceMatchesStateDiff(
   ctx: TreecrdtEngineConformanceContext,
 ): Promise<void> {
   const a = ctx.engine;
-  if (!a.tree.changedSince) return;
+  if (!a.tree.changedSince) return ctx.skip('engine has no tree.changedSince');
   const b = await ctx.createEngine({ docId: ctx.docId, name: 'peer-b' });
   const replicas = new Map([
     [a, replicaFromLabel('rA')],
