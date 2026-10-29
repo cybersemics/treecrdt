@@ -6,7 +6,8 @@ use std::ptr::null_mut;
 use std::slice;
 
 use treecrdt_core::{
-    Lamport, MaterializationCursor, MaterializationHead, MaterializationKey, MaterializationState,
+    Lamport, MaterializationCursor, MaterializationHead, MaterializationKey,
+    MaterializationOutcome, MaterializationState,
 };
 
 #[derive(Clone, Debug)]
@@ -232,6 +233,61 @@ pub(super) fn update_tree_meta_head<R: AsRef<[u8]>>(
     if step_rc != SQLITE_DONE as c_int {
         return Err(step_rc);
     }
+    if finalize_rc != SQLITE_OK as c_int {
+        return Err(finalize_rc);
+    }
+    Ok(())
+}
+
+/// Stamps every node a committed outcome changed with the outcome's head seq.
+///
+/// Callers run this inside the savepoint that commits the outcome, so a stamp is never visible
+/// without the state it describes. Rebuilds that clear `tree_nodes` keep earlier stamps.
+pub(super) fn record_changed_nodes(
+    db: *mut sqlite3,
+    outcome: &MaterializationOutcome,
+) -> Result<(), c_int> {
+    if outcome.changes.is_empty() {
+        return Ok(());
+    }
+    let sql = CString::new(
+        "INSERT INTO tree_changes(node, seq) VALUES (?1, ?2) \
+         ON CONFLICT(node) DO UPDATE SET seq = excluded.seq",
+    )
+    .expect("tree changes sql");
+    let mut stmt: *mut sqlite3_stmt = null_mut();
+    let rc = sqlite_prepare_v2(db, sql.as_ptr(), -1, &mut stmt, null_mut());
+    if rc != SQLITE_OK as c_int {
+        return Err(rc);
+    }
+
+    let mut result = Ok(());
+    for change in &outcome.changes {
+        let node = change.node().0.to_be_bytes();
+        let step_rc = unsafe {
+            sqlite_reset(stmt);
+            sqlite_clear_bindings(stmt);
+            if sqlite_bind_blob(
+                stmt,
+                1,
+                node.as_ptr() as *const c_void,
+                node.len() as c_int,
+                None,
+            ) != SQLITE_OK as c_int
+                || sqlite_bind_int64(stmt, 2, outcome.head_seq as i64) != SQLITE_OK as c_int
+            {
+                SQLITE_ERROR as c_int
+            } else {
+                sqlite_step(stmt)
+            }
+        };
+        if step_rc != SQLITE_DONE as c_int {
+            result = Err(step_rc);
+            break;
+        }
+    }
+    let finalize_rc = unsafe { sqlite_finalize(stmt) };
+    result?;
     if finalize_rc != SQLITE_OK as c_int {
         return Err(finalize_rc);
     }

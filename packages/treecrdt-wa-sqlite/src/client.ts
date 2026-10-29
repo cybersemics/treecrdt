@@ -1,6 +1,7 @@
 import * as Comlink from 'comlink';
 import type { Operation, ReplicaId } from '@treecrdt/interface';
 import {
+  createTreecrdtSqliteChangedSince,
   createTreecrdtSqliteWriter,
   decodeSqliteNodeIds,
   decodeSqliteOpRefs,
@@ -232,6 +233,9 @@ export async function createClientFromBackend(runtime: RuntimeConnection): Promi
       }),
       dump: () => guard(async () => decodeSqliteTreeRows(await session.tree.dump())),
       nodeCount: () => guard(async () => Number(await session.tree.nodeCount())),
+      changedSince: createTreecrdtSqliteChangedSince((query) =>
+        guard(() => session.tree.changedSince(query)),
+      ),
     },
     meta: {
       headLamport: () => guard(async () => Number(await session.operations.headLamport())),

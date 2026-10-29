@@ -80,6 +80,22 @@ Storage, runtime, filename, and asset resolution are selected internally:
 
 Callers only see `TreecrdtClient` (`ops` / `tree` / `local` / `onMaterialized` / `close` / `drop`).
 
+### Keeping derived data in step
+
+`tree.changedSince(since)` returns each node whose visible state changed after a `headSeq`, once, with its current state. Changes are recorded in the same commit as the state, so a stored cursor resumes without missing any after a crash or reload. `since = 0` reads every node.
+
+```ts
+let page = await client.tree.changedSince(loadCursor() ?? 0, { payloads: true, limit: 500 });
+for (;;) {
+  for (const node of page.nodes) updateIndex(node);
+  if (!page.next) break;
+  page = await client.tree.changedSince(page.next, { payloads: true, limit: 500 });
+}
+saveCursor(page.headSeq); // with the index rows, in one transaction when they share the database
+```
+
+`onMaterialized` remains the low-latency signal while the client is open; `changedSince` is what to rely on across restarts.
+
 See the [playground](../../examples/playground/README.md) for a full browser demo.
 
 ## Node usage (in-memory WASM)

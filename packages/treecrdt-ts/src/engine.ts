@@ -213,6 +213,42 @@ export type TreecrdtNodePrimitives = {
   children: (parent: string, offset: number | null, limit: number | null) => Promise<string[]>;
 };
 
+/** Current state of a node returned by `changedSince`. */
+export type TreecrdtChangedNode = {
+  /** Canonical 16-byte NodeId encoded as 32 lowercase hex characters. */
+  node: string;
+  parent: string | null;
+  orderKey: Uint8Array | null;
+  /** True when the node is deleted or no longer materialized. */
+  tombstone: boolean;
+  /** `headSeq` of the commit that last changed the node visibly; 0 when it predates change tracking. */
+  changedSeq: number;
+  /** Current payload, present only when requested; null for deleted nodes. */
+  payload?: Uint8Array | null;
+};
+
+/** Continues a paged `changedSince` read. Treat as opaque. */
+export type TreecrdtChangedSinceCursor = {
+  since: number;
+  until: number;
+  afterSeq: number;
+  afterNode: string;
+};
+
+export type TreecrdtChangedSinceOptions = {
+  /** Maximum nodes per page; omitted reads every changed node at once. */
+  limit?: number;
+  /** Include each node's current payload. */
+  payloads?: boolean;
+};
+
+export type TreecrdtChangedSincePage = {
+  /** Upper bound of the read. Once `next` is null, every change up to `headSeq` has been returned. */
+  headSeq: number;
+  nodes: TreecrdtChangedNode[];
+  next: TreecrdtChangedSinceCursor | null;
+};
+
 export type TreecrdtEngineTree = {
   /** Resolves ROOT aliases to `root`; undefined when any other node is absent. */
   get: (node: string) => Promise<TreecrdtNode | undefined>;
@@ -220,6 +256,19 @@ export type TreecrdtEngineTree = {
   root: TreecrdtNode;
   dump: () => Promise<SqliteTreeRow[]>;
   nodeCount: () => Promise<number>;
+  /**
+   * Nodes whose visible state changed after `since` (a `headSeq`), each once, with its current state.
+   *
+   * `since = 0` returns every materialized node. Store the returned `headSeq` once `next` is null and pass
+   * it as `since` to resume after a restart: changes are recorded in the same commit as the state, so none
+   * are missed. Ops that change nothing visible return no nodes but still advance `headSeq`.
+   *
+   * Optional: implemented by the SQLite-backed engines.
+   */
+  changedSince?: (
+    since: number | TreecrdtChangedSinceCursor,
+    opts?: TreecrdtChangedSinceOptions,
+  ) => Promise<TreecrdtChangedSincePage>;
 };
 
 /**

@@ -1,4 +1,8 @@
-import type { MaterializationEvent, TreecrdtEngine } from '@treecrdt/interface/engine';
+import type {
+  MaterializationEvent,
+  TreecrdtChangedNode,
+  TreecrdtEngine,
+} from '@treecrdt/interface/engine';
 import type { Operation, ReplicaId } from '@treecrdt/interface';
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
@@ -173,6 +177,26 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
     {
       name: 'tree: get/root lazy Node navigation',
       run: scenarioTreeGetRootLazyNavigation,
+    },
+    {
+      name: 'tree: changedSince reports each changed node once',
+      run: scenarioChangedSinceReportsChangedNodes,
+    },
+    {
+      name: 'tree: changedSince pages under a fixed head',
+      run: scenarioChangedSincePagesUnderFixedHead,
+    },
+    {
+      name: 'tree: changedSince skips ops without visible changes',
+      run: scenarioChangedSinceSkipsInvisibleOps,
+    },
+    {
+      name: 'tree: changedSince keeps unread changes across a rebuild',
+      run: scenarioChangedSinceSurvivesRebuild,
+    },
+    {
+      name: 'tree: changedSince matches state diffs across replicas',
+      run: scenarioChangedSinceMatchesStateDiff,
     },
     {
       name: 'oprefs_all + ops.get: preserve order and reject missing refs',
@@ -1047,6 +1071,298 @@ async function scenarioMaterializedSmokeWithOpRefs(
     ['move'],
     'opsByOpRefs(n1) kinds',
   );
+}
+
+/** Reads every page of a `changedSince` read; all pages must share the first page's head. */
+async function readAllChangedSince(
+  engine: TreecrdtEngine,
+  since: number,
+  opts: { limit?: number; payloads?: boolean } = {},
+): Promise<{ headSeq: number; nodes: TreecrdtChangedNode[] }> {
+  const changedSince = engine.tree.changedSince!;
+  let page = await changedSince(since, opts);
+  const nodes = [...page.nodes];
+  while (page.next) {
+    const headSeq = page.headSeq;
+    page = await changedSince(page.next, opts);
+    assertEqual(page.headSeq, headSeq, 'changedSince pages share one headSeq');
+    nodes.push(...page.nodes);
+  }
+  return { headSeq: page.headSeq, nodes };
+}
+
+async function scenarioChangedSinceReportsChangedNodes(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  if (!engine.tree.changedSince) return;
+  const replica = replicaFromLabel('r-changed');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const seed = nodeIdFromInt(1);
+  const a = nodeIdFromInt(2);
+  const b = nodeIdFromInt(3);
+  const c = nodeIdFromInt(4);
+
+  await engine.local.insert(replica, root, seed, { type: 'last' }, null);
+  const start = (await readAllChangedSince(engine, 0)).headSeq;
+  await engine.local.insert(replica, root, a, { type: 'last' }, encoder.encode('a1'));
+  await engine.local.insert(replica, root, b, { type: 'last' }, null);
+  await engine.local.payload(replica, a, encoder.encode('a2'));
+
+  const first = await readAllChangedSince(engine, start, { payloads: true });
+  assertArrayEqual(
+    first.nodes.map((n) => n.node).sort(),
+    [a, b],
+    'each changed node is listed once',
+  );
+  const rowA = first.nodes.find((n) => n.node === a)!;
+  assertEqual(rowA.parent, root, 'changed node parent');
+  assertEqual(rowA.tombstone, false, 'changed node tombstone');
+  assertBytesEqual(rowA.payload ?? null, encoder.encode('a2'), 'changed node latest payload');
+  assert(
+    rowA.changedSeq > start && rowA.changedSeq <= first.headSeq,
+    'changedSeq lies within the read',
+  );
+
+  const idle = await readAllChangedSince(engine, first.headSeq);
+  assertEqual(idle.nodes.length, 0, 'nothing changed after the returned headSeq');
+  assertEqual(idle.headSeq, first.headSeq, 'headSeq is stable without writes');
+
+  await engine.local.insert(replica, a, c, { type: 'last' }, null);
+  await engine.local.move(replica, b, a, { type: 'first' });
+  await engine.local.delete(replica, c);
+  const second = await readAllChangedSince(engine, first.headSeq);
+  const byId = new Map(second.nodes.map((n) => [n.node, n]));
+  assertEqual(byId.get(b)?.parent ?? null, a, 'moved node reports its new parent');
+  assertEqual(byId.get(c)?.tombstone, true, 'deleted node is reported as a tombstone');
+  assert(
+    second.nodes.every((n) => n.payload === undefined),
+    'payloads are omitted unless requested',
+  );
+
+  const full = await readAllChangedSince(engine, 0, { payloads: true });
+  assertArrayEqual(
+    full.nodes.map((n) => n.node).sort(),
+    [root, seed, a, b, c],
+    'a full read lists every materialized node',
+  );
+  assertEqual(
+    full.nodes.find((n) => n.node === c)?.payload ?? null,
+    null,
+    'deleted nodes carry no payload',
+  );
+}
+
+async function scenarioChangedSincePagesUnderFixedHead(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  if (!engine.tree.changedSince) return;
+  const replica = replicaFromLabel('r-pages');
+  const root = nodeIdFromInt(0);
+  const seed = nodeIdFromInt(40);
+  const nodes = [41, 42, 43, 44, 45].map(nodeIdFromInt);
+  const late = nodeIdFromInt(50);
+
+  await engine.local.insert(replica, root, seed, { type: 'last' }, null);
+  const start = (await readAllChangedSince(engine, 0)).headSeq;
+  for (const node of nodes) await engine.local.insert(replica, root, node, { type: 'last' }, null);
+
+  let page = await engine.tree.changedSince(start, { limit: 2 });
+  assertEqual(page.nodes.length, 2, 'first page honours the limit');
+  assert(page.next, 'a full page has a continuation');
+  const seen = page.nodes.map((n) => n.node);
+  // A write between pages belongs to the next read, not this one.
+  await engine.local.insert(replica, root, late, { type: 'last' }, null);
+  while (page.next) {
+    page = await engine.tree.changedSince(page.next, { limit: 2 });
+    seen.push(...page.nodes.map((n) => n.node));
+  }
+  assertArrayEqual(seen, nodes, 'pages return every change once, in commit order');
+
+  const next = await readAllChangedSince(engine, page.headSeq);
+  assertArrayEqual(
+    next.nodes.map((n) => n.node),
+    [late],
+    'a write during paging surfaces in the next read',
+  );
+
+  const full = await readAllChangedSince(engine, 0, { limit: 3 });
+  assertArrayEqual(
+    full.nodes.map((n) => n.node),
+    [root, seed, ...nodes, late],
+    'a paged full read lists every node once',
+  );
+}
+
+async function scenarioChangedSinceSkipsInvisibleOps(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  if (!engine.tree.changedSince) return;
+  const local = replicaFromLabel('r-local');
+  const remote = replicaFromLabel('r-remote');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const node = nodeIdFromInt(60);
+
+  await engine.local.insert(local, root, node, { type: 'last' }, encoder.encode('v1'));
+  await engine.local.payload(local, node, encoder.encode('v2'));
+  const before = await readAllChangedSince(engine, 0);
+
+  // Older than the current winner: stored, but nothing visible changes.
+  await engine.ops.append(
+    makePayloadOp({
+      replica: remote,
+      counter: 1,
+      lamport: 1,
+      node,
+      payload: encoder.encode('stale'),
+    }),
+  );
+  const after = await readAllChangedSince(engine, before.headSeq);
+  assertEqual(after.nodes.length, 0, 'an op that changes nothing visible reports no nodes');
+  assert(after.headSeq > before.headSeq, 'headSeq still advances past the stored op');
+}
+
+async function scenarioChangedSinceSurvivesRebuild(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const runner = engineRunnerOrNull(engine);
+  if (!engine.tree.changedSince || !runner) return;
+  const replica = replicaFromLabel('r-rebuild');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(70);
+  const node = nodeIdFromInt(71);
+
+  await engine.local.insert(replica, root, parent, { type: 'last' }, null);
+  await engine.local.insert(replica, parent, node, { type: 'last' }, encoder.encode('read'));
+  const cursor = (await readAllChangedSince(engine, 0)).headSeq;
+  await engine.local.payload(replica, node, encoder.encode('unread'));
+
+  // Recovery replays the whole log and refills tree_nodes; unread stamps must survive it.
+  await runner.exec(
+    "UPDATE tree_meta SET replay_lamport = 0, replay_replica = X'', replay_counter = 0 WHERE id = 1",
+  );
+  const after = await readAllChangedSince(engine, cursor, { payloads: true });
+  const row = after.nodes.find((n) => n.node === node);
+  assert(row, 'a change not yet read survives a rebuild');
+  assertBytesEqual(
+    row.payload ?? null,
+    encoder.encode('unread'),
+    'rebuilt state keeps the payload',
+  );
+}
+
+async function scenarioChangedSinceMatchesStateDiff(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const a = ctx.engine;
+  if (!a.tree.changedSince) return;
+  const b = await ctx.createEngine({ docId: ctx.docId, name: 'peer-b' });
+  const replicas = new Map([
+    [a, replicaFromLabel('rA')],
+    [b, replicaFromLabel('rB')],
+  ]);
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  let nextNode = 100;
+  // Deterministic xorshift32, so a failing round reproduces.
+  let seed = 0x9e3779b9;
+  const random = () => {
+    seed ^= seed << 13;
+    seed ^= seed >>> 17;
+    seed ^= seed << 5;
+    return (seed >>> 0) / 0x1_0000_0000;
+  };
+  const pick = <T>(items: T[]): T => items[Math.floor(random() * items.length)]!;
+  const describe = (
+    parent: string | null,
+    orderKey: Uint8Array | null,
+    tombstone: boolean,
+    payload: Uint8Array | null | undefined,
+  ) =>
+    JSON.stringify([
+      parent,
+      orderKey && bytesToHex(orderKey),
+      tombstone,
+      payload ? bytesToHex(payload) : null,
+    ]);
+
+  /** Visible state per node, read without `changedSince`. */
+  const snapshot = async (engine: TreecrdtEngine) => {
+    const out = new Map<string, string>();
+    for (const row of await engine.tree.dump()) {
+      const payload = row.tombstone ? null : await (await engine.tree.get(row.node))?.payload();
+      out.set(row.node, describe(row.parent, row.orderKey, row.tombstone, payload));
+    }
+    return out;
+  };
+
+  const step = async (engine: TreecrdtEngine) => {
+    const replica = replicas.get(engine)!;
+    const live = (await engine.tree.dump()).filter((row) => !row.tombstone).map((row) => row.node);
+    const others = live.filter((node) => node !== root);
+    const roll = random();
+    if (roll < 0.4 || others.length < 2) {
+      const node = nodeIdFromInt(nextNode++);
+      await engine.local.insert(replica, pick(live), node, { type: 'last' }, encoder.encode(node));
+    } else if (roll < 0.65) {
+      await engine.local.payload(
+        replica,
+        pick(others),
+        encoder.encode(`p${Math.floor(random() * 4)}`),
+      );
+    } else if (roll < 0.9) {
+      try {
+        await engine.local.move(replica, pick(others), pick(live), { type: 'first' });
+      } catch {
+        // A move under its own descendant is rejected.
+      }
+    } else {
+      await engine.local.delete(replica, pick(others));
+    }
+  };
+
+  let cursor = (await readAllChangedSince(a, 0)).headSeq;
+  let before = await snapshot(a);
+  for (let round = 0; round < 10; round += 1) {
+    for (let i = 0; i < 4; i += 1) {
+      await step(a);
+      await step(b);
+    }
+    // Whole-log exchanges deliver the peer's ops late and out of order relative to local writes.
+    if (random() < 0.7) await a.ops.appendMany(await b.ops.all());
+    if (random() < 0.5) await b.ops.appendMany(await a.ops.all());
+
+    const read = await readAllChangedSince(a, cursor, {
+      payloads: true,
+      ...(random() < 0.5 ? { limit: 3 } : {}),
+    });
+    const after = await snapshot(a);
+    const reported = new Map(read.nodes.map((n) => [n.node, n]));
+    for (const node of new Set([...before.keys(), ...after.keys()])) {
+      if (before.get(node) === after.get(node)) continue;
+      assert(reported.has(node), `round ${round}: changedSince must report changed node ${node}`);
+    }
+    for (const [node, changed] of reported) {
+      const expected = after.get(node);
+      if (expected === undefined) {
+        assert(changed.tombstone, `round ${round}: a node without a row is reported as gone`);
+        continue;
+      }
+      assertEqual(
+        describe(changed.parent, changed.orderKey, changed.tombstone, changed.payload),
+        expected,
+        `round ${round}: reported state of ${node}`,
+      );
+    }
+    cursor = read.headSeq;
+    before = after;
+  }
 }
 
 async function scenarioTreeGetRootLazyNavigation(

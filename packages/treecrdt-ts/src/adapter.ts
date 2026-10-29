@@ -4,6 +4,19 @@ import type { MaterializationOutcome } from './engine.js';
 export type SerializeNodeId = (id: string) => Uint8Array;
 export type SerializeReplica = (replica: Operation['meta']['id']['replica']) => Uint8Array;
 
+/** One page of a `changedSince` read in raw adapter form. */
+export type TreecrdtChangedSinceQuery = {
+  since: number;
+  /** Upper bound fixed by the first page; null reads the current head. */
+  until: number | null;
+  afterSeq: number;
+  /** Last node of the previous page (16-byte id), or null on the first page. */
+  afterNode: Uint8Array | null;
+  /** Maximum rows; null returns all. */
+  limit: number | null;
+  payloads: boolean;
+};
+
 export interface TreecrdtAdapter {
   /**
    * Set the document id used for v0 sync (`op_ref` derivation).
@@ -47,6 +60,15 @@ export interface TreecrdtAdapter {
    * Returns raw JSON-decoded rows (array of objects with byte fields).
    */
   treeDump(): Promise<unknown[]>;
+  /**
+   * Read nodes whose visible state changed in `(since, until]`, in paging order.
+   *
+   * Returns the read's `headSeq` and raw JSON-decoded rows
+   * `[node, parent, orderKey, tombstone, changedSeq, payload]` with hex byte fields.
+   */
+  treeChangedSince?(
+    query: TreecrdtChangedSinceQuery,
+  ): Promise<{ headSeq: number; rows: unknown[] }>;
   /**
    * Count non-tombstoned nodes in the materialized tree (excluding ROOT).
    */
