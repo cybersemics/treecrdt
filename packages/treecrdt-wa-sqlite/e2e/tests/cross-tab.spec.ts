@@ -44,6 +44,22 @@ async function state(page: Page, opts: { parents?: string[]; nodes?: string[] } 
   }, opts);
 }
 
+async function holdAuthWrite(page: Page, opts: { replicaLabel: string; nodeInt: number }) {
+  return page.evaluate(async (holdOpts) => {
+    const hold = (window as any).__holdSharedOpfsCrossTabAuthWrite;
+    if (!hold) throw new Error('__holdSharedOpfsCrossTabAuthWrite not available');
+    return await hold(holdOpts);
+  }, opts);
+}
+
+async function settleAuthWrite(page: Page, allow: boolean) {
+  return page.evaluate(async (allowWrite) => {
+    const settle = (window as any).__settleSharedOpfsCrossTabAuthWrite;
+    if (!settle) throw new Error('__settleSharedOpfsCrossTabAuthWrite not available');
+    return await settle(allowWrite);
+  }, allow);
+}
+
 async function closeClient(page: Page) {
   await page.evaluate(async () => {
     const close = (window as any).__closeSharedOpfsCrossTabClient;
@@ -154,6 +170,43 @@ test('shared OPFS clients propagate materialization events across tabs', async (
     expect(parentDeletedOnA.existsByNode[child.node]).toBe(true);
     expect(parentDeletedOnA.childrenByParent[root]).not.toContain(parent.node);
     expect(parentDeletedOnA.childrenByParent[root]).toContain(child.node);
+  } finally {
+    await Promise.allSettled([closeClient(pageA), closeClient(pageB)]);
+    await Promise.allSettled([pageA.close(), pageB.close()]);
+  }
+});
+
+test('denied auth-checked write keeps writes from another tab', async ({ context }, testInfo) => {
+  if (testInfo.project.name !== 'chromium-dev') test.skip();
+  test.setTimeout(120_000);
+
+  const suffix = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+  const docId = `e2e-cross-tab-auth-${suffix}`;
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+
+  try {
+    await Promise.all([waitForCrossTabHarness(pageA), waitForCrossTabHarness(pageB)]);
+    for (const summary of await Promise.all([openClient(pageA, docId), openClient(pageB, docId)])) {
+      expect(summary).toEqual({ mode: 'worker', runtime: 'shared-worker', storage: 'opfs' });
+    }
+
+    const denied = await holdAuthWrite(pageA, { replicaLabel: 'cross-tab-a', nodeInt: 711 });
+    const written = await mutateTree(pageB, {
+      replicaLabel: 'cross-tab-b',
+      action: 'insert',
+      nodeInt: 712,
+    });
+    expect(await settleAuthWrite(pageA, false)).toEqual({
+      ok: false,
+      error: 'local auth denied',
+    });
+
+    for (const page of [pageA, pageB]) {
+      const tree = await state(page, { nodes: [denied.node, written.node] });
+      expect(tree.existsByNode[written.node]).toBe(true);
+      expect(tree.existsByNode[denied.node]).toBe(false);
+    }
   } finally {
     await Promise.allSettled([closeClient(pageA), closeClient(pageB)]);
     await Promise.allSettled([pageA.close(), pageB.close()]);

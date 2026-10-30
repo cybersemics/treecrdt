@@ -138,10 +138,12 @@ export type LocalWriteOptions = {
   writeId?: string;
 
   /**
-   * Authorizes the minted local op before it is exposed to callers as committed.
+   * Authorizes the minted local op before it is written, so auth failures write
+   * nothing and emit no materialization events.
    *
-   * SQLite clients wrap this in a savepoint so auth failures roll back the local
-   * op and defer materialization events until auth succeeds.
+   * SQLite clients hold no transaction while this runs and authorize one write
+   * per replica at a time. If another op is applied before this one is written,
+   * the op is minted and authorized again, up to four times per write.
    */
   authSession?: LocalWriteAuthSession;
 };

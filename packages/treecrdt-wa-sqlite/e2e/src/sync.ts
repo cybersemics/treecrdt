@@ -537,6 +537,60 @@ export async function sharedOpfsCrossTabState(
   };
 }
 
+let heldSharedOpfsCrossTabAuthWrite: {
+  write: Promise<Operation>;
+  settle: (allow: boolean) => void;
+} | null = null;
+
+/** Starts an auth-checked insert whose authorization waits for the settle call below. */
+export async function holdSharedOpfsCrossTabAuthWrite(opts: {
+  replicaLabel: string;
+  nodeInt: number;
+}): Promise<{ node: string }> {
+  if (!sharedOpfsCrossTabClient) throw new Error('shared OPFS cross-tab client is not open');
+  const node = nodeIdFromInt(opts.nodeInt);
+  let authorizing!: () => void;
+  const started = new Promise<void>((resolve) => (authorizing = resolve));
+  let settle!: (allow: boolean) => void;
+  const decision = new Promise<void>((resolve, reject) => {
+    settle = (allow) => (allow ? resolve() : reject(new Error('local auth denied')));
+  });
+  const write = sharedOpfsCrossTabClient.local.insert(
+    replicaFromLabel(opts.replicaLabel),
+    '0'.repeat(32),
+    node,
+    { type: 'last' },
+    null,
+    {
+      authSession: {
+        authorizeLocalOps: async () => {
+          authorizing();
+          await decision;
+        },
+      },
+    },
+  );
+  write.catch(() => undefined);
+  heldSharedOpfsCrossTabAuthWrite = { write, settle };
+  await Promise.race([started, write]);
+  return { node };
+}
+
+export async function settleSharedOpfsCrossTabAuthWrite(
+  allow: boolean,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const held = heldSharedOpfsCrossTabAuthWrite;
+  heldSharedOpfsCrossTabAuthWrite = null;
+  if (!held) throw new Error('no held auth-checked write');
+  held.settle(allow);
+  try {
+    await held.write;
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export async function closeSharedOpfsCrossTabClient(): Promise<void> {
   sharedOpfsCrossTabUnsubscribe?.();
   sharedOpfsCrossTabUnsubscribe = null;
@@ -833,6 +887,8 @@ declare global {
     __openSharedOpfsCrossTabClient?: typeof openSharedOpfsCrossTabClient;
     __mutateSharedOpfsCrossTabTree?: typeof mutateSharedOpfsCrossTabTree;
     __sharedOpfsCrossTabState?: typeof sharedOpfsCrossTabState;
+    __holdSharedOpfsCrossTabAuthWrite?: typeof holdSharedOpfsCrossTabAuthWrite;
+    __settleSharedOpfsCrossTabAuthWrite?: typeof settleSharedOpfsCrossTabAuthWrite;
     __closeSharedOpfsCrossTabClient?: typeof closeSharedOpfsCrossTabClient;
   }
 }
@@ -847,5 +903,7 @@ if (typeof window !== 'undefined') {
   window.__openSharedOpfsCrossTabClient = openSharedOpfsCrossTabClient;
   window.__mutateSharedOpfsCrossTabTree = mutateSharedOpfsCrossTabTree;
   window.__sharedOpfsCrossTabState = sharedOpfsCrossTabState;
+  window.__holdSharedOpfsCrossTabAuthWrite = holdSharedOpfsCrossTabAuthWrite;
+  window.__settleSharedOpfsCrossTabAuthWrite = settleSharedOpfsCrossTabAuthWrite;
   window.__closeSharedOpfsCrossTabClient = closeSharedOpfsCrossTabClient;
 }
