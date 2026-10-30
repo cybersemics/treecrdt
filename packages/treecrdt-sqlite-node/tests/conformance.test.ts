@@ -3,6 +3,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  getEd25519PublicKey,
+  issueTreecrdtCapabilityTokenV1,
+  randomEd25519SecretKey,
+} from '@treecrdt/auth';
+import {
   conformanceSlugify,
   runTreecrdtEngineConformanceScenario,
   treecrdtEngineConformanceScenarios,
@@ -89,6 +94,60 @@ test('sqlite auth-aware local write emits materialization after auth succeeds', 
     expect(await client.ops.all()).toHaveLength(1);
   } finally {
     unsubscribe();
+    await client.close();
+  }
+});
+
+test('sqlite auth-aware local writes are authorized against the tree before the write', async () => {
+  const docId = 'sqlite-auth-local-scope';
+  const client = await createNodeEngine({ docId });
+  const issuerSk = randomEd25519SecretKey();
+  const localSk = randomEd25519SecretKey();
+  const [issuerPk, localPk] = await Promise.all([
+    getEd25519PublicKey(issuerSk),
+    getEd25519PublicKey(localSk),
+  ]);
+  const scope = nodeIdFromInt(20);
+  const outside = nodeIdFromInt(21);
+  const node = nodeIdFromInt(22);
+  const child = nodeIdFromInt(23);
+
+  try {
+    await client.local.insert(localPk, root, scope, { type: 'last' }, null);
+    await client.local.insert(localPk, root, outside, { type: 'last' }, null);
+    await client.local.insert(localPk, outside, node, { type: 'last' }, null);
+    const session = client.auth.createSession({
+      trust: { issuerPublicKeys: [issuerPk] },
+      local: {
+        privateKey: localSk,
+        publicKey: localPk,
+        capabilityTokens: [
+          issueTreecrdtCapabilityTokenV1({
+            issuerPrivateKey: issuerSk,
+            subjectPublicKey: localPk,
+            docId,
+            actions: ['write_structure', 'write_payload', 'delete', 'tombstone'],
+            rootNodeId: scope,
+          }),
+        ],
+      },
+    });
+    await session.ready;
+    const authorizeLocalOps = vi.spyOn(session, 'authorizeLocalOps');
+
+    // The source of a move is checked where the node is before the move, as peers check it.
+    await expect(
+      client.local.move(localPk, node, scope, { type: 'last' }, { authSession: session }),
+    ).rejects.toThrow('capability does not allow op');
+    expect((await (await client.tree.get(node))?.parent())?.id).toBe(outside);
+
+    // Op auth the session stores through this connection does not invalidate the minted op.
+    await client.local.insert(localPk, scope, child, { type: 'last' }, null, {
+      authSession: session,
+    });
+    expect(authorizeLocalOps).toHaveBeenCalledTimes(2);
+    expect((await (await client.tree.get(child))?.parent())?.id).toBe(scope);
+  } finally {
     await client.close();
   }
 });
