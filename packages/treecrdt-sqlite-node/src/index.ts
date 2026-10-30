@@ -2,6 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   createTreecrdtSqliteAdapter,
+  createTreecrdtSqliteChangedSince,
   createTreecrdtSqliteWriter,
   decodeSqliteNodeIds,
   decodeSqliteOpRefs,
@@ -242,6 +243,7 @@ export function createTreecrdtClient(
       }),
       dump: treeDumpImpl,
       nodeCount: treeNodeCountImpl,
+      changedSince: createTreecrdtSqliteChangedSince((query) => adapter.treeChangedSince!(query)),
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
     auth: createTreecrdtSqliteAuthApi({ runner, docId }),

@@ -236,6 +236,18 @@ fn finish_local_core_op(
     if post_materialization_ok && update_tree_meta_head(session.db, Some(&head)).is_err() {
         post_materialization_ok = false;
     }
+    if post_materialization_ok {
+        if let Err(rc) = record_changed_nodes(session.db, &outcome) {
+            sqlite_exec(
+                session.db,
+                session.rollback_sql.as_ptr(),
+                None,
+                null_mut(),
+                null_mut(),
+            );
+            return Err(rc);
+        }
+    }
     if !post_materialization_ok {
         set_tree_meta_replay_frontier(
             session.db,

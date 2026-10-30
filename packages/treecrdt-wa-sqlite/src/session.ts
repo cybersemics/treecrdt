@@ -1,4 +1,4 @@
-import type { Operation, TreecrdtAdapter } from '@treecrdt/interface';
+import type { Operation, TreecrdtAdapter, TreecrdtChangedSinceQuery } from '@treecrdt/interface';
 import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type { MaterializationEvent, MaterializationOutcome } from '@treecrdt/interface/engine';
 import { createTreecrdtSqliteAdapter } from '@treecrdt/interface/sqlite';
@@ -42,6 +42,7 @@ export interface TreecrdtSessionOperations {
 export interface TreecrdtSessionTree {
   children: (parent: string, offset: number | null, limit: number | null) => Promise<unknown[]>;
   dump: () => Promise<unknown[]>;
+  changedSince: (query: TreecrdtChangedSinceQuery) => Promise<{ headSeq: number; rows: unknown[] }>;
   payload: (node: string) => Promise<Uint8Array | null>;
   nodeCount: () => Promise<number>;
   parent: (node: string) => Promise<Uint8Array | null>;
@@ -177,6 +178,7 @@ const createTreecrdtSession = (openDb: SessionOpenFn): TreecrdtSessionOwner => {
     children: (parent, offset, limit) =>
       run(async () => ensureApi().treeChildren(nodeIdToBytes16(parent), offset, limit)),
     dump: () => run(async () => ensureApi().treeDump()),
+    changedSince: (query) => run(async () => ensureApi().treeChangedSince!(query)),
     payload: (node) =>
       run(async () => transferBinary(await ensureApi().treePayload(nodeIdToBytes16(node)))),
     nodeCount: () => run(async () => ensureApi().treeNodeCount()),

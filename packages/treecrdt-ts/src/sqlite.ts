@@ -1,11 +1,18 @@
 import { encode } from 'cborg';
-import type { SerializeNodeId, SerializeReplica, TreecrdtAdapter } from './adapter.js';
+import type {
+  SerializeNodeId,
+  SerializeReplica,
+  TreecrdtAdapter,
+  TreecrdtChangedSinceQuery,
+} from './adapter.js';
 import { addMaterializationWriteId, emptyMaterializationOutcome } from './engine.js';
 import type {
   LocalWriteOptions,
   MaterializationEvent,
   MaterializationOutcome,
   MaterializationSource,
+  TreecrdtChangedNode,
+  TreecrdtEngineTree,
 } from './engine.js';
 import {
   decodeNodeId,
@@ -336,6 +343,7 @@ export function createTreecrdtSqliteAdapter(
     treeChildren: (parent, offset, limit) =>
       treecrdtTreeChildren(runner, parent, offset, limit, emitOutcome),
     treeDump: () => treecrdtTreeDump(runner, emitOutcome),
+    treeChangedSince: (query) => treecrdtTreeChangedSince(runner, query, emitOutcome),
     treeNodeCount: () => treecrdtTreeNodeCount(runner, emitOutcome),
     treeParent: (node) => treecrdtTreeParent(runner, node, emitOutcome),
     treeExists: (node) => treecrdtTreeExists(runner, node, emitOutcome),
@@ -366,11 +374,12 @@ async function treecrdtDocId(runner: SqliteRunner): Promise<string | null> {
 async function treecrdtEnsureMaterialized(
   runner: SqliteRunner,
   emitOutcome?: (outcome: MaterializationOutcome) => void,
-): Promise<void> {
+): Promise<MaterializationOutcome> {
   const outcome = decodeSqliteMaterializationOutcome(
     await sqliteGetJson<unknown>(runner, 'SELECT treecrdt_ensure_materialized()'),
   );
   if (outcome.changes.length > 0) emitOutcome?.(outcome);
+  return outcome;
 }
 
 /**
@@ -473,6 +482,71 @@ async function treecrdtTreeDump(
        ORDER BY node\
      )",
   );
+}
+
+/**
+ * Read nodes whose latest visible-change stamp is in `(since, until]`.
+ *
+ * The first page fixes `until` at the current head. Updating an unread node replaces its stamp, so it
+ * is deferred to the next read, even if it also changed before `until`; pages are not a snapshot.
+ * A full read (`since = 0`) pages over every materialized node by id; an incremental read scans
+ * `tree_changes` in node order, so its pages together cost one scan, and also
+ * reports nodes a rebuild left without a materialized row. A read from the current head returns at once.
+ */
+async function treecrdtTreeChangedSince(
+  runner: SqliteRunner,
+  query: TreecrdtChangedSinceQuery,
+  emitOutcome?: (outcome: MaterializationOutcome) => void,
+): Promise<{ headSeq: number; rows: unknown[] }> {
+  const outcome = await treecrdtEnsureMaterialized(runner, emitOutcome);
+  const headSeq = query.until ?? outcome.headSeq;
+  const limit = query.limit ?? -1;
+  const payloads = query.payloads ? 1 : 0;
+  if (query.since === 0) {
+    const rows = await sqliteGetJsonOrEmpty<unknown[]>(
+      runner,
+      "SELECT COALESCE(json_group_array(json_array(node_hex, parent_hex, order_key_hex, tombstone, seq, payload_hex)), '[]') \
+       FROM (\
+         SELECT \
+           lower(hex(n.node)) AS node_hex, \
+           CASE WHEN n.parent IS NULL THEN NULL ELSE lower(hex(n.parent)) END AS parent_hex, \
+           CASE WHEN n.order_key IS NULL THEN NULL ELSE lower(hex(n.order_key)) END AS order_key_hex, \
+           n.tombstone AS tombstone, \
+           COALESCE(c.seq, 0) AS seq, \
+           CASE WHEN ?4 = 1 AND n.tombstone = 0 AND p.payload IS NOT NULL THEN lower(hex(p.payload)) END AS payload_hex \
+         FROM tree_nodes n \
+         LEFT JOIN tree_changes c ON c.node = n.node \
+         LEFT JOIN tree_payload p ON p.node = n.node \
+         WHERE COALESCE(c.seq, 0) <= ?1 AND (?2 IS NULL OR n.node > ?2) \
+         ORDER BY n.node \
+         LIMIT ?3\
+       )",
+      [headSeq, query.afterNode, limit, payloads],
+    );
+    return { headSeq, rows };
+  }
+  if (query.since >= headSeq) return { headSeq, rows: [] };
+  const rows = await sqliteGetJsonOrEmpty<unknown[]>(
+    runner,
+    "SELECT COALESCE(json_group_array(json_array(node_hex, parent_hex, order_key_hex, tombstone, seq, payload_hex)), '[]') \
+     FROM (\
+       SELECT \
+         lower(hex(c.node)) AS node_hex, \
+         CASE WHEN n.parent IS NULL THEN NULL ELSE lower(hex(n.parent)) END AS parent_hex, \
+         CASE WHEN n.order_key IS NULL THEN NULL ELSE lower(hex(n.order_key)) END AS order_key_hex, \
+         COALESCE(n.tombstone, 1) AS tombstone, \
+         c.seq AS seq, \
+         CASE WHEN ?5 = 1 AND n.tombstone = 0 AND p.payload IS NOT NULL THEN lower(hex(p.payload)) END AS payload_hex \
+       FROM tree_changes c \
+       LEFT JOIN tree_nodes n ON n.node = c.node \
+       LEFT JOIN tree_payload p ON p.node = c.node \
+       WHERE c.seq > ?2 AND c.seq <= ?1 AND (?3 IS NULL OR c.node > ?3) \
+       ORDER BY c.node \
+       LIMIT ?4\
+     )",
+    [headSeq, query.since, query.afterNode, limit, payloads],
+  );
+  return { headSeq, rows };
 }
 
 /**
@@ -826,6 +900,62 @@ export function decodeSqliteTreeRows(raw: unknown): SqliteTreeRow[] {
     const tombstone = Boolean(row.tombstone);
     return { node, parent, orderKey, tombstone };
   });
+}
+
+/** Decodes raw `treeChangedSince` rows; `payloads` mirrors the request. */
+export function decodeSqliteChangedNodes(raw: unknown, payloads: boolean): TreecrdtChangedNode[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((row) => {
+    const [node, parent, orderKey, tombstone, changedSeq, payload] = row as [
+      string,
+      string | null,
+      string | null,
+      number,
+      number,
+      string | null,
+    ];
+    return {
+      node: decodeNodeId(node),
+      parent: parent === null ? null : decodeNodeId(parent),
+      orderKey: orderKey === null ? null : hexToBytes(orderKey),
+      tombstone: Boolean(tombstone),
+      changedSeq: Number(changedSeq),
+      // Same as treePayload: an empty stored payload reads as null.
+      ...(payloads
+        ? { payload: payload === null || payload === '' ? null : hexToBytes(payload) }
+        : {}),
+    };
+  });
+}
+
+/** Builds `tree.changedSince` over a raw adapter read, handling cursors and decoding. */
+export function createTreecrdtSqliteChangedSince(
+  read: (query: TreecrdtChangedSinceQuery) => Promise<{ headSeq: number; rows: unknown[] }>,
+): NonNullable<TreecrdtEngineTree['changedSince']> {
+  return async (since, opts = {}) => {
+    const { limit } = opts;
+    if (limit !== undefined && (!Number.isInteger(limit) || limit <= 0)) {
+      throw new Error(`invalid changedSince limit: ${String(limit)}`);
+    }
+    const cursor = typeof since === 'number' ? null : since;
+    const from = cursor ? cursor.since : (since as number);
+    if (!Number.isInteger(from) || from < 0) {
+      throw new Error(`invalid changedSince seq: ${String(from)}`);
+    }
+    const payloads = opts.payloads === true;
+    const { headSeq, rows } = await read({
+      since: from,
+      until: cursor ? cursor.until : null,
+      afterNode: cursor ? nodeIdToBytes16(cursor.afterNode) : null,
+      limit: limit ?? null,
+      payloads,
+    });
+    const nodes = decodeSqliteChangedNodes(rows, payloads);
+    const last = nodes[nodes.length - 1];
+    const next =
+      last && nodes.length === limit ? { since: from, until: headSeq, afterNode: last.node } : null;
+    return { headSeq, nodes, next };
+  };
 }
 
 export function decodeSqliteOps(raw: unknown): Operation[] {
