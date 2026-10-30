@@ -85,7 +85,10 @@ Persistent databases use SQLite's WAL journal with exclusive locking, which roug
 halves the cost of a single-operation commit. A database is held by one client until
 it closes: without `crossTab`, another client opening the same database, for example
 in a second tab, waits until the first client closes or its tab goes away. Use
-`crossTab: true` to share a persistent database between tabs.
+`crossTab: true` to share a persistent database between tabs. Tabs share a cross-tab
+worker only when they load the same worker script URL. Bundlers usually hash that URL
+by content, so after a deploy that changes the worker, a tab on the new build waits
+the same way until the old build's tabs close their clients or go away.
 
 Callers only see `TreecrdtClient` (`ops` / `tree` / `local` / `onMaterialized` / `close` / `drop`).
 
