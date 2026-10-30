@@ -141,12 +141,51 @@ export type LocalWriteOptions = {
    * Authorizes the minted local op before it is written, so auth failures write
    * nothing and emit no materialization events.
    *
-   * SQLite clients hold no transaction while this runs and authorize one write
-   * per replica at a time. If another op is applied before this one is written,
-   * the op is minted and authorized again, up to four times per write.
+   * Clients hold no transaction while this runs and authorize one write per
+   * replica at a time. If another op is applied before this one is written, the
+   * op is minted and authorized again, up to four times per write.
    */
   authSession?: LocalWriteAuthSession;
 };
+
+/** An op minted by an auth-checked local write. `token` is set if the op was not written. */
+export type MintedLocalOp = { op: Operation; token?: string };
+
+/**
+ * Returns a function that writes local ops only once `authSession` authorized them, holding no
+ * transaction while `authorizeLocalOps` runs (see `LocalWriteOptions.authSession`).
+ *
+ * `writeIfUnchanged(token)` mints the op and writes it only if `token` is its token, i.e. it is the
+ * op minted with that token and no op was applied since. Otherwise it writes nothing and returns
+ * the op with its token, to be authorized and passed back. The first call passes null, so it only
+ * mints. Writes take turns, so concurrent ones mint distinct ops instead of overtaking each
+ * other's authorization.
+ */
+export function createAuthorizedLocalWriter(): (
+  writeIfUnchanged: (token: string | null) => MintedLocalOp | Promise<MintedLocalOp>,
+  authSession: LocalWriteAuthSession,
+) => Promise<Operation> {
+  const maxAuthorizations = 4;
+  let turn: Promise<unknown> = Promise.resolve();
+  return (writeIfUnchanged, authSession) => {
+    const write = turn.then(async () => {
+      let token: string | null = null;
+      for (let authorizations = 0; ; authorizations += 1) {
+        const minted = await writeIfUnchanged(token);
+        if (minted.token === undefined) return minted.op;
+        if (authorizations === maxAuthorizations) {
+          throw new Error(
+            `treecrdt: local op was not written after ${maxAuthorizations} authorizations because other ops kept being applied meanwhile`,
+          );
+        }
+        await authSession.authorizeLocalOps([minted.op]);
+        token = minted.token;
+      }
+    });
+    turn = write.catch(() => undefined);
+    return write;
+  };
+}
 
 export type TreecrdtEngineOps = {
   append: (op: Operation, opts?: WriteOptions) => Promise<void>;

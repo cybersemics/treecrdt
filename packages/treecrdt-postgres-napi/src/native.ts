@@ -47,10 +47,14 @@ export type NativeLocalOpResult = {
   outcome: NativeMaterializationOutcome;
 };
 
-export type NativePreparedLocalOpTx = {
-  op(): NativeOp;
-  commit(): NativeLocalOpResult;
-  rollback(): void;
+/**
+ * Result of the `local*IfUnchanged` methods, which write the op only if `token` is its token (see
+ * `createAuthorizedLocalWriter`): `outcome` if the op was written, otherwise its `token`.
+ */
+export type NativeLocalOpCommit = {
+  op: NativeOp;
+  outcome?: NativeMaterializationOutcome | null;
+  token?: string | null;
 };
 
 export type NativeBackend = {
@@ -82,14 +86,15 @@ export type NativeBackend = {
     after: Uint8Array | null,
     payload: Uint8Array | null,
   ): NativeLocalOpResult;
-  prepareLocalInsert(
+  localInsertIfUnchanged(
     replica: Uint8Array,
     parent: Uint8Array,
     node: Uint8Array,
     placement: string,
     after: Uint8Array | null,
     payload: Uint8Array | null,
-  ): NativePreparedLocalOpTx;
+    token: string | null,
+  ): NativeLocalOpCommit;
   localMove(
     replica: Uint8Array,
     node: Uint8Array,
@@ -97,25 +102,31 @@ export type NativeBackend = {
     placement: string,
     after: Uint8Array | null,
   ): NativeLocalOpResult;
-  prepareLocalMove(
+  localMoveIfUnchanged(
     replica: Uint8Array,
     node: Uint8Array,
     newParent: Uint8Array,
     placement: string,
     after: Uint8Array | null,
-  ): NativePreparedLocalOpTx;
+    token: string | null,
+  ): NativeLocalOpCommit;
   localDelete(replica: Uint8Array, node: Uint8Array): NativeLocalOpResult;
-  prepareLocalDelete(replica: Uint8Array, node: Uint8Array): NativePreparedLocalOpTx;
+  localDeleteIfUnchanged(
+    replica: Uint8Array,
+    node: Uint8Array,
+    token: string | null,
+  ): NativeLocalOpCommit;
   localPayload(
     replica: Uint8Array,
     node: Uint8Array,
     payload: Uint8Array | null,
   ): NativeLocalOpResult;
-  prepareLocalPayload(
+  localPayloadIfUnchanged(
     replica: Uint8Array,
     node: Uint8Array,
     payload: Uint8Array | null,
-  ): NativePreparedLocalOpTx;
+    token: string | null,
+  ): NativeLocalOpCommit;
 };
 
 export type NativeFactory = {
