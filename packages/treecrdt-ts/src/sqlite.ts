@@ -489,8 +489,8 @@ async function treecrdtTreeDump(
  *
  * The first page fixes `until` at the current head, so a write between pages surfaces in the next read
  * instead of being skipped. A full read (`since = 0`) pages over every materialized node by id; an
- * incremental read pages over `tree_changes` by `(seq, node)` and also reports nodes a rebuild left
- * without a materialized row.
+ * incremental read scans `tree_changes` in node order, so its pages together cost one scan, and also
+ * reports nodes a rebuild left without a materialized row. A read from the current head returns at once.
  */
 async function treecrdtTreeChangedSince(
   runner: SqliteRunner,
@@ -524,6 +524,7 @@ async function treecrdtTreeChangedSince(
     );
     return { headSeq, rows };
   }
+  if (query.since >= headSeq) return { headSeq, rows: [] };
   const rows = await sqliteGetJsonOrEmpty<unknown[]>(
     runner,
     "SELECT COALESCE(json_group_array(json_array(node_hex, parent_hex, order_key_hex, tombstone, seq, payload_hex)), '[]') \
@@ -538,11 +539,11 @@ async function treecrdtTreeChangedSince(
        FROM tree_changes c \
        LEFT JOIN tree_nodes n ON n.node = c.node \
        LEFT JOIN tree_payload p ON p.node = c.node \
-       WHERE c.seq <= ?1 AND (c.seq > ?2 OR (?3 IS NOT NULL AND c.seq = ?2 AND c.node > ?3)) \
-       ORDER BY c.seq, c.node \
+       WHERE c.seq > ?2 AND c.seq <= ?1 AND (?3 IS NULL OR c.node > ?3) \
+       ORDER BY c.node \
        LIMIT ?4\
      )",
-    [headSeq, query.afterSeq, query.afterNode, limit, payloads],
+    [headSeq, query.since, query.afterNode, limit, payloads],
   );
   return { headSeq, rows };
 }
@@ -944,7 +945,6 @@ export function createTreecrdtSqliteChangedSince(
     const { headSeq, rows } = await read({
       since: from,
       until: cursor ? cursor.until : null,
-      afterSeq: cursor ? cursor.afterSeq : from,
       afterNode: cursor ? nodeIdToBytes16(cursor.afterNode) : null,
       limit: limit ?? null,
       payloads,
@@ -952,9 +952,7 @@ export function createTreecrdtSqliteChangedSince(
     const nodes = decodeSqliteChangedNodes(rows, payloads);
     const last = nodes[nodes.length - 1];
     const next =
-      last && nodes.length === limit
-        ? { since: from, until: headSeq, afterSeq: last.changedSeq, afterNode: last.node }
-        : null;
+      last && nodes.length === limit ? { since: from, until: headSeq, afterNode: last.node } : null;
     return { headSeq, nodes, next };
   };
 }

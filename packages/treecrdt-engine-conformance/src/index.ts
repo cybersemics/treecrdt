@@ -1184,7 +1184,7 @@ async function scenarioChangedSincePagesUnderFixedHead(
     page = await engine.tree.changedSince(page.next, { limit: 2 });
     seen.push(...page.nodes.map((n) => n.node));
   }
-  assertArrayEqual(seen, nodes, 'pages return every change once, in commit order');
+  assertArrayEqual(seen, nodes, 'pages return every change once, in node order');
 
   const next = await readAllChangedSince(engine, page.headSeq);
   assertArrayEqual(

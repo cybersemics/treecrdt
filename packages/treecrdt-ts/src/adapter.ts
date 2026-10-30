@@ -9,7 +9,6 @@ export type TreecrdtChangedSinceQuery = {
   since: number;
   /** Upper bound fixed by the first page; null reads the current head. */
   until: number | null;
-  afterSeq: number;
   /** Last node of the previous page (16-byte id), or null on the first page. */
   afterNode: Uint8Array | null;
   /** Maximum rows; null returns all. */

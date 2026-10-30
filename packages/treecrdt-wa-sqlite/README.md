@@ -94,7 +94,7 @@ for (;;) {
 saveCursor(page.headSeq); // with the index rows, in one transaction when they share the database
 ```
 
-`onMaterialized` remains the low-latency signal while the client is open; `changedSince` is what to rely on across restarts.
+`onMaterialized` remains the low-latency signal while the client is open; `changedSince` is what to rely on across restarts. Reading from an older `headSeq` scans the change table, which keeps recording cheap, so call it to catch up after a gap rather than after every write.
 
 See the [playground](../../examples/playground/README.md) for a full browser demo.
 

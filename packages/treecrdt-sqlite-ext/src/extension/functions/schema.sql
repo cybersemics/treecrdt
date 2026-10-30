@@ -57,11 +57,12 @@ CREATE TABLE IF NOT EXISTS tree_payload (
 );
 
 -- Materialization seq of each node's last visible change, written in the commit that changed it.
--- Kept apart from tree_nodes because canonical rebuilds clear tree_nodes.
+-- Kept apart from tree_nodes because canonical rebuilds clear tree_nodes. There is no index on seq,
+-- so recording a change writes one page and a catch-up read scans the table once.
 CREATE TABLE IF NOT EXISTS tree_changes (
   node BLOB PRIMARY KEY,
   seq INTEGER NOT NULL
-);
+) WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS idx_ops_lamport ON ops(lamport, replica, counter);
 CREATE INDEX IF NOT EXISTS idx_ops_op_ref ON ops(op_ref);
@@ -69,7 +70,6 @@ CREATE INDEX IF NOT EXISTS idx_ops_node_kind_order ON ops(node, kind, lamport, r
 CREATE INDEX IF NOT EXISTS idx_tree_nodes_parent_order_key_node ON tree_nodes(parent, order_key, node);
 CREATE INDEX IF NOT EXISTS idx_tree_nodes_parent_tombstone_order_key_node ON tree_nodes(parent, tombstone, order_key, node);
 CREATE INDEX IF NOT EXISTS idx_oprefs_children_parent_seq ON oprefs_children(parent, seq);
-CREATE INDEX IF NOT EXISTS idx_tree_changes_seq_node ON tree_changes(seq, node);
 
 -- Seed the root only for an empty operation log; preserve existing materialized state.
 INSERT OR IGNORE INTO tree_nodes(node, parent, order_key, tombstone)

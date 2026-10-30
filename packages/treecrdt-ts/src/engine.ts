@@ -231,7 +231,6 @@ export type TreecrdtChangedNode = {
 export type TreecrdtChangedSinceCursor = {
   since: number;
   until: number;
-  afterSeq: number;
   afterNode: string;
 };
 
@@ -262,6 +261,9 @@ export type TreecrdtEngineTree = {
    * `since = 0` returns every materialized node. Store the returned `headSeq` once `next` is null and pass
    * it as `since` to resume after a restart: changes are recorded in the same commit as the state, so none
    * are missed. Ops that change nothing visible return no nodes but still advance `headSeq`.
+   *
+   * Meant for catching up after a gap, such as startup or a failed update: a read from an older
+   * `headSeq` scans the change table. In between, follow `onMaterialized` instead of calling it per write.
    *
    * Optional: implemented by the SQLite-backed engines.
    */
