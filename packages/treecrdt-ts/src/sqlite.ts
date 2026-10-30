@@ -1,6 +1,10 @@
 import { encode } from 'cborg';
 import type { SerializeNodeId, SerializeReplica, TreecrdtAdapter } from './adapter.js';
-import { addMaterializationWriteId, emptyMaterializationOutcome } from './engine.js';
+import {
+  addMaterializationWriteId,
+  createAuthorizedLocalWriter,
+  emptyMaterializationOutcome,
+} from './engine.js';
 import type {
   LocalWriteOptions,
   MaterializationEvent,
@@ -59,11 +63,9 @@ async function sqliteGetNumber(
   return value;
 }
 
-async function sqliteExec(runner: SqliteRunner, sql: string): Promise<void> {
-  await runner.exec(sql);
+function localOpSql(fn: string, argCount: number): string {
+  return `SELECT ${fn}(${Array.from({ length: argCount }, (_, i) => `?${i + 1}`).join(',')})`;
 }
-
-let localAuthSavepointCounter = 0;
 
 function decodeLocalOpResult(
   raw: any,
@@ -599,14 +601,16 @@ export function createTreecrdtSqliteWriter(
 ): TreecrdtSqliteWriter {
   const replica = opts.replica;
   const replicaBytes = replicaIdToBytes(replica);
+  const writeAuthorized = createAuthorizedLocalWriter();
 
   const getLocalOp = async (
-    sql: string,
+    fn: string,
     params: SqlCall['params'],
     writeOpts?: LocalWriteOptions,
   ) => {
     const authSession = writeOpts?.authSession;
     if (!authSession) {
+      const sql = localOpSql(fn, params.length);
       const { op, outcome } = decodeLocalOpResult(
         await sqliteGetJson<any>(runner, sql, params),
         sql,
@@ -615,29 +619,20 @@ export function createTreecrdtSqliteWriter(
       return op;
     }
 
-    const savepoint = `treecrdt_local_auth_${++localAuthSavepointCounter}`;
-    let released = false;
-    await sqliteExec(runner, `SAVEPOINT ${savepoint}`);
-    try {
-      const { op, outcome } = decodeLocalOpResult(
-        await sqliteGetJson<any>(runner, sql, params),
-        sql,
-      );
-      await authSession.authorizeLocalOps([op]);
-      await sqliteExec(runner, `RELEASE ${savepoint}`);
-      released = true;
-      emitLocalOutcome(outcome, opts.onMaterialized, writeOpts?.writeId);
-      return op;
-    } catch (err) {
-      if (!released) {
-        try {
-          await sqliteExec(runner, `ROLLBACK TO ${savepoint}`);
-        } finally {
-          await sqliteExec(runner, `RELEASE ${savepoint}`);
-        }
-      }
-      throw err;
-    }
+    // Authorizes the op before writing it, holding no transaction across the await, so other
+    // writes on the connection never join this one or roll back with it. The extra argument is
+    // the token of the authorized op (see `createAuthorizedLocalWriter`). Copy caller-owned bytes
+    // so that mutating them before the write lands cannot change the op.
+    const sql = localOpSql(fn, params.length + 1);
+    const args = params.map((value) =>
+      ArrayBuffer.isView(value) ? Uint8Array.from(value as Uint8Array) : value,
+    );
+    return writeAuthorized(async (token) => {
+      const raw: any = await sqliteGetJson(runner, sql, [...args, token]);
+      const { op, outcome } = decodeLocalOpResult(raw, sql);
+      if (raw.outcome) emitLocalOutcome(outcome, opts.onMaterialized, writeOpts?.writeId);
+      return { op, token: raw.token };
+    }, authSession);
   };
 
   const insert = async (
@@ -649,7 +644,7 @@ export function createTreecrdtSqliteWriter(
     const afterNode = placement.type === 'after' ? nodeIdToBytes16(placement.after) : null;
     const payload = o.payload ?? null;
     return getLocalOp(
-      'SELECT treecrdt_local_insert(?1,?2,?3,?4,?5,?6)',
+      'treecrdt_local_insert',
       [
         replicaBytes,
         nodeIdToBytes16(parent),
@@ -670,23 +665,19 @@ export function createTreecrdtSqliteWriter(
   ) => {
     const afterNode = placement.type === 'after' ? nodeIdToBytes16(placement.after) : null;
     return getLocalOp(
-      'SELECT treecrdt_local_move(?1,?2,?3,?4,?5)',
+      'treecrdt_local_move',
       [replicaBytes, nodeIdToBytes16(node), nodeIdToBytes16(newParent), placement.type, afterNode],
       writeOpts,
     );
   };
 
   const del = async (node: string, writeOpts?: LocalWriteOptions) => {
-    return getLocalOp(
-      'SELECT treecrdt_local_delete(?1,?2)',
-      [replicaBytes, nodeIdToBytes16(node)],
-      writeOpts,
-    );
+    return getLocalOp('treecrdt_local_delete', [replicaBytes, nodeIdToBytes16(node)], writeOpts);
   };
 
   const payload = async (node: string, next: Uint8Array | null, writeOpts?: LocalWriteOptions) => {
     return getLocalOp(
-      'SELECT treecrdt_local_payload(?1,?2,?3)',
+      'treecrdt_local_payload',
       [replicaBytes, nodeIdToBytes16(node), next],
       writeOpts,
     );

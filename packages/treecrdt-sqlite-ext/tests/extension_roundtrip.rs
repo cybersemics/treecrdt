@@ -1386,6 +1386,92 @@ fn local_payload_does_not_prepare_an_unused_delete_statement() {
 }
 
 #[test]
+fn authorized_local_ops_write_only_the_authorized_op() {
+    let conn = setup_conn();
+
+    let replica = b"authorized".to_vec();
+    let root = node_bytes(0);
+    let node = node_bytes(1);
+    let payload = vec![1u8];
+    let op_count =
+        || -> i64 { conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0)).unwrap() };
+    let call = |sql: &str, args: &[&dyn rusqlite::ToSql], authorized: Option<&str>| {
+        let mut args = args.to_vec();
+        args.push(&authorized);
+        let json: String = conn.query_row(sql, args.as_slice(), |row| row.get(0)).unwrap();
+        serde_json::from_str::<serde_json::Value>(&json).unwrap()
+    };
+
+    let insert = "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL, ?4)";
+    let forms: [(&str, Vec<&dyn rusqlite::ToSql>); 4] = [
+        (insert, vec![&replica, &root, &node]),
+        (
+            "SELECT treecrdt_local_payload(?1, ?2, ?3, ?4)",
+            vec![&replica, &node, &payload],
+        ),
+        (
+            "SELECT treecrdt_local_move(?1, ?2, ?3, 'first', NULL, ?4)",
+            vec![&replica, &node, &root],
+        ),
+        (
+            "SELECT treecrdt_local_delete(?1, ?2, ?3)",
+            vec![&replica, &node],
+        ),
+    ];
+    for (sql, args) in &forms {
+        // NULL only mints; passing back the minted op's token writes that op.
+        let minted = call(sql, args, None);
+        assert!(minted["outcome"].is_null(), "{sql}");
+        let written = call(sql, args, minted["token"].as_str());
+        assert!(written["outcome"].is_object(), "{sql}");
+        assert_eq!(written["op"], minted["op"], "{sql}");
+    }
+    assert_eq!(op_count(), 4);
+
+    // Any op applied after minting makes the token stale, even a late one that leaves the op as is.
+    let parent = node_bytes(2);
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'last', NULL, NULL)",
+            rusqlite::params![replica, root, parent],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let sibling = node_bytes(3);
+    let minted = call(insert, &[&replica, &root, &sibling], None);
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_append_op(?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL)",
+            rusqlite::params![
+                b"late".to_vec(),
+                1i64,
+                1i64,
+                "insert",
+                parent,
+                node_bytes(4),
+                (1u16).to_be_bytes().to_vec()
+            ],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let stale = call(
+        insert,
+        &[&replica, &root, &sibling],
+        minted["token"].as_str(),
+    );
+    assert!(stale["outcome"].is_null());
+    assert_eq!(stale["op"], minted["op"]);
+    assert_ne!(stale["token"], minted["token"]);
+    let written = call(
+        insert,
+        &[&replica, &root, &sibling],
+        stale["token"].as_str(),
+    );
+    assert!(written["outcome"].is_object());
+    assert_eq!(op_count(), 7);
+}
+
+#[test]
 fn registration_only_entrypoint_defers_schema_and_matches_native_initialization() {
     let conn = Connection::open_in_memory().unwrap();
     unsafe {
