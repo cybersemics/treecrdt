@@ -143,6 +143,30 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioLocalOpsMaterializationWriteId,
     },
     {
+      name: 'local auth: write lands only after authorization',
+      run: scenarioLocalAuthWriteLandsAfterAuthorization,
+    },
+    {
+      name: 'local auth: denied write keeps writes made meanwhile',
+      run: scenarioLocalAuthDeniedWriteKeepsConcurrentWrites,
+    },
+    {
+      name: 'local auth: concurrent writes take turns and both commit',
+      run: scenarioLocalAuthConcurrentWritesTakeTurns,
+    },
+    {
+      name: 'local auth: write is authorized again after an op lands meanwhile',
+      run: scenarioLocalAuthReauthorizesAfterLateOp,
+    },
+    {
+      name: 'local auth: write gives up when every authorization is overtaken',
+      run: scenarioLocalAuthGivesUpWhenOvertaken,
+    },
+    {
+      name: 'local auth: write keeps the payload it was called with',
+      run: scenarioLocalAuthKeepsCallerPayload,
+    },
+    {
       name: 'append/appendMany: idempotent + headLamport monotonic',
       run: scenarioAppendIdempotentAndHeadLamportMonotonic,
     },
@@ -331,6 +355,59 @@ async function captureMaterializationEvents(
     unsubscribe();
   }
   return events;
+}
+
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (err: unknown) => void;
+};
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (err: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/** Local auth session whose authorizations wait until the scenario allows or denies them. */
+function heldAuthSession() {
+  const started = deferred<void>();
+  const decision = deferred<void>();
+  const authorized: Operation[] = [];
+  return {
+    authorized,
+    started: started.promise,
+    allow: () => decision.resolve(),
+    deny: (err: Error) => decision.reject(err),
+    authSession: {
+      authorizeLocalOps: async (ops: readonly Operation[]) => {
+        authorized.push(...ops);
+        started.resolve();
+        await decision.promise;
+      },
+    },
+  };
+}
+
+async function assertRejects(promise: Promise<unknown>, error: string, message: string) {
+  try {
+    await promise;
+  } catch (err) {
+    const actual = err instanceof Error ? err.message : String(err);
+    assert(actual.includes(error), `${message}: expected ${JSON.stringify(error)}, got ${actual}`);
+    return;
+  }
+  throw new Error(`${message}: expected rejection with ${JSON.stringify(error)}`);
+}
+
+function opJson(op: Operation | undefined): string {
+  return JSON.stringify(op, (_key, value) =>
+    value instanceof Uint8Array ? bytesToHex(value) : value,
+  );
 }
 
 function assertChangeSource(
@@ -625,6 +702,186 @@ async function scenarioLocalOpsMaterializationWriteId(
     'bound local insert',
   );
   assertChangeSource(boundInsertEvents[0]!, boundNode, boundInsertOp!, 'bound local insert');
+}
+
+async function scenarioLocalAuthWriteLandsAfterAuthorization(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const node = nodeIdFromInt(1);
+  const auth = heldAuthSession();
+  const events: MaterializationEvent[] = [];
+  const unsubscribe = engine.onMaterialized((event) => events.push(event));
+
+  try {
+    const write = engine.local.insert(replica, root, node, { type: 'last' }, null, {
+      authSession: auth.authSession,
+    });
+    await Promise.race([auth.started, write]);
+    assertEqual(events.length, 0, 'events while authorization is pending');
+    assertEqual(await engine.tree.get(node), undefined, 'node while authorization is pending');
+    assertEqual((await engine.ops.all()).length, 0, 'ops while authorization is pending');
+
+    auth.allow();
+    assertEqual(opJson(await write), opJson(auth.authorized[0]), 'written op is the authorized op');
+    assertEqual(events.length, 1, 'events after authorization');
+  } finally {
+    unsubscribe();
+  }
+  assertEqual(auth.authorized.length, 1, 'authorizations');
+  assert(await engine.tree.get(node), 'node after authorization');
+}
+
+async function scenarioLocalAuthDeniedWriteKeepsConcurrentWrites(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const deniedNode = nodeIdFromInt(1);
+  const concurrentNode = nodeIdFromInt(2);
+  const auth = heldAuthSession();
+
+  const events = await captureMaterializationEvents(engine, async () => {
+    const denied = engine.local.insert(replica, root, deniedNode, { type: 'last' }, null, {
+      authSession: auth.authSession,
+    });
+    await Promise.race([auth.started, denied]);
+    // A write made meanwhile neither waits for the authorization nor rolls back with it.
+    await engine.local.insert(replica, root, concurrentNode, { type: 'last' }, null);
+    auth.deny(new Error('local auth denied'));
+    await assertRejects(denied, 'local auth denied', 'denied write');
+  });
+  assertEqual(auth.authorized.length, 1, 'authorizations');
+  assertEqual(events.length, 1, 'materialization events (concurrent write only)');
+  assert(await engine.tree.get(concurrentNode), 'concurrent write is kept');
+  assertEqual(await engine.tree.get(deniedNode), undefined, 'denied write is not written');
+  assertEqual((await engine.ops.all()).length, 1, 'ops');
+}
+
+async function scenarioLocalAuthConcurrentWritesTakeTurns(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const first = heldAuthSession();
+  const second = heldAuthSession();
+
+  const firstWrite = engine.local.insert(replica, root, nodeIdFromInt(1), { type: 'last' }, null, {
+    authSession: first.authSession,
+  });
+  await Promise.race([first.started, firstWrite]);
+  const secondWrite = engine.local.insert(replica, root, nodeIdFromInt(2), { type: 'last' }, null, {
+    authSession: second.authSession,
+  });
+  // Given a turn of the event loop, the second write still waits for the first.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assertEqual(
+    second.authorized.length,
+    0,
+    'second write authorizations while the first is pending',
+  );
+
+  first.allow();
+  assertEqual(opJson(await firstWrite), opJson(first.authorized[0]), 'first written op');
+  await Promise.race([second.started, secondWrite]);
+  second.allow();
+  assertEqual(opJson(await secondWrite), opJson(second.authorized[0]), 'second written op');
+  assertEqual(second.authorized.length, 1, 'second write authorizations');
+  assertArrayEqual(
+    (await engine.ops.all()).map((op) => String(op.meta.id.counter)).sort(),
+    ['1', '2'],
+    'op counters',
+  );
+}
+
+async function scenarioLocalAuthReauthorizesAfterLateOp(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(1);
+  const node = nodeIdFromInt(2);
+  const auth = heldAuthSession();
+
+  await engine.local.insert(replica, root, parent, { type: 'last' }, null);
+  const write = engine.local.insert(replica, root, node, { type: 'last' }, null, {
+    authSession: auth.authSession,
+  });
+  await Promise.race([auth.started, write]);
+  // This late op leaves the minted op as is, but changes the tree it was authorized against.
+  await engine.ops.append(
+    makeInsertOp({
+      replica: replicaFromLabel('late'),
+      counter: 1,
+      lamport: 1,
+      parent,
+      node: nodeIdFromInt(3),
+      orderKey: orderKeyFromPosition(0),
+    }),
+  );
+  auth.allow();
+
+  const op = await write;
+  assertEqual(auth.authorized.length, 2, 'authorizations');
+  assertEqual(opJson(auth.authorized[1]), opJson(auth.authorized[0]), 'authorized op is unchanged');
+  assertEqual(opJson(op), opJson(auth.authorized[1]), 'written op is the authorized op');
+}
+
+async function scenarioLocalAuthGivesUpWhenOvertaken(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const node = nodeIdFromInt(1);
+  let authorizations = 0;
+  const authSession = {
+    authorizeLocalOps: async () => {
+      authorizations += 1;
+      const concurrentNode = nodeIdFromInt(100 + authorizations);
+      await engine.local.insert(replica, root, concurrentNode, { type: 'last' }, null);
+    },
+  };
+
+  await assertRejects(
+    engine.local.insert(replica, root, node, { type: 'last' }, null, { authSession }),
+    'not written after 4 authorizations',
+    'overtaken write',
+  );
+  assertEqual(authorizations, 4, 'authorizations');
+  assertEqual(await engine.tree.get(node), undefined, 'overtaken write is not written');
+  assertEqual((await engine.ops.all()).length, 4, 'ops');
+}
+
+async function scenarioLocalAuthKeepsCallerPayload(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const node = nodeIdFromInt(1);
+  const payload = Uint8Array.from([1, 2, 3]);
+  const auth = heldAuthSession();
+
+  const write = engine.local.insert(replica, root, node, { type: 'last' }, payload, {
+    authSession: auth.authSession,
+  });
+  await Promise.race([auth.started, write]);
+  payload.fill(9);
+  auth.allow();
+  await write;
+
+  assertEqual(auth.authorized.length, 1, 'authorizations');
+  assertBytesEqual(
+    (await (await engine.tree.get(node))?.payload()) ?? null,
+    Uint8Array.from([1, 2, 3]),
+    'written payload',
+  );
 }
 
 async function scenarioAppendIdempotentAndHeadLamportMonotonic(

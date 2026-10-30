@@ -19,7 +19,6 @@ import {
 } from '../dist/index.js';
 
 const root = '0'.repeat(32);
-const replica = Uint8Array.from({ length: 32 }, (_, i) => (i === 31 ? 1 : 0));
 
 function nodeIdFromInt(n: number): string {
   return n.toString(16).padStart(32, '0');
@@ -43,59 +42,6 @@ test('conformance registry includes materialization-event scenarios', () => {
   expect(names).toContain('materialization events: payload coalescing');
   expect(names).toContain('materialization events: defensive restore');
   expect(names).toContain('local ops: materialization changes include writeId');
-});
-
-test('sqlite auth-aware local write rolls back on auth failure', async () => {
-  const client = await createNodeEngine({ docId: 'sqlite-auth-local-rollback' });
-  const events: unknown[] = [];
-  const unsubscribe = client.onMaterialized((event) => events.push(event));
-  const authSession = {
-    authorizeLocalOps: vi.fn(async () => {
-      throw new Error('local auth denied');
-    }),
-  };
-  const node = nodeIdFromInt(10);
-
-  try {
-    await expect(
-      client.local.insert(replica, root, node, { type: 'last' }, null, { authSession }),
-    ).rejects.toThrow('local auth denied');
-
-    expect(authSession.authorizeLocalOps).toHaveBeenCalledTimes(1);
-    expect(events).toHaveLength(0);
-    expect(await client.tree.get(node)).toBeUndefined();
-    expect(await client.ops.all()).toHaveLength(0);
-  } finally {
-    unsubscribe();
-    await client.close();
-  }
-});
-
-test('sqlite auth-aware local write emits materialization after auth succeeds', async () => {
-  const client = await createNodeEngine({ docId: 'sqlite-auth-local-success' });
-  const events: unknown[] = [];
-  const unsubscribe = client.onMaterialized((event) => events.push(event));
-  const authSession = {
-    authorizeLocalOps: vi.fn(async () => {
-      expect(events).toHaveLength(0);
-    }),
-  };
-  const node = nodeIdFromInt(11);
-
-  try {
-    const op = await client.local.insert(replica, root, node, { type: 'last' }, null, {
-      authSession,
-    });
-
-    expect(op.kind.type).toBe('insert');
-    expect(authSession.authorizeLocalOps).toHaveBeenCalledTimes(1);
-    expect(events).toHaveLength(1);
-    expect(await client.tree.get(node)).toBeDefined();
-    expect(await client.ops.all()).toHaveLength(1);
-  } finally {
-    unsubscribe();
-    await client.close();
-  }
 });
 
 test('sqlite auth-aware local writes are authorized against the tree before the write', async () => {

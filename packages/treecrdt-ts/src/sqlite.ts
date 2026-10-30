@@ -1,8 +1,11 @@
 import { encode } from 'cborg';
 import type { SerializeNodeId, SerializeReplica, TreecrdtAdapter } from './adapter.js';
-import { addMaterializationWriteId, emptyMaterializationOutcome } from './engine.js';
+import {
+  addMaterializationWriteId,
+  createAuthorizedLocalWriter,
+  emptyMaterializationOutcome,
+} from './engine.js';
 import type {
-  LocalWriteAuthSession,
   LocalWriteOptions,
   MaterializationEvent,
   MaterializationOutcome,
@@ -598,40 +601,7 @@ export function createTreecrdtSqliteWriter(
 ): TreecrdtSqliteWriter {
   const replica = opts.replica;
   const replicaBytes = replicaIdToBytes(replica);
-  // Auth-checked writes take turns, so concurrent ones mint distinct ops instead of overtaking
-  // each other's authorization.
-  let authorizedWrites: Promise<unknown> = Promise.resolve();
-
-  // Authorizes the op before writing it, holding no transaction across the await, so other writes
-  // on the connection never join this one or roll back with it. The extra argument is the token
-  // of the last authorized op (none at first): the op is written only if it is minted again with
-  // that token, i.e. unchanged and with no op applied in between. Otherwise it comes back
-  // unwritten (no outcome) with a new token, to be authorized again.
-  const writeAuthorizedOp = async (
-    fn: string,
-    args: SqlCall['params'],
-    authSession: LocalWriteAuthSession,
-    writeId?: string,
-  ) => {
-    const sql = localOpSql(fn, args.length + 1);
-    const maxAuthorizations = 4;
-    let token: string | null = null;
-    for (let authorizations = 0; ; authorizations += 1) {
-      const raw: any = await sqliteGetJson(runner, sql, [...args, token]);
-      const { op, outcome } = decodeLocalOpResult(raw, sql);
-      if (raw.outcome) {
-        emitLocalOutcome(outcome, opts.onMaterialized, writeId);
-        return op;
-      }
-      if (authorizations === maxAuthorizations) {
-        throw new Error(
-          `treecrdt: local op was not written after ${maxAuthorizations} authorizations because other ops kept being applied meanwhile`,
-        );
-      }
-      await authSession.authorizeLocalOps([op]);
-      token = raw.token;
-    }
-  };
+  const writeAuthorized = createAuthorizedLocalWriter();
 
   const getLocalOp = async (
     fn: string,
@@ -649,15 +619,20 @@ export function createTreecrdtSqliteWriter(
       return op;
     }
 
-    // Copy caller-owned bytes so that mutating them before the write lands cannot change the op.
+    // Authorizes the op before writing it, holding no transaction across the await, so other
+    // writes on the connection never join this one or roll back with it. The extra argument is
+    // the token of the authorized op (see `createAuthorizedLocalWriter`). Copy caller-owned bytes
+    // so that mutating them before the write lands cannot change the op.
+    const sql = localOpSql(fn, params.length + 1);
     const args = params.map((value) =>
       ArrayBuffer.isView(value) ? Uint8Array.from(value as Uint8Array) : value,
     );
-    const write = authorizedWrites.then(() =>
-      writeAuthorizedOp(fn, args, authSession, writeOpts?.writeId),
-    );
-    authorizedWrites = write.catch(() => undefined);
-    return write;
+    return writeAuthorized(async (token) => {
+      const raw: any = await sqliteGetJson(runner, sql, [...args, token]);
+      const { op, outcome } = decodeLocalOpResult(raw, sql);
+      if (raw.outcome) emitLocalOutcome(outcome, opts.onMaterialized, writeOpts?.writeId);
+      return { op, token: raw.token };
+    }, authSession);
   };
 
   const insert = async (
