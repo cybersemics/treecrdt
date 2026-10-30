@@ -135,6 +135,14 @@ export type OpfsVfsOptions = {
   kind?: OpfsVfsKind;
 };
 
+/**
+ * Run first on every OPFS connection: exclusive-mode WAL roughly halves single-op commit cost.
+ * Neither OPFS VFS implements shared memory, so SQLite allows WAL only with exclusive locking set
+ * before the first read. The connection then holds the file until it closes; other connections
+ * wait. WAL persists in the file header, so every later connection must lock exclusively too.
+ */
+export const OPFS_CONNECTION_PRAGMAS = 'PRAGMA locking_mode=EXCLUSIVE; PRAGMA journal_mode=WAL';
+
 const OPFS_MAX_PATHNAME = 512;
 
 function withOpfsPathCapacity(vfs: any): any {
@@ -202,6 +210,7 @@ export async function openWithStorage(
       : await sqlite3.open_v2(file);
     handle = openedHandle;
     const db = createDatabase(sqlite3, openedHandle);
+    if (storage === 'opfs') await db.exec(OPFS_CONNECTION_PRAGMAS);
     await initializeTreecrdtExtension(module, openedHandle, db);
     let closePromise: Promise<void> | undefined;
     return {

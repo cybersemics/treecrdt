@@ -22,7 +22,9 @@ functions, then initializes the shared schema and document ID in one awaited wri
 transaction, preventing races between connections opening the same database.
 Omit `docId` only when schema initialization without a document ID is needed.
 `createTreecrdtClient()` performs initialization automatically. Rebuild the vendor
-WASM and adapter together.
+WASM and adapter together. Persistent OPFS databases are in WAL mode, which the
+OPFS VFSs support only with exclusive locking: a connection that opens one must run
+`PRAGMA locking_mode=EXCLUSIVE` before its first statement.
 
 ## Browser usage
 
@@ -78,6 +80,12 @@ Storage, runtime, filename, and asset resolution are selected internally:
 | `true` | `true` | OPFS | `shared-worker` | tabs share one persistent database session |
 
 `crossTab: true` throws when the browser does not support `SharedWorker`.
+
+Persistent databases use SQLite's WAL journal with exclusive locking, which roughly
+halves the cost of a single-operation commit. A database is held by one client until
+it closes: without `crossTab`, another client opening the same database, for example
+in a second tab, waits until the first client closes or its tab goes away. Use
+`crossTab: true` to share a persistent database between tabs.
 
 Callers only see `TreecrdtClient` (`ops` / `tree` / `local` / `onMaterialized` / `close` / `drop`).
 
