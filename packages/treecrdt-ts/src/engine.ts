@@ -242,7 +242,7 @@ export type TreecrdtChangedSinceOptions = {
 };
 
 export type TreecrdtChangedSincePage = {
-  /** Upper bound of the read. Once `next` is null, every change up to `headSeq` has been returned. */
+  /** Resume checkpoint after all pages are applied; not a snapshot revision. */
   headSeq: number;
   nodes: TreecrdtChangedNode[];
   next: TreecrdtChangedSinceCursor | null;
@@ -258,9 +258,11 @@ export type TreecrdtEngineTree = {
   /**
    * Nodes whose visible state changed after `since` (a `headSeq`), each once, with its current state.
    *
-   * `since = 0` returns every materialized node. Store the returned `headSeq` once `next` is null and pass
-   * it as `since` to resume after a restart: changes are recorded in the same commit as the state, so none
-   * are missed. Ops that change nothing visible return no nodes but still advance `headSeq`.
+   * `since = 0` reads every materialized node. Store the returned `headSeq` after all pages are applied
+   * successfully and pass it as `since` to resume: changes are recorded in the same commit as the state.
+   * Pages read current state, not a frozen snapshot. A node changed during paging may be deferred to
+   * the next catch-up, even if it also changed before this read. Retain notifications received during
+   * paging and catch up again afterward. Ops that change nothing visible still advance `headSeq`.
    *
    * Meant for catching up after a gap, such as startup or a failed update: a read from an older
    * `headSeq` scans the change table. In between, follow `onMaterialized` instead of calling it per write.

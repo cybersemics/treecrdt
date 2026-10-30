@@ -485,11 +485,12 @@ async function treecrdtTreeDump(
 }
 
 /**
- * Read nodes whose visible state changed in `(since, until]`.
+ * Read nodes whose latest visible-change stamp is in `(since, until]`.
  *
- * The first page fixes `until` at the current head, so a write between pages surfaces in the next read
- * instead of being skipped. A full read (`since = 0`) pages over every materialized node by id; an
- * incremental read scans `tree_changes` in node order, so its pages together cost one scan, and also
+ * The first page fixes `until` at the current head. Updating an unread node replaces its stamp, so it
+ * is deferred to the next read, even if it also changed before `until`; pages are not a snapshot.
+ * A full read (`since = 0`) pages over every materialized node by id; an incremental read scans
+ * `tree_changes` in node order, so its pages together cost one scan, and also
  * reports nodes a rebuild left without a materialized row. A read from the current head returns at once.
  */
 async function treecrdtTreeChangedSince(

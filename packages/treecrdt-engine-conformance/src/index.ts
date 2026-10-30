@@ -1175,23 +1175,38 @@ async function scenarioChangedSincePagesUnderFixedHead(
   for (const node of nodes) await engine.local.insert(replica, root, node, { type: 'last' }, null);
 
   let page = await engine.tree.changedSince(start, { limit: 2 });
+  const headSeq = page.headSeq;
   assertEqual(page.nodes.length, 2, 'first page honours the limit');
   assert(page.next, 'a full page has a continuation');
   const seen = page.nodes.map((n) => n.node);
-  // A write between pages belongs to the next read, not this one.
+  // Updating unread nodes replaces their stamps, deferring them to the next read too.
+  const payload = new TextEncoder().encode('updated during paging');
+  await engine.local.payload(replica, nodes[2]!, payload);
+  await engine.local.delete(replica, nodes[3]!);
   await engine.local.insert(replica, root, late, { type: 'last' }, null);
   while (page.next) {
     page = await engine.tree.changedSince(page.next, { limit: 2 });
+    assertEqual(page.headSeq, headSeq, 'writes during paging do not advance the read head');
     seen.push(...page.nodes.map((n) => n.node));
   }
-  assertArrayEqual(seen, nodes, 'pages return every change once, in node order');
+  assertArrayEqual(
+    seen,
+    [nodes[0], nodes[1], nodes[4]],
+    'nodes changed during paging are deferred',
+  );
 
-  const next = await readAllChangedSince(engine, page.headSeq);
+  const next = await readAllChangedSince(engine, page.headSeq, { payloads: true });
   assertArrayEqual(
     next.nodes.map((n) => n.node),
-    [late],
-    'a write during paging surfaces in the next read',
+    [nodes[2], nodes[3], late],
+    'updates, deletions and inserts during paging surface in the next read',
   );
+  assertBytesEqual(
+    next.nodes[0]!.payload ?? null,
+    payload,
+    'the deferred update has its latest payload',
+  );
+  assertEqual(next.nodes[1]!.tombstone, true, 'the deferred deletion is reported');
 
   const full = await readAllChangedSince(engine, 0, { limit: 3 });
   assertArrayEqual(

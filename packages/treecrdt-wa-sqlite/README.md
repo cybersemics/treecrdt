@@ -82,7 +82,7 @@ Callers only see `TreecrdtClient` (`ops` / `tree` / `local` / `onMaterialized` /
 
 ### Keeping derived data in step
 
-`tree.changedSince(since)` returns each node whose visible state changed after a `headSeq`, once, with its current state. Changes are recorded in the same commit as the state, so a stored cursor resumes without missing any after a crash or reload. `since = 0` reads every node.
+`tree.changedSince(since)` returns nodes whose visible state changed after a `headSeq`, once each, with their current state. Changes are recorded in the same commit as the state. Save the cursor only after applying every returned page successfully, so a failed update can be retried after a crash or reload. `since = 0` reads every node.
 
 ```ts
 let page = await client.tree.changedSince(loadCursor() ?? 0, { payloads: true, limit: 500 });
@@ -93,6 +93,8 @@ for (;;) {
 }
 saveCursor(page.headSeq); // with the index rows, in one transaction when they share the database
 ```
+
+Pages are not a frozen snapshot: a node changed again before its page is read is deferred to the next catch-up. Retain notifications received during paging and catch up again afterward; completing a pass does not guarantee the index is current with concurrent writes.
 
 `onMaterialized` remains the low-latency signal while the client is open; `changedSince` is what to rely on across restarts. Reading from an older `headSeq` scans the change table, which keeps recording cheap, so call it to catch up after a gap rather than after every write.
 
