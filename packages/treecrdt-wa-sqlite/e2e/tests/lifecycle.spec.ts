@@ -73,6 +73,7 @@ function expectLifecycleTree(state: Awaited<ReturnType<typeof read>>) {
     mode: 'worker',
     runtime: 'dedicated-worker',
     storage: 'opfs',
+    journalMode: 'wal',
     headLamport: 2,
     parentExists: true,
     childExists: true,
@@ -119,4 +120,35 @@ test.describe('browser OPFS lifecycle', () => {
       }
     });
   }
+
+  test('opens the persistent store in a second tab once the holding tab closes', async ({
+    context,
+  }, testInfo) => {
+    if (testInfo.project.name !== 'chromium-dev') test.skip();
+    test.setTimeout(120_000);
+
+    const suffix = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+    const opts = { docId: `lifecycle-second-tab-${suffix}` };
+    const holder = await context.newPage();
+    const waiter = await context.newPage();
+
+    try {
+      await Promise.all([waitForHarness(holder), waitForHarness(waiter)]);
+      // The holder keeps its client open, and with it the exclusive lock on the database.
+      expectLifecycleTree(await write(holder, opts));
+
+      let readSettled = false;
+      const reading = read(waiter, opts).finally(() => {
+        readSettled = true;
+      });
+      await waiter.waitForTimeout(1_000);
+      expect(readSettled).toBe(false);
+
+      await holder.close();
+      expectLifecycleTree(await reading);
+    } finally {
+      await drop(waiter, opts).catch(() => {});
+      await Promise.allSettled([holder.close(), waiter.close()]);
+    }
+  });
 });

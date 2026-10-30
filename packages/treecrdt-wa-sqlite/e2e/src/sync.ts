@@ -441,6 +441,7 @@ export async function openSharedOpfsCrossTabClient(opts: { docId: string }): Pro
   mode: TreecrdtClient['mode'];
   runtime: TreecrdtClient['runtime'];
   storage: TreecrdtClient['storage'];
+  journalMode: string | null;
 }> {
   await closeSharedOpfsCrossTabClient();
   sharedOpfsCrossTabEvents = [];
@@ -456,6 +457,7 @@ export async function openSharedOpfsCrossTabClient(opts: { docId: string }): Pro
     mode: sharedOpfsCrossTabClient.mode,
     runtime: sharedOpfsCrossTabClient.runtime,
     storage: sharedOpfsCrossTabClient.storage,
+    journalMode: await sharedOpfsCrossTabClient.runner.getText('PRAGMA journal_mode'),
   };
 }
 
