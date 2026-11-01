@@ -170,7 +170,7 @@ maybeDescribe('engine conformance scenarios (postgres-napi engine)', () => {
 
       await runTreecrdtEngineConformanceScenario(scenario, {
         docIdPrefix: 'treecrdt-postgres-conformance',
-        skip: () => ctx.skip(),
+        skipUnsupported: () => ctx.skip(),
         openEngine: ({ docId }) => openWrapped({ docId }),
         openPersistentEngine: ({ docId, name }) => openWrapped({ docId, persistentName: name }),
       });

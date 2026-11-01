@@ -45,7 +45,10 @@ export type TreecrdtEngineConformanceContext = {
   engine: TreecrdtEngine;
   createEngine: (opts: { docId: string; name?: string }) => Promise<TreecrdtEngine>;
   createPersistentEngine?: (opts: { docId: string; name: string }) => Promise<TreecrdtEngine>;
-  /** Marks the scenario skipped when the engine lacks what it tests; call as `return ctx.skip(reason)`. */
+  /**
+   * Ends a scenario the engine can't run; call as `return ctx.skip(reason)`.
+   * The scenario fails unless the runner passes `skipUnsupported`.
+   */
   skip: (reason: string) => void;
 };
 
@@ -58,8 +61,11 @@ export type TreecrdtEngineConformanceRunner = {
   docIdPrefix: string;
   openEngine: (opts: { docId: string; name?: string }) => Promise<TreecrdtEngine>;
   openPersistentEngine?: (opts: { docId: string; name: string }) => Promise<TreecrdtEngine>;
-  /** Reports a skipped scenario, e.g. with vitest's `ctx.skip`. Without it, a skipped scenario passes. */
-  skip?: (reason: string) => void;
+  /**
+   * Skips scenarios this engine can't run, e.g. with vitest's `ctx.skip`. Pass it only for an
+   * engine that lacks a feature on purpose; without it, such a scenario fails.
+   */
+  skipUnsupported?: (reason: string) => void;
   cleanup?: () => Promise<void> | void;
 };
 
@@ -129,7 +135,12 @@ export async function runTreecrdtEngineConformanceScenario(
       engine,
       createEngine: openEngine,
       createPersistentEngine: openPersistentEngine,
-      skip: (reason) => runner.skip?.(reason),
+      skip: (reason) => {
+        if (!runner.skipUnsupported) {
+          throw new Error(`${scenario.name}: ${reason} (pass skipUnsupported to skip it)`);
+        }
+        runner.skipUnsupported(reason);
+      },
     });
   } finally {
     await closeTrackedConformanceEngines(engines);
