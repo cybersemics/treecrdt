@@ -63,7 +63,7 @@ export interface TreecrdtAdapter {
    * Read nodes whose visible state changed in `(since, until]`, in paging order.
    *
    * Returns the read's `headSeq` and raw JSON-decoded rows
-   * `[node, parent, orderKey, tombstone, changedSeq, payload]` with hex byte fields.
+   * `[node, parent, orderKey, tombstone, payload]` with hex byte fields.
    */
   treeChangedSince?(
     query: TreecrdtChangedSinceQuery,

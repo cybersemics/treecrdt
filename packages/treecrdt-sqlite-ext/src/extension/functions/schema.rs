@@ -242,7 +242,7 @@ pub(super) fn update_tree_meta_head<R: AsRef<[u8]>>(
 /// Stamps every node a committed outcome changed with the outcome's head seq.
 ///
 /// Callers run this inside the savepoint that commits the outcome, so a stamp is never visible
-/// without the state it describes. Rebuilds that clear `tree_nodes` keep earlier stamps.
+/// without the state it describes.
 pub(super) fn record_changed_nodes(
     db: *mut sqlite3,
     outcome: &MaterializationOutcome,

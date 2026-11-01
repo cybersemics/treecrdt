@@ -57,8 +57,9 @@ CREATE TABLE IF NOT EXISTS tree_payload (
 );
 
 -- Materialization seq of each node's last visible change, written in the commit that changed it.
--- Kept apart from tree_nodes because canonical rebuilds clear tree_nodes. There is no index on seq,
--- so recording a change writes one page and a catch-up read scans the table once.
+-- Kept apart from tree_nodes, whose rows carry version vectors, so a catch-up read scans only node
+-- ids and seqs. There is no index on seq, so recording a change writes one page and a catch-up read
+-- scans the table once.
 CREATE TABLE IF NOT EXISTS tree_changes (
   node BLOB PRIMARY KEY,
   seq INTEGER NOT NULL

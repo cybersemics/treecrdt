@@ -1,4 +1,8 @@
-import type { MaterializationEvent, TreecrdtEngine } from '@treecrdt/interface/engine';
+import type {
+  MaterializationEvent,
+  TreecrdtEngine,
+  TreecrdtEngineTree,
+} from '@treecrdt/interface/engine';
 import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 
@@ -24,6 +28,8 @@ export type TreecrdtClient = TreecrdtEngine & {
   runtime: RuntimeMode;
   storage: StorageMode;
   runner: SqliteRunner;
+  /** SQLite-backed, so `changedSince` is always present. */
+  tree: Required<Pick<TreecrdtEngineTree, 'changedSince'>>;
   drop: () => Promise<void>;
 };
 

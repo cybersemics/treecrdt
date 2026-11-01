@@ -24,7 +24,12 @@ import {
   createTreecrdtEngineLocal,
   createTreecrdtTreeNodes,
 } from '@treecrdt/interface/engine';
-import type { LocalWriteOptions, TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
+import type {
+  LocalWriteOptions,
+  TreecrdtEngine,
+  TreecrdtEngineTree,
+  WriteOptions,
+} from '@treecrdt/interface/engine';
 import {
   createTreecrdtSqliteAuthApi,
   type TreecrdtSqliteAuthApi,
@@ -127,7 +132,14 @@ export function createSqliteNodeApi(db: any, opts: { maxBulkOps?: number } = {})
 export function createTreecrdtClient(
   db: any,
   opts: { docId?: string; maxBulkOps?: number } = {},
-): Promise<TreecrdtEngine & { runner: SqliteRunner; auth: TreecrdtSqliteAuthApi }> {
+): Promise<
+  TreecrdtEngine & {
+    runner: SqliteRunner;
+    auth: TreecrdtSqliteAuthApi;
+    /** SQLite-backed, so `changedSince` is always present. */
+    tree: Required<Pick<TreecrdtEngineTree, 'changedSince'>>;
+  }
+> {
   const runner = createRunner(db);
   const materialized = createMaterializationDispatcher();
   const adapter = createTreecrdtSqliteAdapter(runner, {

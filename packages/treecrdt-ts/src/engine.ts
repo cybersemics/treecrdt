@@ -219,10 +219,8 @@ export type TreecrdtChangedNode = {
   node: string;
   parent: string | null;
   orderKey: Uint8Array | null;
-  /** True when the node is deleted or no longer materialized. */
+  /** True when the node is deleted. */
   tombstone: boolean;
-  /** `headSeq` of the commit that last changed the node visibly; 0 when it predates change tracking. */
-  changedSeq: number;
   /** Current payload, present only when requested; null for deleted nodes. */
   payload?: Uint8Array | null;
 };
@@ -263,6 +261,8 @@ export type TreecrdtEngineTree = {
    * Pages read current state, not a frozen snapshot. A node changed during paging may be deferred to
    * the next catch-up, even if it also changed before this read. Retain notifications received during
    * paging and catch up again afterward. Ops that change nothing visible still advance `headSeq`.
+   * Rejects a `since` or cursor ahead of the current `headSeq`, such as one saved against a different
+   * database; read from 0 to rebuild.
    *
    * Meant for catching up after a gap, such as startup or a failed update: a read from an older
    * `headSeq` scans the change table. In between, follow `onMaterialized` instead of calling it per write.

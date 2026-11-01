@@ -91,8 +91,10 @@ for (;;) {
   if (!page.next) break;
   page = await client.tree.changedSince(page.next, { payloads: true, limit: 500 });
 }
-saveCursor(page.headSeq); // with the index rows, in one transaction when they share the database
+saveCursor(page.headSeq);
 ```
+
+Each node comes with its current state, so applying it twice is harmless: if the app stops before `saveCursor`, the next catch-up repeats those updates. Don't hold a transaction open across the loop on the client's own database. Other writes on that connection would run inside it, and a rollback would discard ops whose events were already delivered. A cursor ahead of the database's `headSeq`, such as one saved before the database was dropped, is rejected; read from 0 to rebuild.
 
 Pages are not a frozen snapshot: a node changed again before its page is read is deferred to the next catch-up. Retain notifications received during paging and catch up again afterward; completing a pass does not guarantee the index is current with concurrent writes.
 
