@@ -219,7 +219,6 @@ export type TreecrdtChangedNode = {
   node: string;
   parent: string | null;
   orderKey: Uint8Array | null;
-  /** True when the node is deleted. */
   tombstone: boolean;
   /** Current payload, present only when requested; null for deleted nodes. */
   payload?: Uint8Array | null;
@@ -235,7 +234,6 @@ export type TreecrdtChangedSinceCursor = {
 export type TreecrdtChangedSinceOptions = {
   /** Maximum nodes per page; omitted reads every changed node at once. */
   limit?: number;
-  /** Include each node's current payload. */
   payloads?: boolean;
 };
 
@@ -264,8 +262,8 @@ export type TreecrdtEngineTree = {
    * Rejects a `since` or cursor ahead of the current `headSeq`, such as one saved against a different
    * database; read from 0 to rebuild.
    *
-   * Meant for catching up after a gap, such as startup or a failed update: a read from an older
-   * `headSeq` scans the change table. In between, follow `onMaterialized` instead of calling it per write.
+   * Meant for catching up after a gap, such as startup or a failed update. In between, follow
+   * `onMaterialized` instead of calling it per write.
    *
    * Optional: implemented by the SQLite-backed engines.
    */

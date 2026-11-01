@@ -45,10 +45,7 @@ export type TreecrdtEngineConformanceContext = {
   engine: TreecrdtEngine;
   createEngine: (opts: { docId: string; name?: string }) => Promise<TreecrdtEngine>;
   createPersistentEngine?: (opts: { docId: string; name: string }) => Promise<TreecrdtEngine>;
-  /**
-   * Ends a scenario the engine can't run; call as `return ctx.skip(reason)`.
-   * The scenario fails unless the runner passes `skipUnsupported`.
-   */
+  /** Ends a scenario the engine can't run; call as `return ctx.skip(reason)`. */
   skip: (reason: string) => void;
 };
 
@@ -1141,7 +1138,6 @@ async function scenarioChangedSinceReportsChangedNodes(
   assertEqual(idle.nodes.length, 0, 'nothing changed after the returned headSeq');
   assertEqual(idle.headSeq, first.headSeq, 'headSeq is stable without writes');
 
-  // A seq the database never reached comes from another database; an empty page would hide that.
   let threw = false;
   try {
     await engine.tree.changedSince(first.headSeq + 1);

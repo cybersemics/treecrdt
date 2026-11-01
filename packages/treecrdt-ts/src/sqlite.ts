@@ -487,12 +487,9 @@ async function treecrdtTreeDump(
 /**
  * Read nodes whose latest visible-change stamp is in `(since, until]`.
  *
- * The first page fixes `until` at the current head. Updating an unread node replaces its stamp, so it
- * is deferred to the next read, even if it also changed before `until`; pages are not a snapshot.
- * A full read (`since = 0`) pages over every materialized node by id; an incremental read scans
- * `tree_changes` in node order, so its pages together cost one scan. Each page seeks past
- * `afterNode` instead of rescanning from the first id. A read from the current head returns at
- * once; a `since` or `until` beyond it throws, since it comes from a different database.
+ * Updating an unread node replaces its stamp, so it is deferred to the next read, even if it also
+ * changed before `until`; pages are not a snapshot. An incremental read scans `tree_changes` in
+ * node order, so its pages together cost one scan.
  */
 async function treecrdtTreeChangedSince(
   runner: SqliteRunner,

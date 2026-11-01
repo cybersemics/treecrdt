@@ -136,7 +136,6 @@ export function createTreecrdtClient(
   TreecrdtEngine & {
     runner: SqliteRunner;
     auth: TreecrdtSqliteAuthApi;
-    /** SQLite-backed, so `changedSince` is always present. */
     tree: Required<Pick<TreecrdtEngineTree, 'changedSince'>>;
   }
 > {
