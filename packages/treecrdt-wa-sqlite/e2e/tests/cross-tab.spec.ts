@@ -190,7 +190,12 @@ test('denied auth-checked write keeps writes from another tab', async ({ context
   try {
     await Promise.all([waitForCrossTabHarness(pageA), waitForCrossTabHarness(pageB)]);
     for (const summary of await Promise.all([openClient(pageA, docId), openClient(pageB, docId)])) {
-      expect(summary).toEqual({ mode: 'worker', runtime: 'shared-worker', storage: 'opfs' });
+      expect(summary).toEqual({
+        mode: 'worker',
+        runtime: 'shared-worker',
+        storage: 'opfs',
+        journalMode: 'wal',
+      });
     }
 
     const denied = await holdAuthWrite(pageA, { replicaLabel: 'cross-tab-a', nodeInt: 711 });
