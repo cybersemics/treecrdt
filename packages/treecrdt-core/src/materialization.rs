@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::affected::coalesce_materialization_changes;
 use crate::ops::{cmp_op_key, cmp_ops, Operation};
@@ -309,12 +309,15 @@ struct ReplayRun {
     seq: u64,
     prefix_seq: u64,
     outcome: MaterializationOutcome,
+    /// Nodes the collected changes touched, including ones whose changes cancel out in `outcome`.
+    touched: BTreeSet<NodeId>,
 }
 
 struct ReplayAccumulator<'a> {
     seq: u64,
     head: Option<Operation>,
     changes: Vec<MaterializationChange>,
+    touched: BTreeSet<NodeId>,
     prefix_seq: Option<u64>,
     change_scope: ReplayChangeScope<'a>,
 }
@@ -325,6 +328,7 @@ impl<'a> ReplayAccumulator<'a> {
             seq,
             head: None,
             changes: Vec::new(),
+            touched: BTreeSet::new(),
             prefix_seq: None,
             change_scope,
         }
@@ -346,6 +350,9 @@ impl<'a> ReplayAccumulator<'a> {
     ) {
         self.head = Some(op);
         if collect {
+            for change in &changes {
+                self.touched.extend(change.affected_nodes());
+            }
             self.changes.extend(changes);
         }
     }
@@ -388,6 +395,7 @@ impl<'a> ReplayAccumulator<'a> {
             seq: self.seq,
             prefix_seq: self.prefix_seq.unwrap_or(self.seq),
             outcome: MaterializationOutcome::from_changes(self.seq, self.changes),
+            touched: self.touched,
         }
     }
 }
@@ -825,7 +833,12 @@ fn replay_frontier_in_memory<S: Storage>(
     storage: &S,
     frontier: &MaterializationFrontier,
     replica_id: &ReplicaId,
-) -> Result<(RebuiltMaterialization, u64, MaterializationOutcome)> {
+) -> Result<(
+    RebuiltMaterialization,
+    u64,
+    MaterializationOutcome,
+    BTreeSet<NodeId>,
+)> {
     let mut crdt = TreeCrdt::with_stores(
         replica_id.clone(),
         NoopStorage,
@@ -846,8 +859,6 @@ fn replay_frontier_in_memory<S: Storage>(
     })?;
 
     let run = replay.finish();
-    let prefix_seq = run.prefix_seq;
-    let outcome = run.outcome;
     Ok((
         RebuiltMaterialization {
             crdt,
@@ -855,8 +866,9 @@ fn replay_frontier_in_memory<S: Storage>(
             head: run.head,
             seq: run.seq,
         },
-        prefix_seq,
-        outcome,
+        run.prefix_seq,
+        run.outcome,
+        run.touched,
     ))
 }
 
@@ -1139,9 +1151,12 @@ where
         mut index,
     } = stores;
 
-    let (mut rebuilt, prefix_seq, mut replay_outcome) =
+    let (mut rebuilt, prefix_seq, mut replay_outcome, touched) =
         replay_frontier_in_memory(&storage, frontier, &replica_id)?;
-    let mut affected_nodes = replay_outcome.affected_nodes();
+    // Patch every node a replayed op touched, not just those left in the coalesced outcome. The
+    // stored rows already include the old suffix, so a node whose replayed changes cancel out,
+    // such as a delete then a restore, can still differ from its rebuilt row.
+    let mut affected_nodes: Vec<NodeId> = touched.into_iter().collect();
     let mut seen_nodes: HashSet<NodeId> = affected_nodes.iter().copied().collect();
     let mut idx = 0usize;
     while idx < affected_nodes.len() {

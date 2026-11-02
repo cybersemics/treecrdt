@@ -172,6 +172,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioMaterializationEventPayloadCoalescing,
     },
     {
+      name: 'materialization events: a late batch whose replay deletes and restores a node',
+      run: scenarioLateBatchReplaysDeleteAndRestore,
+    },
+    {
       name: 'materialization events: defensive restore',
       run: scenarioMaterializationEventDefensiveRestore,
     },
@@ -817,6 +821,51 @@ async function scenarioMaterializationEventPayloadCoalescing(
     throw new Error('expected payload change');
   }
   assertBytesEqual(payloadChanges[0].payload, new Uint8Array([2]), 'payload change final bytes');
+}
+
+async function scenarioLateBatchReplaysDeleteAndRestore(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const a = ctx.engine;
+  const b = await ctx.createEngine({ docId: ctx.docId, name: 'peer-b' });
+  const rA = replicaFromLabel('rA');
+  const rB = replicaFromLabel('rB');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const node = nodeIdFromInt(33);
+
+  await a.local.insert(rA, root, node, { type: 'last' }, null);
+  await a.local.payload(rA, node, encoder.encode('a'));
+  await b.ops.appendMany(await a.ops.all());
+  // A deletes the node; B, unaware, writes a payload that restores it. B's ops arrive late and
+  // include a delete, so A replays its whole suffix: the delete, then the restore.
+  await a.local.insert(rA, root, nodeIdFromInt(34), { type: 'last' }, null);
+  await a.local.delete(rA, node);
+  await a.local.insert(rA, root, nodeIdFromInt(35), { type: 'last' }, null);
+  await b.local.insert(rB, root, nodeIdFromInt(36), { type: 'last' }, null);
+  await b.local.payload(rB, node, encoder.encode('b'));
+  await b.local.delete(rB, nodeIdFromInt(36));
+  const cursor = a.tree.changedSince ? (await readAllChangedSince(a, 0)).headSeq : 0;
+
+  const events = await captureMaterializationEvents(a, async () => {
+    await a.ops.appendMany(await b.ops.all());
+  });
+  const restored = await a.tree.get(node);
+  assert(restored, 'the node is visible again');
+  assertBytesEqual(await restored.payload(), encoder.encode('b'), 'the restoring payload wins');
+  assert(
+    events.some((event) =>
+      event.changes.some((change) => change.kind === 'restore' && change.node === node),
+    ),
+    'the event reports the restore',
+  );
+  if (a.tree.changedSince) {
+    const { nodes } = await readAllChangedSince(a, cursor);
+    assert(
+      nodes.some((n) => n.node === node && !n.tombstone),
+      'changedSince lists the restored node',
+    );
+  }
 }
 
 async function scenarioMaterializationEventDefensiveRestore(

@@ -1,6 +1,5 @@
 use std::cell::Cell;
 use std::rc::Rc;
-use treecrdt_core::NodeStore;
 use treecrdt_core::{
     apply_incremental_ops_with_delta, apply_persisted_remote_ops_with_delta,
     catch_up_materialized_state, materialize_persisted_remote_ops_with_delta,
@@ -11,6 +10,7 @@ use treecrdt_core::{
     ParentOpIndex, PersistedRemoteStores, ReplicaId, Storage, TreeCrdt, TruncatingParentOpIndex,
     VersionVector,
 };
+use treecrdt_core::{NodeStore, PayloadStore};
 
 #[derive(Default)]
 struct RecordingIndex {
@@ -884,5 +884,96 @@ fn catch_up_materialized_state_reports_rows_restored_by_replay_patch() {
     assert_eq!(
         result.outcome.affected_nodes(),
         vec![NodeId::ROOT, parent, child],
+    );
+}
+
+#[test]
+fn catch_up_materialized_state_patches_rows_whose_replayed_changes_cancel_out() {
+    let local = ReplicaId::new(b"local");
+    let remote = ReplicaId::new(b"remote");
+    let node = NodeId(10);
+    let sibling = NodeId(11);
+
+    let insert = Operation::insert(&local, 1, 1, NodeId::ROOT, node, vec![0x10]);
+    let local_payload = Operation::set_payload(&local, 2, 2, node, b"p1".to_vec());
+    let remote_insert = Operation::insert(&remote, 1, 3, NodeId::ROOT, sibling, vec![0x20]);
+    let mut known_state = VersionVector::new();
+    known_state.observe(&local, 1);
+    known_state.observe(&local, 2);
+    let delete = Operation::delete(&local, 3, 4, node, Some(known_state.clone()));
+    // The delete doesn't know this payload and precedes it in op order, so the replay deletes the
+    // node and then restores it: two changes that cancel out.
+    let remote_payload = Operation::set_payload(&remote, 2, 5, node, b"p3".to_vec());
+
+    let mut storage = MemoryStorage::default();
+    for op in [
+        &insert,
+        &local_payload,
+        &remote_insert,
+        &delete,
+        &remote_payload,
+    ] {
+        storage.apply(op.clone()).unwrap();
+    }
+
+    // The backend before catch-up has only the local ops: the node is deleted with the local payload.
+    let mut nodes = MemoryNodeStore::default();
+    nodes.ensure_node(node).unwrap();
+    nodes.attach(node, NodeId::ROOT, vec![0x10]).unwrap();
+    let mut deleted_at = known_state;
+    deleted_at.observe(&local, 3);
+    nodes.merge_deleted_at(node, &deleted_at).unwrap();
+    nodes.set_tombstone(node, true).unwrap();
+    let mut payloads = MemoryPayloadStore::default();
+    payloads
+        .set_payload(
+            node,
+            Some(b"p1".to_vec()),
+            (2, local_payload.meta.id.clone()),
+        )
+        .unwrap();
+
+    let meta = Cursor {
+        head_lamport: delete.meta.lamport,
+        head_replica: delete.meta.id.replica.as_bytes().to_vec(),
+        head_counter: delete.meta.id.counter,
+        head_seq: 3,
+        replay_lamport: Some(remote_insert.meta.lamport),
+        replay_replica: Some(remote_insert.meta.id.replica.as_bytes().to_vec()),
+        replay_counter: Some(remote_insert.meta.id.counter),
+    };
+
+    let mut tombstone_after = None;
+    let result = catch_up_materialized_state(
+        storage,
+        PersistedRemoteStores {
+            replica_id: ReplicaId::new(b"adapter"),
+            clock: LamportClock::default(),
+            nodes,
+            payloads,
+            index: NoopParentOpIndex,
+        },
+        &meta,
+        |nodes| {
+            tombstone_after = Some(nodes.tombstone(node)?);
+            Ok(())
+        },
+        |_| Ok(()),
+    )
+    .unwrap();
+
+    assert_eq!(
+        tombstone_after,
+        Some(false),
+        "the restored node must be patched"
+    );
+    assert!(
+        result.outcome.changes.iter().any(|change| matches!(
+            change,
+            MaterializationChange::Restore { node: restored, payload: Some(payload), .. }
+                if *restored == node && payload == b"p3"
+        )),
+        "catch-up must report the restore with the winning payload: {:?}",
+        result.outcome.changes
     );
 }
