@@ -213,6 +213,37 @@ export type TreecrdtNodePrimitives = {
   children: (parent: string, offset: number | null, limit: number | null) => Promise<string[]>;
 };
 
+/** Current state of a node returned by `changedSince`. */
+export type TreecrdtChangedNode = {
+  /** Canonical 16-byte NodeId encoded as 32 lowercase hex characters. */
+  node: string;
+  parent: string | null;
+  orderKey: Uint8Array | null;
+  tombstone: boolean;
+  /** Current payload, present only when requested; null for deleted nodes. */
+  payload?: Uint8Array | null;
+};
+
+/** Continues a paged `changedSince` read. Treat as opaque. */
+export type TreecrdtChangedSinceCursor = {
+  since: number;
+  until: number;
+  afterNode: string;
+};
+
+export type TreecrdtChangedSinceOptions = {
+  /** Maximum nodes per page; omitted reads every changed node at once. */
+  limit?: number;
+  payloads?: boolean;
+};
+
+export type TreecrdtChangedSincePage = {
+  /** Resume checkpoint after all pages are applied; not a snapshot revision. */
+  headSeq: number;
+  nodes: TreecrdtChangedNode[];
+  next: TreecrdtChangedSinceCursor | null;
+};
+
 export type TreecrdtEngineTree = {
   /** Resolves ROOT aliases to `root`; undefined when any other node is absent. */
   get: (node: string) => Promise<TreecrdtNode | undefined>;
@@ -220,6 +251,26 @@ export type TreecrdtEngineTree = {
   root: TreecrdtNode;
   dump: () => Promise<SqliteTreeRow[]>;
   nodeCount: () => Promise<number>;
+  /**
+   * Nodes whose visible state changed after `since` (a `headSeq`), each once, with its current state.
+   *
+   * `since = 0` reads every materialized node. Store the returned `headSeq` after all pages are applied
+   * successfully and pass it as `since` to resume: changes are recorded in the same commit as the state.
+   * Pages read current state, not a frozen snapshot. A node changed during paging may be deferred to
+   * the next catch-up, even if it also changed before this read. Retain notifications received during
+   * paging and catch up again afterward. Ops that change nothing visible still advance `headSeq`.
+   * Rejects a `since` or cursor ahead of the current `headSeq`, such as one saved against a different
+   * database; read from 0 to rebuild.
+   *
+   * Meant for catching up after a gap, such as startup or a failed update. In between, follow
+   * `onMaterialized` instead of calling it per write.
+   *
+   * Optional: implemented by the SQLite-backed engines.
+   */
+  changedSince?: (
+    since: number | TreecrdtChangedSinceCursor,
+    opts?: TreecrdtChangedSinceOptions,
+  ) => Promise<TreecrdtChangedSincePage>;
 };
 
 /**
