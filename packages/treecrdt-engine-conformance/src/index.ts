@@ -837,14 +837,12 @@ async function scenarioLateBatchReplaysDeleteAndRestore(
   await a.local.insert(rA, root, node, { type: 'last' }, null);
   await a.local.payload(rA, node, encoder.encode('a'));
   await b.ops.appendMany(await a.ops.all());
-  // A deletes the node; B, unaware, writes a payload that restores it. B's ops arrive late and
-  // include a delete, so A replays its whole suffix: the delete, then the restore.
+  // A deletes the node; B, unaware, writes a payload that restores it. B's ops arrive late, so A
+  // replays its suffix: the delete, then the restore.
   await a.local.insert(rA, root, nodeIdFromInt(34), { type: 'last' }, null);
   await a.local.delete(rA, node);
-  await a.local.insert(rA, root, nodeIdFromInt(35), { type: 'last' }, null);
   await b.local.insert(rB, root, nodeIdFromInt(36), { type: 'last' }, null);
   await b.local.payload(rB, node, encoder.encode('b'));
-  await b.local.delete(rB, nodeIdFromInt(36));
   const cursor = a.tree.changedSince ? (await readAllChangedSince(a, 0)).headSeq : 0;
 
   const events = await captureMaterializationEvents(a, async () => {

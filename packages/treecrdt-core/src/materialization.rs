@@ -1153,9 +1153,8 @@ where
 
     let (mut rebuilt, prefix_seq, mut replay_outcome, touched) =
         replay_frontier_in_memory(&storage, frontier, &replica_id)?;
-    // Patch every node a replayed op touched, not just those left in the coalesced outcome. The
-    // stored rows already include the old suffix, so a node whose replayed changes cancel out,
-    // such as a delete then a restore, can still differ from its rebuilt row.
+    // Patch every node a replayed op touched: one whose changes cancel out, such as a delete then
+    // a restore, can still differ from its stored row, which already includes the old suffix.
     let mut affected_nodes: Vec<NodeId> = touched.into_iter().collect();
     let mut seen_nodes: HashSet<NodeId> = affected_nodes.iter().copied().collect();
     let mut idx = 0usize;
