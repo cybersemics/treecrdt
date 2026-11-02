@@ -841,7 +841,7 @@ async function scenarioLateBatchReplaysDeleteAndRestore(
   // replays its suffix: the delete, then the restore.
   await a.local.insert(rA, root, nodeIdFromInt(34), { type: 'last' }, null);
   await a.local.delete(rA, node);
-  await b.local.insert(rB, root, nodeIdFromInt(36), { type: 'last' }, null);
+  await b.local.insert(rB, root, nodeIdFromInt(35), { type: 'last' }, null);
   await b.local.payload(rB, node, encoder.encode('b'));
   const cursor = a.tree.changedSince ? (await readAllChangedSince(a, 0)).headSeq : 0;
 
