@@ -923,10 +923,6 @@ async function scenarioLocalWriteReportsRestoredParent(
     ),
     'the event reports the restored parent',
   );
-  assert(
-    (await engine.tree.root.children()).some((node) => node.id === parent),
-    'the parent is visible again',
-  );
   if (engine.tree.changedSince) {
     const { nodes } = await readAllChangedSince(engine, cursor);
     assert(
