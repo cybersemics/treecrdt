@@ -481,3 +481,89 @@ pub fn out_of_order_delete_suffix_falls_back_and_restores_parent<
     assert_eq!(harness.visible_children(NodeId::ROOT), vec![parent]);
     assert_eq!(harness.visible_children(parent), vec![child]);
 }
+
+pub fn late_op_after_rejected_self_move_keeps_accepted_parent<
+    H: MaterializationConformanceHarness,
+>(
+    harness: &H,
+) {
+    let local = ReplicaId::new(b"b");
+    let remote = ReplicaId::new(b"a");
+    let parent = node(1);
+    let child = node(2);
+    let late_node = node(3);
+    harness.append_ops(&[
+        Operation::insert(
+            &local,
+            1,
+            1,
+            NodeId::ROOT,
+            parent,
+            order_key_from_position(0),
+        ),
+        Operation::move_node(&local, 2, 2, parent, parent, order_key_from_position(0)),
+        Operation::insert(&local, 3, 3, parent, child, order_key_from_position(0)),
+        Operation::move_node(
+            &local,
+            4,
+            4,
+            parent,
+            NodeId::ROOT,
+            order_key_from_position(1),
+        ),
+    ]);
+
+    // Sorts before the child insert, so the append replays the later ops on `parent` and `child`.
+    harness.append_ops(&[Operation::insert(
+        &remote,
+        1,
+        3,
+        NodeId::ROOT,
+        late_node,
+        order_key_from_position(2),
+    )]);
+
+    assert_replay_cleared(harness);
+    assert_eq!(harness.head_seq(), 5);
+    assert_eq!(
+        harness.visible_children(NodeId::ROOT),
+        vec![parent, late_node]
+    );
+    assert_eq!(harness.visible_children(parent), vec![child]);
+}
+
+pub fn late_op_after_cycle_rejected_move_keeps_accepted_parent<
+    H: MaterializationConformanceHarness,
+>(
+    harness: &H,
+) {
+    let local = ReplicaId::new(b"b");
+    let concurrent = ReplicaId::new(b"c");
+    let remote = ReplicaId::new(b"a");
+    let a = node(1);
+    let b = node(2);
+    let late_node = node(3);
+    harness.append_ops(&[
+        Operation::insert(&local, 1, 1, NodeId::ROOT, a, order_key_from_position(0)),
+        Operation::insert(&local, 2, 2, NodeId::ROOT, b, order_key_from_position(1)),
+        Operation::move_node(&local, 3, 3, a, b, order_key_from_position(0)),
+        // Sorts after A -> B, so B -> A would close a cycle and is rejected.
+        Operation::move_node(&concurrent, 1, 3, b, a, order_key_from_position(0)),
+        Operation::move_node(&local, 4, 4, b, NodeId::ROOT, order_key_from_position(2)),
+    ]);
+
+    harness.append_ops(&[Operation::insert(
+        &remote,
+        1,
+        4,
+        a,
+        late_node,
+        order_key_from_position(0),
+    )]);
+
+    assert_replay_cleared(harness);
+    assert_eq!(harness.head_seq(), 6);
+    assert_eq!(harness.visible_children(NodeId::ROOT), vec![b]);
+    assert_eq!(harness.visible_children(b), vec![a]);
+    assert_eq!(harness.visible_children(a), vec![late_node]);
+}
