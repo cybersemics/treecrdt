@@ -1,10 +1,5 @@
-import {
-  ROOT_NODE_ID_HEX,
-  TRASH_NODE_ID_HEX,
-  bytesToHex,
-  nodeIdToBytes16,
-} from '@treecrdt/interface/ids';
-import type { SqliteRunner } from '@treecrdt/interface/sqlite';
+import { ROOT_NODE_ID_HEX, TRASH_NODE_ID_HEX, bytesToHex } from '@treecrdt/interface/ids';
+import type { Kysely, TreecrdtDb } from '@treecrdt/interface/sqlite';
 
 import type { TreecrdtScopeEvaluator } from './treecrdt-auth.js';
 
@@ -21,10 +16,10 @@ import type { TreecrdtScopeEvaluator } from './treecrdt-auth.js';
  * - returns `"unknown"` if local context is insufficient (e.g. `tree_nodes` has no row for a needed ancestor)
  *
  * Known issues / tradeoffs:
- * - Performance: O(depth) per call with 1 SQL query per hop. For large sync batches this can be costly.
+ * - Performance: O(depth) per call with 1 SQL request per hop. For large sync batches this can be costly.
  * - Staleness: reads `tree_nodes` directly and does not force a rebuild/materialization pass; after reopen or
  *   if materialization is dirty, it may return `"unknown"` more often than necessary.
- * - Assumes `runner` is already scoped to the correct doc; `docId` is ignored.
+ * - Assumes `db` is already scoped to the correct doc; `docId` is ignored.
  *
  * Potential improvements:
  * - Best-effort `treecrdt_ensure_materialized()` before traversal to reduce false `"unknown"`.
@@ -32,23 +27,8 @@ import type { TreecrdtScopeEvaluator } from './treecrdt-auth.js';
  * - Add memoization / caching for repeated `(scope, node)` checks during a sync.
  */
 export function createTreecrdtSqliteSubtreeScopeEvaluator(
-  runner: SqliteRunner,
+  db: Kysely<TreecrdtDb>,
 ): TreecrdtScopeEvaluator {
-  // Return a deterministic string so we can distinguish:
-  // - missing row (no local context for that node) => "missing"
-  // - NULL parent (chain end) => "null"
-  // - otherwise => hex(parent)
-  const parentSql = `
-SELECT
-  CASE
-    WHEN t.node IS NULL THEN 'missing'
-    WHEN t.parent IS NULL THEN 'null'
-    ELSE lower(hex(t.parent))
-  END AS parent_hex
-FROM (SELECT 1) AS one
-LEFT JOIN tree_nodes AS t ON t.node = ?1
-`;
-
   const maxHops = 100_000;
 
   return async ({ node, scope }) => {
@@ -73,15 +53,18 @@ LEFT JOIN tree_nodes AS t ON t.node = ?1
       // If we already traversed `maxDepth` edges without reaching `root`, the node cannot be within scope.
       if (maxDepth !== undefined && distance >= maxDepth) return 'deny';
 
-      const parentHex = await runner.getText(parentSql, [curBytes]);
-      if (!parentHex) throw new Error('scope evaluator query returned empty result');
+      const row = await db
+        .selectFrom('tree_nodes')
+        .select(['node', 'parent'])
+        .where('node', '=', curBytes)
+        .executeTakeFirst();
 
-      if (parentHex === 'missing') return 'unknown';
-      if (parentHex === 'null') return 'deny';
+      if (!row) return 'unknown';
+      if (row.parent === null) return 'deny';
 
       // `tree_nodes.parent` is a NodeId (16 bytes).
-      curBytes = nodeIdToBytes16(parentHex);
-      curHex = parentHex;
+      curBytes = row.parent instanceof Uint8Array ? row.parent : Uint8Array.from(row.parent as any);
+      curHex = bytesToHex(curBytes);
       distance += 1;
     }
 

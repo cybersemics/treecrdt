@@ -101,7 +101,9 @@ test('keeps the successful OPFS path single-pass and closes its database and VFS
   expect(sqlite3.vfs_register).toHaveBeenCalledWith(vfs, false);
   expect(load).toHaveBeenCalledOnce();
   // Exclusive locking must precede the first read, or reopening a WAL database fails.
-  expect(sqlite3.exec.mock.calls[0]).toEqual([1, OPFS_CONNECTION_PRAGMAS]);
+  expect(sqlite3.exec.mock.calls.slice(0, OPFS_CONNECTION_PRAGMAS.length)).toEqual(
+    OPFS_CONNECTION_PRAGMAS.map((pragma) => [1, pragma]),
+  );
   expect(sqlite3.exec.mock.invocationCallOrder[0]).toBeLessThan(
     sqlite3.statements.mock.invocationCallOrder[0]!,
   );

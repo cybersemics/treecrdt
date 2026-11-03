@@ -15,11 +15,16 @@ export type FakeSqliteOptions = {
   failOpenError?: Error;
 };
 
+const SQLITE_ROW = 100;
+const SQLITE_DONE = 101;
+const SQLITE_TEXT = 3;
+
 /** In-memory wa-sqlite API stand-in for open/init tests (no real WASM). */
 export function createFakeSqlite(opts: FakeSqliteOptions = {}) {
   let nextHandle = 1;
   let nextStatement = 100;
   const schemaStatements = new Set<number>();
+  const stepped = new Set<number>();
 
   return {
     vfs_register: vi.fn(),
@@ -29,7 +34,8 @@ export function createFakeSqlite(opts: FakeSqliteOptions = {}) {
     }),
     statements: vi.fn((_handle: number, sql: string) => {
       const statement = nextStatement++;
-      if (sql === 'SELECT treecrdt_schema()') schemaStatements.add(statement);
+      // Kysely compiles tagged templates with lowercase keywords.
+      if (/select\s+treecrdt_schema\s*\(\s*\)/i.test(sql)) schemaStatements.add(statement);
       return {
         next: async () => ({ value: statement }),
         return: async () => undefined,
@@ -38,10 +44,23 @@ export function createFakeSqlite(opts: FakeSqliteOptions = {}) {
     bind: vi.fn(async (_statement: number, _index: number, value: unknown) => {
       if (value === opts.failDocId) throw new Error('setDocId failed');
     }),
-    step: vi.fn(async (statement: number) => (schemaStatements.has(statement) ? 100 : 101)),
+    step: vi.fn(async (statement: number) => {
+      if (!schemaStatements.has(statement)) return SQLITE_DONE;
+      if (stepped.has(statement)) return SQLITE_DONE;
+      stepped.add(statement);
+      return SQLITE_ROW;
+    }),
+    column_count: vi.fn((statement: number) => (schemaStatements.has(statement) ? 1 : 0)),
+    column_name: vi.fn(() => 'treecrdt_schema()'),
+    column_type: vi.fn((statement: number) =>
+      schemaStatements.has(statement) ? SQLITE_TEXT : 5,
+    ),
     column_text: vi.fn((statement: number) =>
       schemaStatements.has(statement) ? 'CREATE TABLE example (id INTEGER)' : null,
     ),
+    column_int: vi.fn(() => 0),
+    column_double: vi.fn(() => 0),
+    column_blob: vi.fn(() => null),
     finalize: vi.fn(),
     exec: vi.fn(),
     close: vi.fn(),

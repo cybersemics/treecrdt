@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  createTreecrdtDbFromRunner,
   createTreecrdtSqliteAdapter,
   createTreecrdtSqliteChangedSince,
   createTreecrdtSqliteWriter,
@@ -8,7 +9,10 @@ import {
   decodeSqliteOpRefs,
   decodeSqliteOps,
   decodeSqliteTreeRows,
+  type Kysely,
+  type SqlValue,
   type SqliteRunner,
+  type TreecrdtDb,
   type TreecrdtSqlitePlacement,
   type TreecrdtSqliteWriter,
 } from '@treecrdt/interface/sqlite';
@@ -95,20 +99,49 @@ function createRunner(db: any): SqliteRunner {
     return stmt;
   };
 
-  const toBindings = (params: unknown[]) =>
-    params.reduce<Record<number, unknown>>((acc, val, idx) => {
-      acc[idx + 1] = val;
-      return acc;
-    }, {});
+  const normalizeParam = (value: unknown): unknown => {
+    if (value instanceof Uint8Array) return Buffer.from(value);
+    return value;
+  };
+
+  const normalizeValue = (value: unknown): SqlValue => {
+    if (value === undefined || value === null) return null;
+    if (Buffer.isBuffer(value)) return new Uint8Array(value);
+    if (value instanceof Uint8Array) return value;
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') {
+      return value;
+    }
+    return String(value);
+  };
+
+  const normalizeRow = (row: Record<string, unknown>): Record<string, SqlValue> => {
+    const out: Record<string, SqlValue> = {};
+    for (const [key, value] of Object.entries(row)) {
+      out[key] = normalizeValue(value);
+    }
+    return out;
+  };
 
   const runner: SqliteRunner = {
     exec: (sql) => db.exec(sql),
     getText: (sql, params = []) => {
-      const row = prepare(sql).get(toBindings(params));
+      const row = prepare(sql).get(...params.map(normalizeParam));
       if (row === undefined || row === null) return null;
       const val = Object.values(row as Record<string, unknown>)[0];
       if (val === undefined || val === null) return null;
+      if (Buffer.isBuffer(val) || val instanceof Uint8Array) {
+        return Buffer.from(val as Uint8Array).toString('utf8');
+      }
       return String(val);
+    },
+    query: (sql, params = []) => {
+      const stmt = prepare(sql);
+      if (stmt.reader) {
+        const rows = stmt.all(...params.map(normalizeParam)) as Record<string, unknown>[];
+        return rows.map(normalizeRow);
+      }
+      stmt.run(...params.map(normalizeParam));
+      return [];
     },
   };
 
@@ -120,7 +153,7 @@ function createRunner(db: any): SqliteRunner {
 }
 
 export function createSqliteNodeApi(db: any, opts: { maxBulkOps?: number } = {}): TreecrdtAdapter {
-  return createTreecrdtSqliteAdapter(createRunner(db), opts);
+  return createTreecrdtSqliteAdapter(createTreecrdtDbFromRunner(createRunner(db)), opts);
 }
 
 /**
@@ -134,14 +167,15 @@ export function createTreecrdtClient(
   opts: { docId?: string; maxBulkOps?: number } = {},
 ): Promise<
   TreecrdtEngine & {
-    runner: SqliteRunner;
+    db: Kysely<TreecrdtDb>;
     auth: TreecrdtSqliteAuthApi;
     tree: Required<Pick<TreecrdtEngineTree, 'changedSince'>>;
   }
 > {
   const runner = createRunner(db);
+  const kysely = createTreecrdtDbFromRunner(runner);
   const materialized = createMaterializationDispatcher();
-  const adapter = createTreecrdtSqliteAdapter(runner, {
+  const adapter = createTreecrdtSqliteAdapter(kysely, {
     maxBulkOps: opts.maxBulkOps,
     onMaterialized: materialized.emitEvent,
   });
@@ -155,7 +189,7 @@ export function createTreecrdtClient(
     const key = localWriterKey(replica);
     const existing = localWriters.get(key);
     if (existing) return existing;
-    const next = createTreecrdtSqliteWriter(runner, {
+    const next = createTreecrdtSqliteWriter(kysely, {
       replica,
       onMaterialized: materialized.emitEvent,
     });
@@ -230,6 +264,7 @@ export function createTreecrdtClient(
     mode: 'node',
     storage: 'sqlite',
     docId,
+    db: kysely,
     ops: {
       append: async (op, writeOpts?: WriteOptions) => {
         const outcome = await adapter.appendOp(op, nodeIdToBytes16, encodeReplica);
@@ -257,10 +292,9 @@ export function createTreecrdtClient(
       changedSince: createTreecrdtSqliteChangedSince((query) => adapter.treeChangedSince!(query)),
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
-    auth: createTreecrdtSqliteAuthApi({ runner, docId }),
+    auth: createTreecrdtSqliteAuthApi({ db: kysely, docId }),
     local,
     onMaterialized: materialized.onMaterialized,
-    runner,
     close: async () => {
       if (typeof db?.close === 'function') db.close();
     },

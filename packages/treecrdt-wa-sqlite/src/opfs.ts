@@ -141,7 +141,11 @@ export type OpfsVfsOptions = {
  * before the first read. The connection then holds the file until it closes; other connections
  * wait. WAL persists in the file header, so every later connection must lock exclusively too.
  */
-export const OPFS_CONNECTION_PRAGMAS = 'PRAGMA locking_mode=EXCLUSIVE; PRAGMA journal_mode=WAL';
+/** OPFS connections must set exclusive locking before enabling WAL. */
+export const OPFS_CONNECTION_PRAGMAS = [
+  'PRAGMA locking_mode=EXCLUSIVE',
+  'PRAGMA journal_mode=WAL',
+] as const;
 
 const OPFS_MAX_PATHNAME = 512;
 
@@ -210,7 +214,9 @@ export async function openWithStorage(
       : await sqlite3.open_v2(file);
     handle = openedHandle;
     const db = createDatabase(sqlite3, openedHandle);
-    if (storage === 'opfs') await db.exec(OPFS_CONNECTION_PRAGMAS);
+    if (storage === 'opfs') {
+      for (const pragma of OPFS_CONNECTION_PRAGMAS) await db.execBatch(pragma);
+    }
     await initializeTreecrdtExtension(module, openedHandle, db);
     let closePromise: Promise<void> | undefined;
     return {

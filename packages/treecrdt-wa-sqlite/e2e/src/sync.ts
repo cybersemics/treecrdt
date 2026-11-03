@@ -15,6 +15,7 @@ import {
 import type { Operation } from '@treecrdt/interface';
 import type { LocalWriteOptions, MaterializationEvent } from '@treecrdt/interface/engine';
 import { bytesToHex, nodeIdToBytes16 } from '@treecrdt/interface/ids';
+import { sql } from '@treecrdt/interface/sqlite';
 import {
   createInMemoryConnectedPeers,
   makeQueuedSyncBackend,
@@ -457,7 +458,9 @@ export async function openSharedOpfsCrossTabClient(opts: { docId: string }): Pro
     mode: sharedOpfsCrossTabClient.mode,
     runtime: sharedOpfsCrossTabClient.runtime,
     storage: sharedOpfsCrossTabClient.storage,
-    journalMode: await sharedOpfsCrossTabClient.runner.getText('PRAGMA journal_mode'),
+    journalMode: (
+      await sql<{ journal_mode: string }>`PRAGMA journal_mode`.execute(sharedOpfsCrossTabClient.db)
+    ).rows[0]?.journal_mode ?? null,
   };
 }
 

@@ -84,7 +84,7 @@ export function createInMemoryTestClient(
     storage: 'memory',
     onMaterialized: () => () => {},
     meta: { headLamport: async () => maxLamportInMemory(store.ops) },
-    runner: undefined,
+    db: undefined,
     opRefs: {
       all: async () =>
         store.ops.map((o) =>
@@ -167,7 +167,7 @@ export function createInMemoryTestClientWithWriteId(
     storage: 'memory',
     onMaterialized,
     meta: { headLamport: async () => maxLamportInMemory(store.ops) },
-    runner: undefined,
+    db: undefined,
     opRefs: {
       all: async () =>
         store.ops.map((o) =>

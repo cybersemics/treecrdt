@@ -33,7 +33,7 @@ async function main() {
     const handle = await sqlite3.open_v2(':memory:');
     const db = createDatabase(sqlite3, handle);
     await initializeTreecrdtExtension(module, handle, db);
-    const api = createTreecrdtSqliteAdapter(db);
+    const api = createTreecrdtSqliteAdapter(db.db);
     await api.setDocId(docId);
     return { ...api, close: () => db.close?.() };
   };

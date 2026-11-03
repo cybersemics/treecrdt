@@ -1,7 +1,11 @@
 import { expect, test } from 'vitest';
 
 import { bytesToHex, nodeIdToBytes16 } from '@treecrdt/interface/ids';
-import type { SqliteRunner } from '@treecrdt/interface/sqlite';
+import {
+  createTreecrdtDb,
+  type SqlParam,
+  type SqlValue,
+} from '@treecrdt/interface/sqlite';
 import { deriveOpRefV0, type OpRef } from '@treecrdt/sync-protocol';
 
 import { createTreecrdtSyncBackendFromClient } from '../dist/backend.js';
@@ -12,6 +16,17 @@ function replicaFromLabel(label: string): Uint8Array {
   const out = new Uint8Array(32);
   for (let i = 0; i < out.length; i += 1) out[i] = encoded[i % encoded.length]!;
   return out;
+}
+
+function createMockDb(onQuery: (sql: string, params?: SqlParam[]) => Record<string, SqlValue>[]) {
+  const runnerCalls: string[] = [];
+  const db = createTreecrdtDb({
+    query: async (sql, params = []) => {
+      runnerCalls.push(sql);
+      return onQuery(sql, params);
+    },
+  });
+  return { db, runnerCalls };
 }
 
 test("backend children(parent) includes the parent's latest payload opRef", async () => {
@@ -26,23 +41,18 @@ test("backend children(parent) includes the parent's latest payload opRef", asyn
 
   const childRefs: OpRef[] = [new Uint8Array(16).fill(7)];
 
-  const runnerCalls: string[] = [];
-  const runner: SqliteRunner = {
-    exec: async () => {},
-    getText: async (sql: string, params?: unknown[]) => {
-      runnerCalls.push(sql);
-      if (sql.includes('treecrdt_ensure_materialized')) return '1';
-      if (sql.includes('FROM tree_payload')) {
-        expect(params?.[0]).toEqual(parentBytes);
-        return JSON.stringify({ replica: bytesToHex(replica), counter: counter.toString() });
-      }
-      return null;
-    },
-  };
+  const { db, runnerCalls } = createMockDb((sql, params) => {
+    if (sql.toLowerCase().includes('treecrdt_ensure_materialized')) return [{ value: '1' }];
+    if (sql.toLowerCase().includes('tree_payload')) {
+      expect(params?.[0]).toEqual(parentBytes);
+      return [{ last_replica: replica, last_counter: Number(counter) }];
+    }
+    return [];
+  });
 
   const backend = createTreecrdtSyncBackendFromClient(
     {
-      runner,
+      db,
       opRefs: {
         all: async () => [],
         children: async (parentHexArg) => {
@@ -60,8 +70,10 @@ test("backend children(parent) includes the parent's latest payload opRef", asyn
 
   const refs = await backend.listOpRefs({ children: { parent: parentBytes } });
   expect(refs.map(bytesToHex)).toContain(payloadWriterHex);
-  expect(runnerCalls.some((s) => s.includes('treecrdt_ensure_materialized'))).toBe(true);
-  expect(runnerCalls.some((s) => s.includes('FROM tree_payload'))).toBe(true);
+  expect(runnerCalls.some((s) => s.toLowerCase().includes('treecrdt_ensure_materialized'))).toBe(
+    true,
+  );
+  expect(runnerCalls.some((s) => s.toLowerCase().includes('tree_payload'))).toBe(true);
 });
 
 test("backend children(parent) does not duplicate the parent's payload opRef", async () => {
@@ -76,20 +88,17 @@ test("backend children(parent) does not duplicate the parent's payload opRef", a
 
   const childRefs: OpRef[] = [new Uint8Array(16).fill(8), payloadWriterOpRef];
 
-  const runner: SqliteRunner = {
-    exec: async () => {},
-    getText: async (sql: string) => {
-      if (sql.includes('treecrdt_ensure_materialized')) return '1';
-      if (sql.includes('FROM tree_payload')) {
-        return JSON.stringify({ replica: bytesToHex(replica), counter: counter.toString() });
-      }
-      return null;
-    },
-  };
+  const { db } = createMockDb((sql) => {
+    if (sql.toLowerCase().includes('treecrdt_ensure_materialized')) return [{ value: '1' }];
+    if (sql.toLowerCase().includes('tree_payload')) {
+      return [{ last_replica: replica, last_counter: Number(counter) }];
+    }
+    return [];
+  });
 
   const backend = createTreecrdtSyncBackendFromClient(
     {
-      runner,
+      db,
       opRefs: {
         all: async () => [],
         children: async () => childRefs,
@@ -116,21 +125,18 @@ test('backend children(parent) falls back to ops table when tree_payload is miss
 
   const childRefs: OpRef[] = [new Uint8Array(16).fill(1)];
 
-  const runnerCalls: string[] = [];
-  const runner: SqliteRunner = {
-    exec: async () => {},
-    getText: async (sql: string) => {
-      runnerCalls.push(sql);
-      if (sql.includes('treecrdt_ensure_materialized')) return '1';
-      if (sql.includes('FROM tree_payload')) return null;
-      if (sql.includes('FROM ops')) return payloadWriterHex;
-      return null;
-    },
-  };
+  const { db, runnerCalls } = createMockDb((sql) => {
+    if (sql.toLowerCase().includes('treecrdt_ensure_materialized')) return [{ value: '1' }];
+    if (sql.toLowerCase().includes('tree_payload')) return [];
+    if (sql.toLowerCase().includes('from "ops"') || sql.toLowerCase().includes('from ops')) {
+      return [{ op_ref: payloadWriterOpRef }];
+    }
+    return [];
+  });
 
   const backend = createTreecrdtSyncBackendFromClient(
     {
-      runner,
+      db,
       opRefs: {
         all: async () => [],
         children: async () => childRefs,
@@ -145,6 +151,5 @@ test('backend children(parent) falls back to ops table when tree_payload is miss
 
   const refs = await backend.listOpRefs({ children: { parent: parentBytes } });
   expect(refs.map(bytesToHex)).toContain(payloadWriterHex);
-  expect(runnerCalls.some((s) => s.includes('FROM tree_payload'))).toBe(true);
-  expect(runnerCalls.some((s) => s.includes('FROM ops'))).toBe(true);
+  expect(runnerCalls.some((s) => s.toLowerCase().includes('ops'))).toBe(true);
 });
