@@ -4,20 +4,18 @@ import type {
   TreecrdtEngineTree,
 } from '@treecrdt/interface/engine';
 import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
-import type { SqliteRunner } from '@treecrdt/interface/sqlite';
+import type { Kysely, TreecrdtDb } from '@treecrdt/interface/sqlite';
 
 /**
- * Open wa-sqlite handle: statement APIs + SqliteRunner (exec/getText).
- * Pass directly to createTreecrdtSqliteAdapter — no runner wrapper.
+ * Open TreeCRDT SQLite connection: typed Kysely surface plus lifecycle.
+ * Statement-level wa-sqlite APIs stay private inside createDatabase.
  */
 export type Database = {
-  prepare(sql: string): Promise<number> | number;
-  bind(stmt: number, index: number, value: unknown): Promise<void> | void;
-  step(stmt: number): Promise<number> | number;
-  column_text(stmt: number, index: number): Promise<string> | string;
-  finalize(stmt: number): Promise<void> | void;
-  close?(): Promise<void> | void;
-} & SqliteRunner;
+  readonly db: Kysely<TreecrdtDb>;
+  /** Multi-statement SQL for extension schema init; prefer `db` for queries. */
+  execBatch(sql: string): Promise<void>;
+  close?: () => Promise<void> | void;
+};
 
 export type StorageMode = 'memory' | 'opfs';
 export type ClientMode = 'direct' | 'worker';
@@ -27,7 +25,11 @@ export type TreecrdtClient = TreecrdtEngine & {
   mode: ClientMode;
   runtime: RuntimeMode;
   storage: StorageMode;
-  runner: SqliteRunner;
+  /**
+   * Type-safe SQL against TreeCRDT tables. Compiles on the caller; CRDT writes
+   * still go through `ops` / `local` so the op log stays consistent.
+   */
+  db: Kysely<TreecrdtDb>;
   tree: Required<Pick<TreecrdtEngineTree, 'changedSince'>>;
   drop: () => Promise<void>;
 };

@@ -1,6 +1,12 @@
 import { createTreecrdtClient, detectOpfsSupport, type TreecrdtClient } from '@treecrdt/wa-sqlite';
 import { nodeIdFromInt } from '@treecrdt/benchmark';
+import { sql } from '@treecrdt/interface/sqlite';
 import { replicaFromLabel } from './op-helpers.js';
+
+async function readJournalMode(client: TreecrdtClient): Promise<string | null> {
+  const result = await sql<{ journal_mode: string }>`PRAGMA journal_mode`.execute(client.db);
+  return result.rows[0]?.journal_mode ?? null;
+}
 
 const rootId = '0'.repeat(32);
 const parentId = nodeIdFromInt(901);
@@ -48,7 +54,7 @@ async function summarizeLifecycleState(client: TreecrdtClient): Promise<Lifecycl
     mode: client.mode,
     runtime: client.runtime,
     storage: client.storage,
-    journalMode: await client.runner.getText('PRAGMA journal_mode'),
+    journalMode: await readJournalMode(client),
     headLamport: await client.meta.headLamport(),
     rootChildren: (await client.tree.root.children()).map((node) => node.id),
     parentChildren: parentNode ? (await parentNode.children()).map((node) => node.id) : [],

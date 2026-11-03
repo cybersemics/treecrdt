@@ -1,8 +1,9 @@
 import type { Operation } from '@treecrdt/interface';
-import type { SqliteRunner } from '@treecrdt/interface/sqlite';
+import type { Kysely } from '@treecrdt/interface/sqlite';
 import type { PendingOp } from '@treecrdt/sync-protocol';
 
 import { createPendingOpsStore } from './proof-material/index.js';
+import type { TreecrdtSyncSqliteDb } from './sync-schema.js';
 
 export type TreecrdtSqliteSyncDiagnostics = {
   /**
@@ -14,7 +15,7 @@ export type TreecrdtSqliteSyncDiagnostics = {
 };
 
 export function createTreecrdtSqliteSyncDiagnostics(opts: {
-  runner: SqliteRunner;
+  db: Kysely<TreecrdtSyncSqliteDb>;
   docId: string;
   nowMs?: () => number;
 }): TreecrdtSqliteSyncDiagnostics {

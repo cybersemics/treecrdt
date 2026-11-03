@@ -1,7 +1,7 @@
 import type { Operation, TreecrdtAdapter, TreecrdtChangedSinceQuery } from '@treecrdt/interface';
 import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type { MaterializationEvent, MaterializationOutcome } from '@treecrdt/interface/engine';
-import { createTreecrdtSqliteAdapter } from '@treecrdt/interface/sqlite';
+import { CompiledQuery, createTreecrdtSqliteAdapter } from '@treecrdt/interface/sqlite';
 import * as Comlink from 'comlink';
 import type { OpfsVfsKind } from './opfs.js';
 import { clearOpfsStorage } from './opfs.js';
@@ -26,6 +26,7 @@ export type BackendInitResult = {
 export type MaterializationListener = (event: MaterializationEvent) => void;
 
 export type SqlParam = number | string | null | Uint8Array;
+export type SqlValue = string | number | bigint | Uint8Array | null;
 /** Oplog append/query and op-log metadata. */
 export interface TreecrdtSessionOperations {
   append: (op: Operation) => Promise<MaterializationOutcome>;
@@ -54,8 +55,8 @@ export interface TreecrdtSessionTree {
  * Same surface for every runtime; lifecycle lives on TreecrdtConnection.
  */
 export interface TreecrdtSession {
-  sqlExec: (sql: string) => Promise<void>;
-  sqlGetText: (sql: string, params?: SqlParam[]) => Promise<string | null>;
+  /** Internal Kysely executor hook; not part of the public client surface. */
+  sqlQuery: (sql: string, params?: SqlParam[]) => Promise<Record<string, SqlValue>[]>;
   readonly operations: TreecrdtSessionOperations;
   readonly tree: TreecrdtSessionTree;
 }
@@ -140,8 +141,8 @@ const createTreecrdtSession = (openDb: SessionOpenFn): TreecrdtSessionOwner => {
         opfsVfs: config.opfsVfs,
       });
       db = opened.db;
-      // CRDT SQL mapping lives on the session; open only returns a Database (SqliteRunner).
-      api = createTreecrdtSqliteAdapter(opened.db, {
+      // CRDT mapping uses the open connection's Kysely instance.
+      api = createTreecrdtSqliteAdapter(opened.db.db, {
         onMaterialized: (event) => emitMaterialized(event),
       });
       storedFilename = opened.filename;
@@ -188,11 +189,11 @@ const createTreecrdtSession = (openDb: SessionOpenFn): TreecrdtSessionOwner => {
   };
 
   const session: TreecrdtSession = {
-    sqlExec: (sql) =>
+    sqlQuery: (sql, params = []) =>
       run(async () => {
-        await ensureDb().exec(sql);
+        const result = await ensureDb().db.executeQuery(CompiledQuery.raw(sql, params));
+        return result.rows as Record<string, SqlValue>[];
       }),
-    sqlGetText: (sql, params = []) => run(async () => ensureDb().getText(sql, params)),
     operations,
     tree,
   };

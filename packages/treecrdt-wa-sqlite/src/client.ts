@@ -2,12 +2,12 @@ import * as Comlink from 'comlink';
 import type { Operation, ReplicaId } from '@treecrdt/interface';
 import {
   createTreecrdtSqliteChangedSince,
+  createTreecrdtDb,
   createTreecrdtSqliteWriter,
   decodeSqliteNodeIds,
   decodeSqliteOpRefs,
   decodeSqliteOps,
   decodeSqliteTreeRows,
-  type SqliteRunner,
   type TreecrdtSqlitePlacement,
   type TreecrdtSqliteWriter,
 } from '@treecrdt/interface/sqlite';
@@ -113,17 +113,16 @@ export async function createClientFromBackend(runtime: RuntimeConnection): Promi
     return work();
   };
 
-  const runner: SqliteRunner = {
-    exec: (sql) => guard(() => session.sqlExec(sql)),
-    getText: (sql, params = []) => guard(() => session.sqlGetText(sql, params as any)),
-  };
+  const db = createTreecrdtDb({
+    query: (sql, params) => guard(() => session.sqlQuery(sql, params as any)),
+  });
 
   const localWriters = new Map<string, TreecrdtSqliteWriter>();
   const localWriterFor = (replica: ReplicaId) => {
     const key = bytesToHex(replica);
     const existing = localWriters.get(key);
     if (existing) return existing;
-    const next = createTreecrdtSqliteWriter(runner, {
+    const next = createTreecrdtSqliteWriter(db, {
       replica,
       onMaterialized: materialized.emitEvent,
     });
@@ -192,7 +191,7 @@ export async function createClientFromBackend(runtime: RuntimeConnection): Promi
     runtime: runtimeMode,
     storage,
     docId,
-    runner,
+    db,
     ops: {
       append: async (op, writeOpts?: WriteOptions) => {
         const outcome = await guard(() => session.operations.append(op));

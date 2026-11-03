@@ -1,10 +1,14 @@
 import { encode } from 'cborg';
+import { CompiledQuery, sql, type Kysely, type RawBuilder } from 'kysely';
+export { CompiledQuery, sql };
+export type { Kysely };
 import type {
   SerializeNodeId,
   SerializeReplica,
   TreecrdtAdapter,
   TreecrdtChangedSinceQuery,
 } from './adapter.js';
+import { type SqlParam, type SqlValue } from './createTreecrdtDb.js';
 import { addMaterializationWriteId, emptyMaterializationOutcome } from './engine.js';
 import type {
   LocalWriteOptions,
@@ -23,61 +27,73 @@ import {
   replicaIdToBytes,
 } from './ids.js';
 import type { Operation, OperationKind, ReplicaId } from './index.js';
+import type { TreecrdtDb } from './schema.js';
 
-export type SqlCall = {
-  sql: string;
-  params: (number | string | Uint8Array | null)[];
-};
+export type { SqlParam, SqlValue } from './createTreecrdtDb.js';
+export { createTreecrdtDb, createTreecrdtDbFromRunner } from './createTreecrdtDb.js';
+export type { TreecrdtSqlExecutor } from './createTreecrdtDb.js';
+export type {
+  MetaTable,
+  OpsTable,
+  TreeMetaTable,
+  TreeNodesTable,
+  OprefsChildrenTable,
+  TreePayloadTable,
+  TreecrdtDb,
+} from './schema.js';
 
+/**
+ * Low-level SQLite executor used only to construct a Kysely dialect.
+ * Prefer `createTreecrdtDb` / `client.db` for application SQL.
+ */
 export type SqliteRunner = {
   exec: (sql: string) => Promise<void> | void;
-  getText: (sql: string, params?: SqlCall['params']) => Promise<string | null> | string | null;
+  getText: (sql: string, params?: SqlParam[]) => Promise<string | null> | string | null;
+  query: (
+    sql: string,
+    params?: SqlParam[],
+  ) => Promise<Record<string, SqlValue>[]> | Record<string, SqlValue>[];
 };
 
-async function sqliteGetJson<T>(
-  runner: SqliteRunner,
-  sql: string,
-  params?: SqlCall['params'],
+function firstColumnText(row: Record<string, unknown> | undefined): string | null {
+  if (!row) return null;
+  const value = Object.values(row)[0];
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'bigint') return String(value);
+  return null;
+}
+
+async function udfJson<T>(
+  db: Kysely<TreecrdtDb>,
+  query: RawBuilder<unknown>,
+  label: string,
 ): Promise<T> {
-  const text = await runner.getText(sql, params);
-  if (!text) throw new Error(`expected JSON result for query: ${sql}`);
+  const result = await query.execute(db);
+  const text = firstColumnText(result.rows[0] as Record<string, unknown> | undefined);
+  if (!text) throw new Error(`expected JSON result for query: ${label}`);
   return JSON.parse(text) as T;
 }
 
-async function sqliteGetJsonOrEmpty<T>(
-  runner: SqliteRunner,
-  sql: string,
-  params?: SqlCall['params'],
+async function udfJsonOrEmpty<T>(
+  db: Kysely<TreecrdtDb>,
+  query: RawBuilder<unknown>,
+  label: string,
 ): Promise<T> {
-  const text = await runner.getText(sql, params);
+  const result = await query.execute(db);
+  const text = firstColumnText(result.rows[0] as Record<string, unknown> | undefined);
   if (!text) return JSON.parse('[]') as T;
   return JSON.parse(text) as T;
-}
-
-async function sqliteGetNumber(
-  runner: SqliteRunner,
-  sql: string,
-  params?: SqlCall['params'],
-): Promise<number> {
-  const text = await runner.getText(sql, params);
-  if (!text) return 0;
-  const value = Number(text);
-  if (!Number.isFinite(value)) throw new Error(`expected numeric result for query: ${sql}`);
-  return value;
-}
-
-async function sqliteExec(runner: SqliteRunner, sql: string): Promise<void> {
-  await runner.exec(sql);
 }
 
 let localAuthSavepointCounter = 0;
 
 function decodeLocalOpResult(
   raw: any,
-  sql: string,
+  label: string,
 ): { op: Operation; outcome: MaterializationOutcome } {
   const ops = decodeSqliteOps([raw.op]);
-  if (ops.length !== 1) throw new Error(`expected exactly 1 op from query: ${sql}`);
+  if (ops.length !== 1) throw new Error(`expected exactly 1 op from query: ${label}`);
   return {
     op: ops[0]!,
     outcome: decodeSqliteMaterializationOutcome(raw.outcome),
@@ -94,7 +110,7 @@ function emitLocalOutcome(
 
 const ROOT_NODE_BYTES = nodeIdToBytes16(ROOT_NODE_ID_HEX);
 
-function buildAppendOp(
+function appendOpQuery(
   kind: OperationKind,
   opts: {
     replica: Uint8Array;
@@ -103,85 +119,32 @@ function buildAppendOp(
     serializeNodeId: SerializeNodeId;
     knownState: Uint8Array | null;
   },
-): SqlCall {
-  const base = [opts.replica, opts.counter, opts.lamport] as (
-    | number
-    | string
-    | Uint8Array
-    | null
-  )[];
+): RawBuilder<unknown> {
+  const replica = opts.replica;
+  const counter = opts.counter;
+  const lamport = opts.lamport;
+  const nullLit = sql`null`;
 
   switch (kind.type) {
     case 'insert':
       if (kind.payload !== undefined) {
-        return {
-          sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,?8)',
-          params: [
-            ...base,
-            'insert',
-            opts.serializeNodeId(kind.parent),
-            opts.serializeNodeId(kind.node),
-            kind.orderKey,
-            kind.payload,
-          ],
-        };
+        return sql`select treecrdt_append_op(${replica}, ${counter}, ${lamport}, ${'insert'}, ${opts.serializeNodeId(kind.parent)}, ${opts.serializeNodeId(kind.node)}, ${nullLit}, ${kind.orderKey}, ${kind.payload})`;
       }
-      return {
-        sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,NULL)',
-        params: [
-          ...base,
-          'insert',
-          opts.serializeNodeId(kind.parent),
-          opts.serializeNodeId(kind.node),
-          kind.orderKey,
-        ],
-      };
+      return sql`select treecrdt_append_op(${replica}, ${counter}, ${lamport}, ${'insert'}, ${opts.serializeNodeId(kind.parent)}, ${opts.serializeNodeId(kind.node)}, ${nullLit}, ${kind.orderKey}, ${nullLit})`;
     case 'move':
-      return {
-        sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,?6,?7,NULL)',
-        params: [
-          ...base,
-          'move',
-          opts.serializeNodeId(kind.node),
-          opts.serializeNodeId(kind.newParent),
-          kind.orderKey,
-        ],
-      };
+      return sql`select treecrdt_append_op(${replica}, ${counter}, ${lamport}, ${'move'}, ${nullLit}, ${opts.serializeNodeId(kind.node)}, ${opts.serializeNodeId(kind.newParent)}, ${kind.orderKey}, ${nullLit})`;
     case 'delete':
       if (!opts.knownState || opts.knownState.length === 0) {
         throw new Error('treecrdt: delete operations require meta.knownState');
       }
-      return {
-        sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,?6)',
-        params: [...base, 'delete', opts.serializeNodeId(kind.node), opts.knownState],
-      };
+      return sql`select treecrdt_append_op(${replica}, ${counter}, ${lamport}, ${'delete'}, ${nullLit}, ${opts.serializeNodeId(kind.node)}, ${nullLit}, ${nullLit}, ${opts.knownState})`;
     case 'tombstone':
-      return {
-        sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,?6)',
-        params: [...base, 'tombstone', opts.serializeNodeId(kind.node), opts.knownState],
-      };
+      return sql`select treecrdt_append_op(${replica}, ${counter}, ${lamport}, ${'tombstone'}, ${nullLit}, ${opts.serializeNodeId(kind.node)}, ${nullLit}, ${nullLit}, ${opts.knownState})`;
     case 'payload':
-      return {
-        sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,NULL,NULL,?6)',
-        params: [...base, 'payload', opts.serializeNodeId(kind.node), kind.payload],
-      };
+      return sql`select treecrdt_append_op(${replica}, ${counter}, ${lamport}, ${'payload'}, ${nullLit}, ${opts.serializeNodeId(kind.node)}, ${nullLit}, ${nullLit}, ${kind.payload})`;
     default:
       throw new Error('unsupported operation kind');
   }
-}
-
-function buildOpsSince(filter: {
-  lamport: number;
-  root?: string;
-  serializeNodeId: SerializeNodeId;
-}): SqlCall {
-  if (filter.root === undefined) {
-    return { sql: 'SELECT treecrdt_ops_since(?1)', params: [filter.lamport] };
-  }
-  return {
-    sql: 'SELECT treecrdt_ops_since(?1, ?2)',
-    params: [filter.lamport, filter.serializeNodeId(filter.root)],
-  };
 }
 
 function buildAppendOpsPayload(
@@ -237,7 +200,7 @@ function buildAppendOpsPayload(
 }
 
 async function treecrdtAppendOp(
-  runner: SqliteRunner,
+  db: Kysely<TreecrdtDb>,
   op: Operation,
   serializeNodeId: SerializeNodeId,
   serializeReplica: SerializeReplica,
@@ -249,15 +212,19 @@ async function treecrdtAppendOp(
   const { id, lamport } = meta;
   const { replica, counter } = id;
 
-  const { sql, params } = buildAppendOp(kind, {
-    replica: serializeReplica(replica),
-    counter,
-    lamport,
-    serializeNodeId,
-    knownState: meta.knownState ?? null,
-  });
-
-  return decodeSqliteMaterializationOutcome(await sqliteGetJson<unknown>(runner, sql, params));
+  return decodeSqliteMaterializationOutcome(
+    await udfJson(
+      db,
+      appendOpQuery(kind, {
+        replica: serializeReplica(replica),
+        counter,
+        lamport,
+        serializeNodeId,
+        knownState: meta.knownState ?? null,
+      }),
+      'treecrdt_append_op',
+    ),
+  );
 }
 
 function mergeMaterializationOutcomes(outcomes: MaterializationOutcome[]): MaterializationOutcome {
@@ -269,7 +236,7 @@ function mergeMaterializationOutcomes(outcomes: MaterializationOutcome[]): Mater
 }
 
 async function treecrdtAppendOps(
-  runner: SqliteRunner,
+  db: Kysely<TreecrdtDb>,
   ops: Operation[],
   serializeNodeId: SerializeNodeId,
   serializeReplica: SerializeReplica,
@@ -278,7 +245,6 @@ async function treecrdtAppendOps(
   if (ops.length === 0) return emptyMaterializationOutcome();
 
   const maxBulkOps = opts.maxBulkOps ?? 5_000;
-  const bulkSql = 'SELECT treecrdt_append_ops(?1)';
 
   if (
     ops.some(
@@ -293,9 +259,13 @@ async function treecrdtAppendOps(
   const outcomes: MaterializationOutcome[] = [];
   for (let start = 0; start < ops.length; start += maxBulkOps) {
     const chunk = ops.slice(start, start + maxBulkOps);
-    const payload = buildAppendOpsPayload(chunk, serializeNodeId, serializeReplica);
+    const payload = encode(buildAppendOpsPayload(chunk, serializeNodeId, serializeReplica));
     try {
-      const raw = await sqliteGetJson<unknown>(runner, bulkSql, [encode(payload)]);
+      const raw = await udfJson(
+        db,
+        sql`select treecrdt_append_ops(${payload})`,
+        'treecrdt_append_ops',
+      );
       outcomes.push(decodeSqliteMaterializationOutcome(raw));
     } catch {
       bulkFailedAt = start;
@@ -306,28 +276,38 @@ async function treecrdtAppendOps(
 
   const remaining = ops.slice(bulkFailedAt);
   for (const op of remaining) {
-    const payload = buildAppendOpsPayload([op], serializeNodeId, serializeReplica);
-    const raw = await sqliteGetJson<unknown>(runner, bulkSql, [encode(payload)]);
+    const payload = encode(buildAppendOpsPayload([op], serializeNodeId, serializeReplica));
+    const raw = await udfJson(
+      db,
+      sql`select treecrdt_append_ops(${payload})`,
+      'treecrdt_append_ops',
+    );
     outcomes.push(decodeSqliteMaterializationOutcome(raw));
   }
   return mergeMaterializationOutcomes(outcomes);
 }
 
 async function treecrdtOpsSince(
-  runner: SqliteRunner,
+  db: Kysely<TreecrdtDb>,
   filter: { lamport: number; root?: string },
 ): Promise<unknown[]> {
-  const { sql, params } = buildOpsSince({
-    lamport: filter.lamport,
-    root: filter.root,
-    serializeNodeId: nodeIdToBytes16,
-  });
-
-  return sqliteGetJsonOrEmpty(runner, sql, params);
+  if (filter.root === undefined) {
+    return udfJsonOrEmpty(
+      db,
+      sql`select treecrdt_ops_since(${filter.lamport})`,
+      'treecrdt_ops_since',
+    );
+  }
+  return udfJsonOrEmpty(
+    db,
+    sql`select treecrdt_ops_since(${filter.lamport}, ${nodeIdToBytes16(filter.root)})`,
+    'treecrdt_ops_since',
+  );
 }
 
+/** Creates the CRDT adapter over a typed Kysely database. */
 export function createTreecrdtSqliteAdapter(
-  runner: SqliteRunner,
+  db: Kysely<TreecrdtDb>,
   opts: { maxBulkOps?: number; onMaterialized?: (event: MaterializationEvent) => void } = {},
 ): TreecrdtAdapter {
   const emitOutcome = (outcome: MaterializationOutcome) => {
@@ -335,26 +315,26 @@ export function createTreecrdtSqliteAdapter(
     opts.onMaterialized?.({ ...outcome });
   };
   return {
-    setDocId: (docId) => treecrdtSetDocId(runner, docId),
-    docId: () => treecrdtDocId(runner),
-    opRefsAll: () => treecrdtOpRefsAll(runner, emitOutcome),
-    opRefsChildren: (parent) => treecrdtOpRefsChildren(runner, parent, emitOutcome),
-    opsByOpRefs: (opRefs) => treecrdtOpsByOpRefs(runner, opRefs),
+    setDocId: (docId) => treecrdtSetDocId(db, docId),
+    docId: () => treecrdtDocId(db),
+    opRefsAll: () => treecrdtOpRefsAll(db, emitOutcome),
+    opRefsChildren: (parent) => treecrdtOpRefsChildren(db, parent, emitOutcome),
+    opsByOpRefs: (opRefs) => treecrdtOpsByOpRefs(db, opRefs),
     treeChildren: (parent, offset, limit) =>
-      treecrdtTreeChildren(runner, parent, offset, limit, emitOutcome),
-    treeDump: () => treecrdtTreeDump(runner, emitOutcome),
-    treeChangedSince: (query) => treecrdtTreeChangedSince(runner, query, emitOutcome),
-    treeNodeCount: () => treecrdtTreeNodeCount(runner, emitOutcome),
-    treeParent: (node) => treecrdtTreeParent(runner, node, emitOutcome),
-    treeExists: (node) => treecrdtTreeExists(runner, node, emitOutcome),
-    treePayload: (node) => treecrdtTreePayload(runner, node, emitOutcome),
-    headLamport: () => treecrdtHeadLamport(runner),
-    replicaMaxCounter: (replica) => treecrdtReplicaMaxCounter(runner, replica),
+      treecrdtTreeChildren(db, parent, offset, limit, emitOutcome),
+    treeDump: () => treecrdtTreeDump(db, emitOutcome),
+    treeChangedSince: (query) => treecrdtTreeChangedSince(db, query, emitOutcome),
+    treeNodeCount: () => treecrdtTreeNodeCount(db, emitOutcome),
+    treeParent: (node) => treecrdtTreeParent(db, node, emitOutcome),
+    treeExists: (node) => treecrdtTreeExists(db, node, emitOutcome),
+    treePayload: (node) => treecrdtTreePayload(db, node, emitOutcome),
+    headLamport: () => treecrdtHeadLamport(db),
+    replicaMaxCounter: (replica) => treecrdtReplicaMaxCounter(db, replica),
     appendOp: (op, serializeNodeId, serializeReplica) =>
-      treecrdtAppendOp(runner, op, serializeNodeId, serializeReplica),
+      treecrdtAppendOp(db, op, serializeNodeId, serializeReplica),
     appendOps: (ops, serializeNodeId, serializeReplica) =>
-      treecrdtAppendOps(runner, ops, serializeNodeId, serializeReplica, opts),
-    opsSince: (lamport, root) => treecrdtOpsSince(runner, { lamport, root }),
+      treecrdtAppendOps(db, ops, serializeNodeId, serializeReplica, opts),
+    opsSince: (lamport, root) => treecrdtOpsSince(db, { lamport, root }),
   };
 }
 
@@ -363,20 +343,21 @@ export function createTreecrdtSqliteAdapter(
  *
  * This MUST be stable for the lifetime of the database, since it affects opRef hashes.
  */
-async function treecrdtSetDocId(runner: SqliteRunner, docId: string): Promise<void> {
-  await runner.getText('SELECT treecrdt_set_doc_id(?1)', [docId]);
+async function treecrdtSetDocId(db: Kysely<TreecrdtDb>, docId: string): Promise<void> {
+  await sql`select treecrdt_set_doc_id(${docId})`.execute(db);
 }
 
-async function treecrdtDocId(runner: SqliteRunner): Promise<string | null> {
-  return runner.getText('SELECT treecrdt_doc_id()');
+async function treecrdtDocId(db: Kysely<TreecrdtDb>): Promise<string | null> {
+  const result = await sql<{ value: string | null }>`select treecrdt_doc_id() as value`.execute(db);
+  return result.rows[0]?.value ?? null;
 }
 
 async function treecrdtEnsureMaterialized(
-  runner: SqliteRunner,
+  db: Kysely<TreecrdtDb>,
   emitOutcome?: (outcome: MaterializationOutcome) => void,
 ): Promise<MaterializationOutcome> {
   const outcome = decodeSqliteMaterializationOutcome(
-    await sqliteGetJson<unknown>(runner, 'SELECT treecrdt_ensure_materialized()'),
+    await udfJson(db, sql`select treecrdt_ensure_materialized()`, 'treecrdt_ensure_materialized'),
   );
   if (outcome.changes.length > 0) emitOutcome?.(outcome);
   return outcome;
@@ -387,11 +368,11 @@ async function treecrdtEnsureMaterialized(
  * Returns raw JSON-decoded values: `number[][]` (bytes) is the expected shape.
  */
 async function treecrdtOpRefsAll(
-  runner: SqliteRunner,
+  db: Kysely<TreecrdtDb>,
   emitOutcome?: (outcome: MaterializationOutcome) => void,
 ): Promise<unknown[]> {
-  await treecrdtEnsureMaterialized(runner, emitOutcome);
-  return sqliteGetJsonOrEmpty(runner, 'SELECT treecrdt_oprefs_all()');
+  await treecrdtEnsureMaterialized(db, emitOutcome);
+  return udfJsonOrEmpty(db, sql`select treecrdt_oprefs_all()`, 'treecrdt_oprefs_all');
 }
 
 /**
@@ -399,89 +380,90 @@ async function treecrdtOpRefsAll(
  * Returns raw JSON-decoded values: `number[][]` (bytes) is the expected shape.
  */
 async function treecrdtOpRefsChildren(
-  runner: SqliteRunner,
+  db: Kysely<TreecrdtDb>,
   parent: Uint8Array,
   emitOutcome?: (outcome: MaterializationOutcome) => void,
 ): Promise<unknown[]> {
-  await treecrdtEnsureMaterialized(runner, emitOutcome);
-  return sqliteGetJsonOrEmpty(runner, 'SELECT treecrdt_oprefs_children(?1)', [parent]);
+  await treecrdtEnsureMaterialized(db, emitOutcome);
+  return udfJsonOrEmpty(
+    db,
+    sql`select treecrdt_oprefs_children(${parent})`,
+    'treecrdt_oprefs_children',
+  );
 }
 
 /**
  * Fetch operations by opRef (16-byte values) from the extension.
  * Returns raw JSON-decoded operation rows (same shape as `treecrdtOpsSince`).
  */
-async function treecrdtOpsByOpRefs(runner: SqliteRunner, opRefs: Uint8Array[]): Promise<unknown[]> {
-  const payload = opRefs.map((r) => Array.from(r));
-  return sqliteGetJsonOrEmpty(runner, 'SELECT treecrdt_ops_by_oprefs(?1)', [
-    JSON.stringify(payload),
-  ]);
+async function treecrdtOpsByOpRefs(
+  db: Kysely<TreecrdtDb>,
+  opRefs: Uint8Array[],
+): Promise<unknown[]> {
+  const payload = JSON.stringify(opRefs.map((r) => Array.from(r)));
+  return udfJsonOrEmpty(
+    db,
+    sql`select treecrdt_ops_by_oprefs(${payload})`,
+    'treecrdt_ops_by_oprefs',
+  );
 }
 
-/** Whether node `?1` is visible: the root always is, any other node needs a live row. */
-const NODE_VISIBLE_SQL =
-  "(?1 = X'00000000000000000000000000000000' \
-   OR EXISTS (SELECT 1 FROM tree_nodes AS visible WHERE visible.node = ?1 AND visible.tombstone = 0))";
+/** Root is always visible; any other node needs a live `tree_nodes` row. */
+function nodeVisible(node: Uint8Array): RawBuilder<boolean> {
+  return sql<boolean>`(${node} = ${ROOT_NODE_BYTES} OR EXISTS (
+    SELECT 1 FROM tree_nodes AS visible
+    WHERE visible.node = ${node} AND visible.tombstone = 0
+  ))`;
+}
 
 /**
  * Fetch materialized children for a parent node (16-byte id).
- *
- * Implemented as direct SQL over `tree_nodes` (not a SQLite extension UDF), returning a JSON
- * array of canonical node id hex strings (32 chars).
+ * Returns node id bytes for decodeSqliteNodeIds.
  */
 async function treecrdtTreeChildren(
-  runner: SqliteRunner,
+  db: Kysely<TreecrdtDb>,
   parent: Uint8Array,
   offset: number | null,
   limit: number | null,
   emitOutcome?: (outcome: MaterializationOutcome) => void,
 ): Promise<unknown[]> {
-  await treecrdtEnsureMaterialized(runner, emitOutcome);
-  const baseSelect = `SELECT lower(hex(node)) AS node_hex FROM tree_nodes \
-     WHERE parent = ?1 AND tombstone = 0 AND ${NODE_VISIBLE_SQL} ORDER BY order_key, node`;
-  if (offset === null && limit === null) {
-    return sqliteGetJsonOrEmpty(
-      runner,
-      `SELECT COALESCE(json_group_array(node_hex), '[]') FROM (${baseSelect})`,
-      [parent],
-    );
-  }
-  if (limit === null) {
-    return sqliteGetJsonOrEmpty(
-      runner,
-      `SELECT COALESCE(json_group_array(node_hex), '[]') FROM (${baseSelect} LIMIT -1 OFFSET ?2)`,
-      [parent, offset],
-    );
-  }
-  return sqliteGetJsonOrEmpty(
-    runner,
-    `SELECT COALESCE(json_group_array(node_hex), '[]') FROM (${baseSelect} LIMIT ?3 OFFSET ?2)`,
-    [parent, offset, limit],
-  );
+  await treecrdtEnsureMaterialized(db, emitOutcome);
+  let query = db
+    .selectFrom('tree_nodes')
+    .select('node')
+    .where('parent', '=', parent)
+    .where('tombstone', '=', 0)
+    .where(nodeVisible(parent))
+    .orderBy('order_key')
+    .orderBy('node');
+  // SQLite requires LIMIT when OFFSET is present; -1 means no upper bound.
+  if (offset !== null && limit === null) query = query.limit(-1).offset(offset);
+  else if (offset !== null && limit !== null) query = query.limit(limit).offset(offset);
+  else if (limit !== null) query = query.limit(limit);
+  const rows = await query.execute();
+  return rows.map((row) => row.node);
 }
 
 /**
  * Dump the full materialized tree state.
- * Returns raw JSON-decoded rows (array of objects with byte fields).
+ * Returns raw rows for decodeSqliteTreeRows.
  */
 async function treecrdtTreeDump(
-  runner: SqliteRunner,
+  db: Kysely<TreecrdtDb>,
   emitOutcome?: (outcome: MaterializationOutcome) => void,
 ): Promise<unknown[]> {
-  await treecrdtEnsureMaterialized(runner, emitOutcome);
-  return sqliteGetJsonOrEmpty(
-    runner,
-    "SELECT COALESCE(json_group_array(json_object('node', node_hex, 'parent', parent_hex, 'order_key', order_key_hex, 'tombstone', tombstone)), '[]') \
-     FROM (\
-       SELECT \
-         lower(hex(node)) AS node_hex, \
-         CASE WHEN parent IS NULL THEN NULL ELSE lower(hex(parent)) END AS parent_hex, \
-         CASE WHEN order_key IS NULL THEN NULL ELSE lower(hex(order_key)) END AS order_key_hex, \
-         tombstone \
-       FROM tree_nodes \
-       ORDER BY node\
-     )",
-  );
+  await treecrdtEnsureMaterialized(db, emitOutcome);
+  const rows = await db
+    .selectFrom('tree_nodes')
+    .select(['node', 'parent', 'order_key', 'tombstone'])
+    .orderBy('node')
+    .execute();
+  return rows.map((row) => ({
+    node: row.node,
+    parent: row.parent,
+    order_key: row.order_key,
+    tombstone: row.tombstone,
+  }));
 }
 
 /**
@@ -492,11 +474,11 @@ async function treecrdtTreeDump(
  * node order, so its pages together cost one scan.
  */
 async function treecrdtTreeChangedSince(
-  runner: SqliteRunner,
+  db: Kysely<TreecrdtDb>,
   query: TreecrdtChangedSinceQuery,
   emitOutcome?: (outcome: MaterializationOutcome) => void,
 ): Promise<{ headSeq: number; rows: unknown[] }> {
-  const outcome = await treecrdtEnsureMaterialized(runner, emitOutcome);
+  const outcome = await treecrdtEnsureMaterialized(db, emitOutcome);
   const ahead = Math.max(query.since, query.until ?? 0);
   if (ahead > outcome.headSeq) {
     throw new Error(
@@ -507,46 +489,46 @@ async function treecrdtTreeChangedSince(
   const limit = query.limit ?? -1;
   const payloads = query.payloads ? 1 : 0;
   if (query.since === 0) {
-    const rows = await sqliteGetJsonOrEmpty<unknown[]>(
-      runner,
-      "SELECT COALESCE(json_group_array(json_array(node_hex, parent_hex, order_key_hex, tombstone, payload_hex)), '[]') \
-       FROM (\
-         SELECT \
-           lower(hex(n.node)) AS node_hex, \
-           CASE WHEN n.parent IS NULL THEN NULL ELSE lower(hex(n.parent)) END AS parent_hex, \
-           CASE WHEN n.order_key IS NULL THEN NULL ELSE lower(hex(n.order_key)) END AS order_key_hex, \
-           n.tombstone AS tombstone, \
-           CASE WHEN ?4 = 1 AND n.tombstone = 0 AND p.payload IS NOT NULL THEN lower(hex(p.payload)) END AS payload_hex \
-         FROM tree_nodes n \
-         LEFT JOIN tree_changes c ON c.node = n.node \
-         LEFT JOIN tree_payload p ON p.node = n.node \
-         WHERE COALESCE(c.seq, 0) <= ?1 AND n.node > COALESCE(?2, X'') \
-         ORDER BY n.node \
-         LIMIT ?3\
-       )",
-      [headSeq, query.afterNode, limit, payloads],
+    const rows = await udfJsonOrEmpty<unknown[]>(
+      db,
+      sql`SELECT COALESCE(json_group_array(json_array(node_hex, parent_hex, order_key_hex, tombstone, payload_hex)), '[]')
+       FROM (
+         SELECT
+           lower(hex(n.node)) AS node_hex,
+           CASE WHEN n.parent IS NULL THEN NULL ELSE lower(hex(n.parent)) END AS parent_hex,
+           CASE WHEN n.order_key IS NULL THEN NULL ELSE lower(hex(n.order_key)) END AS order_key_hex,
+           n.tombstone AS tombstone,
+           CASE WHEN ${payloads} = 1 AND n.tombstone = 0 AND p.payload IS NOT NULL THEN lower(hex(p.payload)) END AS payload_hex
+         FROM tree_nodes n
+         LEFT JOIN tree_changes c ON c.node = n.node
+         LEFT JOIN tree_payload p ON p.node = n.node
+         WHERE COALESCE(c.seq, 0) <= ${headSeq} AND n.node > COALESCE(${query.afterNode}, X'')
+         ORDER BY n.node
+         LIMIT ${limit}
+       )`,
+      'tree_changed_since',
     );
     return { headSeq, rows };
   }
   if (query.since >= headSeq) return { headSeq, rows: [] };
-  const rows = await sqliteGetJsonOrEmpty<unknown[]>(
-    runner,
-    "SELECT COALESCE(json_group_array(json_array(node_hex, parent_hex, order_key_hex, tombstone, payload_hex)), '[]') \
-     FROM (\
-       SELECT \
-         lower(hex(c.node)) AS node_hex, \
-         CASE WHEN n.parent IS NULL THEN NULL ELSE lower(hex(n.parent)) END AS parent_hex, \
-         CASE WHEN n.order_key IS NULL THEN NULL ELSE lower(hex(n.order_key)) END AS order_key_hex, \
-         COALESCE(n.tombstone, 1) AS tombstone, \
-         CASE WHEN ?5 = 1 AND n.tombstone = 0 AND p.payload IS NOT NULL THEN lower(hex(p.payload)) END AS payload_hex \
-       FROM tree_changes c \
-       LEFT JOIN tree_nodes n ON n.node = c.node \
-       LEFT JOIN tree_payload p ON p.node = c.node \
-       WHERE c.seq > ?2 AND c.seq <= ?1 AND c.node > COALESCE(?3, X'') \
-       ORDER BY c.node \
-       LIMIT ?4\
-     )",
-    [headSeq, query.since, query.afterNode, limit, payloads],
+  const rows = await udfJsonOrEmpty<unknown[]>(
+    db,
+    sql`SELECT COALESCE(json_group_array(json_array(node_hex, parent_hex, order_key_hex, tombstone, payload_hex)), '[]')
+     FROM (
+       SELECT
+         lower(hex(c.node)) AS node_hex,
+         CASE WHEN n.parent IS NULL THEN NULL ELSE lower(hex(n.parent)) END AS parent_hex,
+         CASE WHEN n.order_key IS NULL THEN NULL ELSE lower(hex(n.order_key)) END AS order_key_hex,
+         COALESCE(n.tombstone, 1) AS tombstone,
+         CASE WHEN ${payloads} = 1 AND n.tombstone = 0 AND p.payload IS NOT NULL THEN lower(hex(p.payload)) END AS payload_hex
+       FROM tree_changes c
+       LEFT JOIN tree_nodes n ON n.node = c.node
+       LEFT JOIN tree_payload p ON p.node = c.node
+       WHERE c.seq > ${query.since} AND c.seq <= ${headSeq} AND c.node > COALESCE(${query.afterNode}, X'')
+       ORDER BY c.node
+       LIMIT ${limit}
+     )`,
+    'tree_changed_since',
   );
   return { headSeq, rows };
 }
@@ -555,15 +537,17 @@ async function treecrdtTreeChangedSince(
  * Count non-tombstoned nodes in the materialized tree (excluding ROOT).
  */
 async function treecrdtTreeNodeCount(
-  runner: SqliteRunner,
+  db: Kysely<TreecrdtDb>,
   emitOutcome?: (outcome: MaterializationOutcome) => void,
 ): Promise<number> {
-  await treecrdtEnsureMaterialized(runner, emitOutcome);
-  return sqliteGetNumber(
-    runner,
-    'SELECT COUNT(*) FROM tree_nodes WHERE tombstone = 0 AND node <> ?1',
-    [ROOT_NODE_BYTES],
-  );
+  await treecrdtEnsureMaterialized(db, emitOutcome);
+  const row = await db
+    .selectFrom('tree_nodes')
+    .select((eb) => eb.fn.countAll<number>().as('cnt'))
+    .where('tombstone', '=', 0)
+    .where('node', '<>', ROOT_NODE_BYTES)
+    .executeTakeFirst();
+  return Number(row?.cnt ?? 0);
 }
 
 /**
@@ -571,36 +555,40 @@ async function treecrdtTreeNodeCount(
  * Returns the live parent node id as bytes, or null if the node or parent is not visible.
  */
 async function treecrdtTreeParent(
-  runner: SqliteRunner,
+  db: Kysely<TreecrdtDb>,
   node: Uint8Array,
   emitOutcome?: (outcome: MaterializationOutcome) => void,
 ): Promise<Uint8Array | null> {
-  await treecrdtEnsureMaterialized(runner, emitOutcome);
-  const parentHex = await runner.getText(
-    'SELECT lower(hex(parent.node)) \
-     FROM tree_nodes AS child \
-     JOIN tree_nodes AS parent ON parent.node = child.parent AND parent.tombstone = 0 \
-     WHERE child.node = ?1 AND child.tombstone = 0',
-    [node],
-  );
-  if (!parentHex) return null;
-  return hexToBytes(parentHex);
+  await treecrdtEnsureMaterialized(db, emitOutcome);
+  const row = await db
+    .selectFrom('tree_nodes as child')
+    .innerJoin('tree_nodes as parent', (join) =>
+      join.onRef('parent.node', '=', 'child.parent').on('parent.tombstone', '=', 0),
+    )
+    .select('parent.node as parent_node')
+    .where('child.node', '=', node)
+    .where('child.tombstone', '=', 0)
+    .executeTakeFirst();
+  return row?.parent_node ?? null;
 }
 
 /**
  * Check if a non-tombstoned node exists (16-byte id).
  */
 async function treecrdtTreeExists(
-  runner: SqliteRunner,
+  db: Kysely<TreecrdtDb>,
   node: Uint8Array,
   emitOutcome?: (outcome: MaterializationOutcome) => void,
 ): Promise<boolean> {
-  await treecrdtEnsureMaterialized(runner, emitOutcome);
-  const result = await runner.getText(
-    'SELECT 1 FROM tree_nodes WHERE node = ?1 AND tombstone = 0 LIMIT 1',
-    [node],
-  );
-  return result !== null;
+  await treecrdtEnsureMaterialized(db, emitOutcome);
+  const row = await db
+    .selectFrom('tree_nodes')
+    .select('node')
+    .where('node', '=', node)
+    .where('tombstone', '=', 0)
+    .limit(1)
+    .executeTakeFirst();
+  return row !== undefined;
 }
 
 /**
@@ -608,36 +596,47 @@ async function treecrdtTreeExists(
  * Returns the opaque byte payload, or null if the node has no payload or is not visible.
  */
 async function treecrdtTreePayload(
-  runner: SqliteRunner,
+  db: Kysely<TreecrdtDb>,
   node: Uint8Array,
   emitOutcome?: (outcome: MaterializationOutcome) => void,
 ): Promise<Uint8Array | null> {
-  await treecrdtEnsureMaterialized(runner, emitOutcome);
-  const hex = await runner.getText(
-    `SELECT hex(payload) FROM tree_payload WHERE node = ?1 AND ${NODE_VISIBLE_SQL} LIMIT 1`,
-    [node],
-  );
-  if (hex === null || hex === undefined || hex === '') return null;
-  return hexToBytes(hex);
+  await treecrdtEnsureMaterialized(db, emitOutcome);
+  const row = await db
+    .selectFrom('tree_payload')
+    .select('payload')
+    .where('node', '=', node)
+    .where(nodeVisible(node))
+    .limit(1)
+    .executeTakeFirst();
+  if (!row || row.payload === null || row.payload === undefined) return null;
+  const payload = row.payload instanceof Uint8Array ? row.payload : Uint8Array.from(row.payload);
+  return payload.byteLength === 0 ? null : payload;
 }
 
 /**
  * Fetch the maximum lamport seen in the op log.
  */
-async function treecrdtHeadLamport(runner: SqliteRunner): Promise<number> {
-  return sqliteGetNumber(runner, 'SELECT COALESCE(MAX(lamport), 0) FROM ops');
+async function treecrdtHeadLamport(db: Kysely<TreecrdtDb>): Promise<number> {
+  const row = await db
+    .selectFrom('ops')
+    .select((eb) => eb.fn.max('lamport').as('max_lamport'))
+    .executeTakeFirst();
+  return Number(row?.max_lamport ?? 0);
 }
 
 /**
  * Fetch the maximum counter observed for a replica id.
  */
 async function treecrdtReplicaMaxCounter(
-  runner: SqliteRunner,
+  db: Kysely<TreecrdtDb>,
   replica: Uint8Array,
 ): Promise<number> {
-  return sqliteGetNumber(runner, 'SELECT COALESCE(MAX(counter), 0) FROM ops WHERE replica = ?1', [
-    replica,
-  ]);
+  const row = await db
+    .selectFrom('ops')
+    .select((eb) => eb.fn.max('counter').as('max_counter'))
+    .where('replica', '=', replica)
+    .executeTakeFirst();
+  return Number(row?.max_counter ?? 0);
 }
 
 export type TreecrdtSqlitePlacement =
@@ -667,7 +666,7 @@ export type TreecrdtSqliteWriter = {
 };
 
 export function createTreecrdtSqliteWriter(
-  runner: SqliteRunner,
+  db: Kysely<TreecrdtDb>,
   opts: {
     replica: ReplicaId;
     onMaterialized?: (event: MaterializationEvent) => void;
@@ -677,39 +676,33 @@ export function createTreecrdtSqliteWriter(
   const replicaBytes = replicaIdToBytes(replica);
 
   const getLocalOp = async (
-    sql: string,
-    params: SqlCall['params'],
+    query: RawBuilder<unknown>,
+    label: string,
     writeOpts?: LocalWriteOptions,
   ) => {
     const authSession = writeOpts?.authSession;
     if (!authSession) {
-      const { op, outcome } = decodeLocalOpResult(
-        await sqliteGetJson<any>(runner, sql, params),
-        sql,
-      );
+      const { op, outcome } = decodeLocalOpResult(await udfJson<any>(db, query, label), label);
       emitLocalOutcome(outcome, opts.onMaterialized, writeOpts?.writeId);
       return op;
     }
 
     const savepoint = `treecrdt_local_auth_${++localAuthSavepointCounter}`;
     let released = false;
-    await sqliteExec(runner, `SAVEPOINT ${savepoint}`);
+    await sql.raw(`SAVEPOINT ${savepoint}`).execute(db);
     try {
-      const { op, outcome } = decodeLocalOpResult(
-        await sqliteGetJson<any>(runner, sql, params),
-        sql,
-      );
+      const { op, outcome } = decodeLocalOpResult(await udfJson<any>(db, query, label), label);
       await authSession.authorizeLocalOps([op]);
-      await sqliteExec(runner, `RELEASE ${savepoint}`);
+      await sql.raw(`RELEASE ${savepoint}`).execute(db);
       released = true;
       emitLocalOutcome(outcome, opts.onMaterialized, writeOpts?.writeId);
       return op;
     } catch (err) {
       if (!released) {
         try {
-          await sqliteExec(runner, `ROLLBACK TO ${savepoint}`);
+          await sql.raw(`ROLLBACK TO ${savepoint}`).execute(db);
         } finally {
-          await sqliteExec(runner, `RELEASE ${savepoint}`);
+          await sql.raw(`RELEASE ${savepoint}`).execute(db);
         }
       }
       throw err;
@@ -725,15 +718,8 @@ export function createTreecrdtSqliteWriter(
     const afterNode = placement.type === 'after' ? nodeIdToBytes16(placement.after) : null;
     const payload = o.payload ?? null;
     return getLocalOp(
-      'SELECT treecrdt_local_insert(?1,?2,?3,?4,?5,?6)',
-      [
-        replicaBytes,
-        nodeIdToBytes16(parent),
-        nodeIdToBytes16(node),
-        placement.type,
-        afterNode,
-        payload,
-      ],
+      sql`select treecrdt_local_insert(${replicaBytes}, ${nodeIdToBytes16(parent)}, ${nodeIdToBytes16(node)}, ${placement.type}, ${afterNode}, ${payload})`,
+      'treecrdt_local_insert',
       o,
     );
   };
@@ -746,24 +732,24 @@ export function createTreecrdtSqliteWriter(
   ) => {
     const afterNode = placement.type === 'after' ? nodeIdToBytes16(placement.after) : null;
     return getLocalOp(
-      'SELECT treecrdt_local_move(?1,?2,?3,?4,?5)',
-      [replicaBytes, nodeIdToBytes16(node), nodeIdToBytes16(newParent), placement.type, afterNode],
+      sql`select treecrdt_local_move(${replicaBytes}, ${nodeIdToBytes16(node)}, ${nodeIdToBytes16(newParent)}, ${placement.type}, ${afterNode})`,
+      'treecrdt_local_move',
       writeOpts,
     );
   };
 
   const del = async (node: string, writeOpts?: LocalWriteOptions) => {
     return getLocalOp(
-      'SELECT treecrdt_local_delete(?1,?2)',
-      [replicaBytes, nodeIdToBytes16(node)],
+      sql`select treecrdt_local_delete(${replicaBytes}, ${nodeIdToBytes16(node)})`,
+      'treecrdt_local_delete',
       writeOpts,
     );
   };
 
   const payload = async (node: string, next: Uint8Array | null, writeOpts?: LocalWriteOptions) => {
     return getLocalOp(
-      'SELECT treecrdt_local_payload(?1,?2,?3)',
-      [replicaBytes, nodeIdToBytes16(node), next],
+      sql`select treecrdt_local_payload(${replicaBytes}, ${nodeIdToBytes16(node)}, ${next})`,
+      'treecrdt_local_payload',
       writeOpts,
     );
   };

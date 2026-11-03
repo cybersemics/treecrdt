@@ -1,13 +1,14 @@
 import type { Operation } from '@treecrdt/interface';
-import { bytesToHex, hexToBytes } from '@treecrdt/interface/ids';
-import type { SqliteRunner } from '@treecrdt/interface/sqlite';
+import { bytesToHex } from '@treecrdt/interface/ids';
+import { sql, type Kysely, type TreecrdtDb } from '@treecrdt/interface/sqlite';
 import { deriveOpRefV0 } from '@treecrdt/sync-protocol';
 import type { Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
 
 import { createPendingOpsStore } from './proof-material/index.js';
+import type { TreecrdtSyncSqliteDb } from './sync-schema.js';
 
 export type TreecrdtSyncBackendClient = {
-  runner?: SqliteRunner;
+  db?: Kysely<TreecrdtDb>;
   meta?: {
     headLamport?: () => Promise<number> | number;
   };
@@ -23,76 +24,62 @@ export type TreecrdtSyncBackendClient = {
 };
 
 async function maybeLoadNodePayloadWriterOpRef(opts: {
-  runner: SqliteRunner;
+  db: Kysely<TreecrdtDb>;
   docId: string;
   nodeBytes: Uint8Array;
 }): Promise<Uint8Array | null> {
   // `tree_payload` is a derived table; ensure it is up-to-date before reading.
   try {
-    await opts.runner.getText('SELECT treecrdt_ensure_materialized()');
+    await sql`select treecrdt_ensure_materialized()`.execute(opts.db);
   } catch {
     // Best-effort. Some backends may not expose this UDF (non-SQLite); callers will ignore null.
   }
 
   // Fast path: use the materialized payload table if present.
-  const json = await opts.runner.getText(
-    "SELECT json_object('replica', lower(hex(last_replica)), 'counter', CAST(last_counter AS TEXT)) \
-     FROM tree_payload \
-     WHERE node = ?1",
-    [opts.nodeBytes],
-  );
-  if (json) {
-    let parsed: unknown;
+  const payloadRow = await opts.db
+    .selectFrom('tree_payload')
+    .select(['last_replica', 'last_counter'])
+    .where('node', '=', opts.nodeBytes)
+    .executeTakeFirst();
+
+  if (payloadRow && payloadRow.last_replica && payloadRow.last_counter > 0) {
     try {
-      parsed = JSON.parse(json);
+      const replica =
+        payloadRow.last_replica instanceof Uint8Array
+          ? payloadRow.last_replica
+          : Uint8Array.from(payloadRow.last_replica as any);
+      return deriveOpRefV0(opts.docId, {
+        replica,
+        counter: BigInt(payloadRow.last_counter),
+      });
     } catch {
       // fall through to ops-table fallback
-      parsed = null;
-    }
-    if (parsed && typeof parsed === 'object') {
-      const replicaHex = (parsed as any).replica;
-      const counterText = (parsed as any).counter;
-      if (
-        typeof replicaHex === 'string' &&
-        typeof counterText === 'string' &&
-        replicaHex.length > 0
-      ) {
-        let counter: bigint;
-        try {
-          counter = BigInt(counterText);
-        } catch {
-          counter = 0n;
-        }
-
-        if (counter > 0n) {
-          try {
-            const replica = hexToBytes(replicaHex);
-            return deriveOpRefV0(opts.docId, { replica, counter });
-          } catch {
-            // fall through to ops-table fallback
-          }
-        }
-      }
     }
   }
 
   // Fallback: query the op-log directly. This avoids relying on derived state (which can be stale
   // if materialization fails or is unavailable in a given environment).
-  const opRefHex = await opts.runner.getText(
-    "SELECT lower(hex(op_ref)) \
-     FROM ops \
-     WHERE node = ?1 AND op_ref IS NOT NULL AND (kind = 'payload' OR (kind = 'insert' AND payload IS NOT NULL)) \
-     ORDER BY lamport DESC, replica DESC, counter DESC \
-     LIMIT 1",
-    [opts.nodeBytes],
-  );
-  if (!opRefHex || typeof opRefHex !== 'string') return null;
-  try {
-    const opRef = hexToBytes(opRefHex);
-    return opRef.length === 16 ? opRef : null;
-  } catch {
-    return null;
-  }
+  const opRow = await opts.db
+    .selectFrom('ops')
+    .select('op_ref')
+    .where('node', '=', opts.nodeBytes)
+    .where('op_ref', 'is not', null)
+    .where((eb) =>
+      eb.or([
+        eb('kind', '=', 'payload'),
+        eb.and([eb('kind', '=', 'insert'), eb('payload', 'is not', null)]),
+      ]),
+    )
+    .orderBy('lamport', 'desc')
+    .orderBy('replica', 'desc')
+    .orderBy('counter', 'desc')
+    .limit(1)
+    .executeTakeFirst();
+
+  const opRef = opRow?.op_ref;
+  if (!opRef) return null;
+  const bytes = opRef instanceof Uint8Array ? opRef : Uint8Array.from(opRef as any);
+  return bytes.length === 16 ? bytes : null;
 }
 
 export function createTreecrdtSyncBackendFromClient(
@@ -105,8 +92,11 @@ export function createTreecrdtSyncBackendFromClient(
 ): SyncBackend<Operation> {
   const pending = opts.enablePendingSidecar
     ? (() => {
-        if (!client.runner) throw new Error('enablePendingSidecar requires client.runner');
-        return createPendingOpsStore({ runner: client.runner, docId });
+        if (!client.db) throw new Error('enablePendingSidecar requires client.db');
+        return createPendingOpsStore({
+          db: client.db as unknown as Kysely<TreecrdtSyncSqliteDb>,
+          docId,
+        });
       })()
     : null;
   let pendingReady = false;
@@ -151,9 +141,9 @@ export function createTreecrdtSyncBackendFromClient(
       // Scoped sync often starts at a subtree root where the node's own payload opRef is not
       // discoverable via its parent (which may be outside scope). Include the node's latest
       // payload-writer opRef so `children(node)` can render the scope root label/value.
-      if (!client.runner) return refs;
+      if (!client.db) return refs;
       const payloadWriter = await maybeLoadNodePayloadWriterOpRef({
-        runner: client.runner,
+        db: client.db,
         docId,
         nodeBytes: filter.children.parent,
       });

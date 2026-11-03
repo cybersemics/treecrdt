@@ -29,7 +29,9 @@ async function initializeOpenedDatabase(
   let db: Database | undefined;
   try {
     db = createDatabase(sqlite3, handle);
-    if (opts.storage === 'opfs') await db.exec(OPFS_CONNECTION_PRAGMAS);
+    if (opts.storage === 'opfs') {
+      for (const pragma of OPFS_CONNECTION_PRAGMAS) await db.execBatch(pragma);
+    }
     await initializeTreecrdtExtension(module, handle, db, opts.docId);
     return db;
   } catch (error) {
@@ -74,20 +76,19 @@ async function openOpfsHandle(
 
 function closeDatabaseWithVfs(db: Database, vfs: { close?: () => Promise<void> | void }): Database {
   if (!vfs.close) return db;
+  const previousClose = db.close;
   let closePromise: Promise<void> | null = null;
-  return {
-    ...db,
-    close: () => {
-      closePromise ??= (async () => {
-        try {
-          await db.close?.();
-        } finally {
-          await vfs.close?.();
-        }
-      })();
-      return closePromise;
-    },
+  db.close = () => {
+    closePromise ??= (async () => {
+      try {
+        await previousClose?.();
+      } finally {
+        await vfs.close?.();
+      }
+    })();
+    return closePromise;
   };
+  return db;
 }
 
 export async function openTreecrdtDbWithLoader(

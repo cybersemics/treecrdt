@@ -1,4 +1,4 @@
-import type { SqliteRunner } from '@treecrdt/interface/sqlite';
+import type { Kysely, TreecrdtDb } from '@treecrdt/interface/sqlite';
 import {
   createTreecrdtAuthSession,
   describeTreecrdtCapabilityTokenV1,
@@ -17,6 +17,7 @@ import {
   type SqliteCapabilityMaterialStore,
   type SqliteOpAuthStore,
 } from './proof-material/index.js';
+import type { TreecrdtSyncSqliteDb } from './sync-schema.js';
 
 export type TreecrdtSqliteAuthBackend = {
   /**
@@ -31,13 +32,14 @@ export type TreecrdtSqliteAuthBackend = {
 };
 
 export function createTreecrdtSqliteAuthBackend(opts: {
-  runner: SqliteRunner;
+  db: Kysely<TreecrdtDb>;
   docId: string;
   nowMs?: () => number;
 }): TreecrdtSqliteAuthBackend {
-  const storeOpts = { runner: opts.runner, docId: opts.docId, nowMs: opts.nowMs };
+  const storeDb = opts.db as unknown as Kysely<TreecrdtSyncSqliteDb>;
+  const storeOpts = { db: storeDb, docId: opts.docId, nowMs: opts.nowMs };
   return {
-    scopeEvaluator: createTreecrdtSqliteSubtreeScopeEvaluator(opts.runner),
+    scopeEvaluator: createTreecrdtSqliteSubtreeScopeEvaluator(opts.db),
     capabilityStore: createCapabilityMaterialStore(storeOpts),
     opAuthStore: createOpAuthStore(storeOpts),
   };
@@ -47,13 +49,13 @@ export type TreecrdtSqliteAuthSessionOptions = Omit<
   TreecrdtAuthSessionOptions,
   'backend' | 'scopeEvaluator' | 'capabilityStore' | 'opAuthStore'
 > & {
-  runner: SqliteRunner;
+  db: Kysely<TreecrdtDb>;
   nowMs?: () => number;
 };
 
 export type TreecrdtSqliteClientAuthSessionOptions = Omit<
   TreecrdtSqliteAuthSessionOptions,
-  'runner' | 'docId'
+  'db' | 'docId'
 > & {
   docId?: string;
 };
@@ -61,11 +63,11 @@ export type TreecrdtSqliteClientAuthSessionOptions = Omit<
 export function createTreecrdtSqliteAuthSession(
   opts: TreecrdtSqliteAuthSessionOptions,
 ): TreecrdtAuthSession {
-  const { runner, nowMs, ...sessionOpts } = opts;
+  const { db, nowMs, ...sessionOpts } = opts;
   return createTreecrdtAuthSession({
     ...sessionOpts,
     backend: createTreecrdtSqliteAuthBackend({
-      runner,
+      db,
       docId: sessionOpts.docId,
       nowMs,
     }),
@@ -96,16 +98,16 @@ export type TreecrdtSqliteAuthApi = {
 };
 
 export function createTreecrdtSqliteAuthApi(opts: {
-  runner: SqliteRunner;
+  db: Kysely<TreecrdtDb>;
   docId: string;
   nowMs?: () => number;
 }): TreecrdtSqliteAuthApi {
-  const scopeEvaluator = createTreecrdtSqliteSubtreeScopeEvaluator(opts.runner);
+  const scopeEvaluator = createTreecrdtSqliteSubtreeScopeEvaluator(opts.db);
   return {
     createSession: (sessionOpts) =>
       createTreecrdtSqliteAuthSession({
         ...sessionOpts,
-        runner: opts.runner,
+        db: opts.db,
         docId: sessionOpts.docId ?? opts.docId,
         nowMs: sessionOpts.nowMs ?? opts.nowMs,
       }),

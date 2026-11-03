@@ -3,7 +3,10 @@ import { expect, test } from 'vitest';
 import { defineProofMaterialStoreContract } from '../../protocol/tests/helpers/proof-material-contract.ts';
 import { definePendingProofMaterialStoreContract } from '../../protocol/tests/helpers/pending-proof-material-contract.ts';
 import { defineReplayOnlyAuthStoreContract } from '../../protocol/tests/helpers/replay-only-auth-contract.ts';
-import type { SqliteRunner } from '@treecrdt/interface/sqlite';
+import {
+  createTreecrdtDbFromRunner,
+  type SqliteRunner,
+} from '@treecrdt/interface/sqlite';
 
 import {
   createCapabilityMaterialStore,
@@ -20,18 +23,27 @@ function testKey(byte: number): Uint8Array {
 }
 
 function createRunner(db: Database.Database): SqliteRunner {
-  const toBindings = (params: unknown[]) =>
-    params.reduce<Record<number, unknown>>((acc, value, index) => {
-      acc[index + 1] = value instanceof Uint8Array ? Buffer.from(value) : value;
-      return acc;
-    }, {});
+  const normalizeParam = (value: unknown): unknown =>
+    value instanceof Uint8Array ? Buffer.from(value) : value;
+
+  const normalizeValue = (value: unknown) => {
+    if (value === undefined || value === null) return null;
+    if (Buffer.isBuffer(value)) return new Uint8Array(value);
+    if (value instanceof Uint8Array) return value;
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') {
+      return value;
+    }
+    return String(value);
+  };
 
   return {
     exec: async (sql) => {
       db.exec(sql);
     },
     getText: async (sql, params = []) => {
-      const row = db.prepare(sql).get(toBindings(params)) as Record<string, unknown> | undefined;
+      const row = db.prepare(sql).get(...params.map(normalizeParam)) as
+        | Record<string, unknown>
+        | undefined;
       if (!row) return null;
       const value = Object.values(row)[0];
       if (value === undefined || value === null) return null;
@@ -39,15 +51,28 @@ function createRunner(db: Database.Database): SqliteRunner {
       if (value instanceof Uint8Array) return Buffer.from(value).toString('utf8');
       return typeof value === 'string' ? value : String(value);
     },
+    query: async (sql, params = []) => {
+      const stmt = db.prepare(sql);
+      if (stmt.reader) {
+        const rows = stmt.all(...params.map(normalizeParam)) as Record<string, unknown>[];
+        return rows.map((row) => {
+          const out: Record<string, any> = {};
+          for (const [key, value] of Object.entries(row)) out[key] = normalizeValue(value);
+          return out;
+        });
+      }
+      stmt.run(...params.map(normalizeParam));
+      return [];
+    },
   };
 }
 
 test('sqlite auth backend helper bundles scope evaluator and auth stores', async () => {
   const db = new Database(':memory:');
-  const runner = createRunner(db);
+  const kysely = createTreecrdtDbFromRunner(createRunner(db));
 
   try {
-    const backend = createTreecrdtSqliteAuthBackend({ runner, docId: 'doc-auth-helper' });
+    const backend = createTreecrdtSqliteAuthBackend({ db: kysely, docId: 'doc-auth-helper' });
     expect(typeof backend.scopeEvaluator).toBe('function');
     expect('pendingOpsStore' in backend).toBe(false);
 
@@ -67,11 +92,11 @@ test('sqlite auth backend helper bundles scope evaluator and auth stores', async
 
 test('sqlite auth session helper wires the backend automatically', async () => {
   const db = new Database(':memory:');
-  const runner = createRunner(db);
+  const kysely = createTreecrdtDbFromRunner(createRunner(db));
 
   try {
     const session = createTreecrdtSqliteAuthSession({
-      runner,
+      db: kysely,
       docId: 'doc-auth-session-helper',
       trust: { issuerPublicKeys: [] },
       local: {
@@ -89,11 +114,11 @@ test('sqlite auth session helper wires the backend automatically', async () => {
 
 test('sqlite client auth api hides runner wiring', async () => {
   const db = new Database(':memory:');
-  const runner = createRunner(db);
+  const kysely = createTreecrdtDbFromRunner(createRunner(db));
 
   try {
     const auth = createTreecrdtSqliteAuthApi({
-      runner,
+      db: kysely,
       docId: 'doc-client-auth-api',
     });
     const session = auth.createSession({
@@ -114,11 +139,11 @@ test('sqlite client auth api hides runner wiring', async () => {
 
 test('sqlite sync diagnostics lists pending ops without exposing the raw store', async () => {
   const db = new Database(':memory:');
-  const runner = createRunner(db);
+  const kysely = createTreecrdtDbFromRunner(createRunner(db)) as any;
 
   try {
     const diagnostics = createTreecrdtSqliteSyncDiagnostics({
-      runner,
+      db: kysely,
       docId: 'doc-diagnostics',
     });
     await expect(diagnostics.listPendingOps()).resolves.toEqual([]);
@@ -129,12 +154,12 @@ test('sqlite sync diagnostics lists pending ops without exposing the raw store',
 
 defineProofMaterialStoreContract('sqlite proof material stores', async () => {
   const db = new Database(':memory:');
-  const runner = createRunner(db);
+  const kysely = createTreecrdtDbFromRunner(createRunner(db)) as any;
 
   return {
     createDocStores: async (docId) => {
-      const opAuth = createOpAuthStore({ runner, docId });
-      const capabilities = createCapabilityMaterialStore({ runner, docId });
+      const opAuth = createOpAuthStore({ db: kysely, docId });
+      const capabilities = createCapabilityMaterialStore({ db: kysely, docId });
       await opAuth.init();
       await capabilities.init();
       return { opAuth, capabilities };
@@ -147,11 +172,11 @@ defineProofMaterialStoreContract('sqlite proof material stores', async () => {
 
 definePendingProofMaterialStoreContract('sqlite pending proof material stores', async () => {
   const db = new Database(':memory:');
-  const runner = createRunner(db);
+  const kysely = createTreecrdtDbFromRunner(createRunner(db)) as any;
 
   return {
     createPendingStore: async (docId) => {
-      const pending = createPendingOpsStore({ runner, docId });
+      const pending = createPendingOpsStore({ db: kysely, docId });
       return pending;
     },
     close: async () => {
@@ -162,12 +187,12 @@ definePendingProofMaterialStoreContract('sqlite pending proof material stores', 
 
 defineReplayOnlyAuthStoreContract('sqlite replay-only auth material stores', async () => {
   const db = new Database(':memory:');
-  const runner = createRunner(db);
+  const kysely = createTreecrdtDbFromRunner(createRunner(db)) as any;
 
   return {
     createDocStores: async (docId) => {
-      const opAuth = createOpAuthStore({ runner, docId });
-      const capabilities = createCapabilityMaterialStore({ runner, docId });
+      const opAuth = createOpAuthStore({ db: kysely, docId });
+      const capabilities = createCapabilityMaterialStore({ db: kysely, docId });
       await opAuth.init();
       await capabilities.init();
       return { opAuth, capabilities };

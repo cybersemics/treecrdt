@@ -5,7 +5,7 @@ import type {
 } from '@treecrdt/interface/engine';
 import type { Operation, ReplicaId } from '@treecrdt/interface';
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
-import type { SqliteRunner } from '@treecrdt/interface/sqlite';
+import type { Kysely, TreecrdtDb } from '@treecrdt/interface/sqlite';
 import { loadVersionVectorCodec } from '@treecrdt/wasm/codec';
 
 import type { Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
@@ -415,12 +415,11 @@ function assertBytesEqual(
   }
 }
 
-function engineRunnerOrNull(engine: TreecrdtEngine): SqliteRunner | null {
-  const candidate = (engine as any)?.runner as Partial<SqliteRunner> | undefined;
+function engineDbOrNull(engine: TreecrdtEngine): Kysely<TreecrdtDb> | null {
+  const candidate = (engine as any)?.db as Kysely<TreecrdtDb> | undefined;
   if (!candidate) return null;
-  if (typeof candidate.exec !== 'function') return null;
-  if (typeof candidate.getText !== 'function') return null;
-  return candidate as SqliteRunner;
+  if (typeof (candidate as any).selectFrom !== 'function') return null;
+  return candidate;
 }
 
 function orderKeyFromPosition(position: number): Uint8Array {
@@ -2320,12 +2319,12 @@ async function scenarioSyncAuthScopedTokenRejectsAllFilter(
 async function scenarioAuthSqliteSubtreeEvaluator(
   ctx: TreecrdtEngineConformanceContext,
 ): Promise<void> {
-  const runner = engineRunnerOrNull(ctx.engine);
-  if (!runner) return;
+  const db = engineDbOrNull(ctx.engine);
+  if (!db) return;
 
   const docId = ctx.docId;
   const engine = ctx.engine;
-  const evalScope = createTreecrdtSqliteSubtreeScopeEvaluator(runner);
+  const evalScope = createTreecrdtSqliteSubtreeScopeEvaluator(db);
 
   const root = nodeIdFromInt(0);
   const subtreeRoot = nodeIdFromInt(1);
@@ -2393,10 +2392,10 @@ async function scenarioSyncAuthPendingContextSidecar(
   const a = ctx.engine;
   const b = await ctx.createEngine({ docId, name: 'peer-b' });
 
-  const runnerB = engineRunnerOrNull(b);
-  if (!runnerB) return;
+  const dbB = engineDbOrNull(b);
+  if (!dbB) return;
 
-  const pendingB = createPendingOpsStore({ runner: runnerB, docId });
+  const pendingB = createPendingOpsStore({ db: dbB as any, docId });
   await pendingB.init();
 
   const issuerSk = randomEd25519SecretKey();
@@ -2441,7 +2440,7 @@ async function scenarioSyncAuthPendingContextSidecar(
     localPublicKey: bPk,
     localCapabilityTokens: [tokenB],
     requireProofRef: true,
-    scopeEvaluator: createTreecrdtSqliteSubtreeScopeEvaluator(runnerB),
+    scopeEvaluator: createTreecrdtSqliteSubtreeScopeEvaluator(dbB),
   });
 
   const backendA = createEngineSyncBackend(a);
@@ -2546,9 +2545,9 @@ async function scenarioSyncAuthRestartRelayReServesSignedOps(
   const a = ctx.engine;
 
   const relay1 = await ctx.createPersistentEngine({ docId, name: 'relay' });
-  const runnerRelay1 = engineRunnerOrNull(relay1);
-  if (!runnerRelay1) return;
-  const opAuthRelay1 = createOpAuthStore({ runner: runnerRelay1, docId });
+  const dbRelay1 = engineDbOrNull(relay1);
+  if (!dbRelay1) return;
+  const opAuthRelay1 = createOpAuthStore({ db: dbRelay1 as any, docId });
   await opAuthRelay1.init();
 
   const issuerSk = randomEd25519SecretKey();
@@ -2630,9 +2629,9 @@ async function scenarioSyncAuthRestartRelayReServesSignedOps(
   await relay1.close();
 
   const relay2 = await ctx.createPersistentEngine({ docId, name: 'relay' });
-  const runnerRelay2 = engineRunnerOrNull(relay2);
-  if (!runnerRelay2) return;
-  const opAuthRelay2 = createOpAuthStore({ runner: runnerRelay2, docId });
+  const dbRelay2 = engineDbOrNull(relay2);
+  if (!dbRelay2) return;
+  const opAuthRelay2 = createOpAuthStore({ db: dbRelay2 as any, docId });
   await opAuthRelay2.init();
 
   const authRelay2 = createTreecrdtCoseCwtAuth({
