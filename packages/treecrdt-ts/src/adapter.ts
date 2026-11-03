@@ -46,7 +46,8 @@ export interface TreecrdtAdapter {
    */
   opsByOpRefs(opRefs: Uint8Array[]): Promise<unknown[]>;
   /**
-   * Fetch materialized live (non-tombstoned) children for a parent node (16-byte id).
+   * Fetch materialized live (non-tombstoned) children for a parent node (16-byte id), none when the
+   * parent itself is not visible.
    *
    * `(null, null)` returns all live children; `(offset, null)` returns a suffix; `(offset, limit)` a window.
    *
@@ -85,7 +86,7 @@ export interface TreecrdtAdapter {
   /**
    * Fetch the payload for a node (16-byte id).
    *
-   * Returns the opaque byte payload or null if the node has no payload.
+   * Returns the opaque byte payload, or null if the node has no payload or is not visible.
    */
   treePayload(node: Uint8Array): Promise<Uint8Array | null>;
   /**

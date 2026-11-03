@@ -192,6 +192,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioTreeGetRootLazyNavigation,
     },
     {
+      name: 'tree: node(id) reads without an existence check',
+      run: scenarioTreeNodeHandle,
+    },
+    {
       name: 'tree: changedSince reports each changed node once',
       run: scenarioChangedSinceReportsChangedNodes,
     },
@@ -1394,6 +1398,42 @@ async function scenarioChangedSinceMatchesStateDiff(
     }
     cursor = read.headSeq;
     before = after;
+  }
+}
+
+async function scenarioTreeNodeHandle(ctx: TreecrdtEngineConformanceContext): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r-node');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(90);
+  const child = nodeIdFromInt(91);
+
+  assertEqual(engine.tree.node('0').id, engine.tree.root.id, 'node(root alias) is the root');
+  await engine.local.insert(replica, root, parent, { type: 'last' }, encoder.encode('parent'));
+  await engine.local.insert(replica, parent, child, { type: 'last' }, encoder.encode('child'));
+
+  const handle = engine.tree.node(parent);
+  assertEqual(handle.id, parent, 'node(id) canonical id');
+  assertBytesEqual(await handle.payload(), encoder.encode('parent'), 'node(id) payload');
+  assertEqual((await handle.parent())?.id, root, 'node(id) parent');
+  assertArrayEqual(
+    (await handle.children()).map((n) => n.id),
+    [child],
+    'node(id) children',
+  );
+
+  // Without get()'s existence check, the reads themselves must hide what the tree hides.
+  await engine.local.delete(replica, parent);
+  for (const id of [parent, nodeIdFromInt(92)]) {
+    const hidden = engine.tree.node(id);
+    assertEqual(await hidden.payload(), null, `node(${id}) has no payload once not visible`);
+    assertEqual(await hidden.parent(), undefined, `node(${id}) has no parent once not visible`);
+    assertArrayEqual(
+      (await hidden.children()).map((n) => n.id),
+      [],
+      `node(${id}) has no children once not visible`,
+    );
   }
 }
 
