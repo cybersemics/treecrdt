@@ -1,5 +1,18 @@
 # @treecrdt/wa-sqlite
 
+## 1.1.0
+
+### Minor Changes
+
+- fc2c6e5: Add `tree.node(id)`, a node handle that skips the existence query `tree.get(id)` runs, so reading a known node by id is one query: `await tree.node(id).children()`. A node that is not visible reads as empty: no payload, no children and no parent.
+
+### Patch Changes
+
+- a5d694f: Stop node reads from returning a deleted node's data. Only `tree.get(id)` checked visibility, so a handle kept across a delete still read the deleted node's payload and children, and so did adapter `treePayload` and `treeChildren`. They now check it in the same query.
+- Updated dependencies [fc2c6e5]
+- Updated dependencies [a5d694f]
+  - @treecrdt/interface@0.4.0
+
 ## 1.0.0
 
 ### Major Changes
