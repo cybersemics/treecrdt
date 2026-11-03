@@ -1423,16 +1423,23 @@ async function scenarioTreeNodeHandle(ctx: TreecrdtEngineConformanceContext): Pr
     'node(id) children',
   );
 
-  // Without get()'s existence check, the reads themselves must hide what the tree hides.
+  // The reads themselves must hide what the tree hides: for node(id), which skips get()'s
+  // existence check, and for a handle taken before the delete.
+  const fetched = await engine.tree.get(parent);
+  assert(fetched, 'get(parent) before the delete');
   await engine.local.delete(replica, parent);
-  for (const id of [parent, nodeIdFromInt(92)]) {
-    const hidden = engine.tree.node(id);
-    assertEqual(await hidden.payload(), null, `node(${id}) has no payload once not visible`);
-    assertEqual(await hidden.parent(), undefined, `node(${id}) has no parent once not visible`);
+  const hiddenHandles = {
+    'a handle taken before the delete': fetched,
+    'node(deleted)': engine.tree.node(parent),
+    'node(missing)': engine.tree.node(nodeIdFromInt(92)),
+  };
+  for (const [label, hidden] of Object.entries(hiddenHandles)) {
+    assertEqual(await hidden.payload(), null, `${label} has no payload`);
+    assertEqual(await hidden.parent(), undefined, `${label} has no parent`);
     assertArrayEqual(
       (await hidden.children()).map((n) => n.id),
       [],
-      `node(${id}) has no children once not visible`,
+      `${label} has no children`,
     );
   }
 }
