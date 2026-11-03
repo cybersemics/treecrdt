@@ -205,10 +205,12 @@ export type TreecrdtNode = {
 export type TreecrdtNodePrimitives = {
   exists: (node: string) => Promise<boolean>;
   parent: (node: string) => Promise<string | null>;
+  /** Null when the node has no payload or is not visible. */
   payload: (node: string) => Promise<Uint8Array | null>;
   /**
-   * Live children in stable order. `(null, null)` = all; `(offset, null)` = suffix from offset;
-   * `(offset, limit)` = fixed-size window. Empty windows are handled in the engine (no I/O).
+   * Live children in stable order, none when the parent is not visible. `(null, null)` = all;
+   * `(offset, null)` = suffix from offset; `(offset, limit)` = fixed-size window. Empty windows are
+   * handled in the engine (no I/O).
    */
   children: (parent: string, offset: number | null, limit: number | null) => Promise<string[]>;
 };
@@ -247,6 +249,11 @@ export type TreecrdtChangedSincePage = {
 export type TreecrdtEngineTree = {
   /** Resolves ROOT aliases to `root`; undefined when any other node is absent. */
   get: (node: string) => Promise<TreecrdtNode | undefined>;
+  /**
+   * Handle for `node` without checking that it exists, so each read is one query. A node that is
+   * not visible reads as empty: no payload, no children and no parent.
+   */
+  node: (node: string) => TreecrdtNode;
   /** Always-available ROOT handle; does not check existence. */
   root: TreecrdtNode;
   dump: () => Promise<SqliteTreeRow[]>;
@@ -279,7 +286,7 @@ export type TreecrdtEngineTree = {
  */
 export function createTreecrdtTreeNodes(
   primitives: TreecrdtNodePrimitives,
-): Pick<TreecrdtEngineTree, 'get' | 'root'> {
+): Pick<TreecrdtEngineTree, 'get' | 'node' | 'root'> {
   const createNode = (nodeId: string): TreecrdtNode => {
     const id = normalizeNodeId(nodeId);
     const node: TreecrdtNode = {
@@ -308,6 +315,10 @@ export function createTreecrdtTreeNodes(
       if (node.id === root.id) return root;
       if (!(await primitives.exists(node.id))) return undefined;
       return node;
+    },
+    node: (nodeId) => {
+      const node = createNode(nodeId);
+      return node.id === root.id ? root : node;
     },
     root,
   };

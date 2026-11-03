@@ -192,6 +192,14 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioTreeGetRootLazyNavigation,
     },
     {
+      name: 'tree: node(id) reads without an existence check',
+      run: scenarioTreeNodeHandle,
+    },
+    {
+      name: 'tree: a handle kept across a delete stops reading the node',
+      run: scenarioHandleKeptAcrossDelete,
+    },
+    {
       name: 'tree: changedSince reports each changed node once',
       run: scenarioChangedSinceReportsChangedNodes,
     },
@@ -869,7 +877,7 @@ async function scenarioMaterializationEventDefensiveRestore(
     'receiver preserves parent',
   );
   assertArrayEqual(
-    ((await (await b.tree.get(parent))?.children()) ?? []).map((node) => node.id),
+    (await b.tree.node(parent).children()).map((node) => node.id),
     [child],
     'receiver preserves unseen child',
   );
@@ -890,7 +898,7 @@ async function scenarioMaterializationEventDefensiveRestore(
     'restored parent should be visible',
   );
   assertArrayEqual(
-    ((await (await a.tree.get(parent))?.children()) ?? []).map((node) => node.id),
+    (await a.tree.node(parent).children()).map((node) => node.id),
     [child],
     'child should remain visible',
   );
@@ -1043,7 +1051,7 @@ async function scenarioMaterializedSmokeWithOpRefs(
     'tree.children(root)',
   );
   assertArrayEqual(
-    ((await (await engine.tree.get(n1))?.children()) ?? []).map((node) => node.id),
+    (await engine.tree.node(n1).children()).map((node) => node.id),
     [n2],
     'tree.children(n1)',
   );
@@ -1055,8 +1063,8 @@ async function scenarioMaterializedSmokeWithOpRefs(
   assertEqual(byId.get(n2)?.parent ?? null, n1, 'tree.dump n2 parent');
 
   assertEqual((await engine.tree.root.parent())?.id ?? null, null, 'tree.parent(root)');
-  assertEqual((await (await engine.tree.get(n1))?.parent())?.id ?? null, root, 'tree.parent(n1)');
-  assertEqual((await (await engine.tree.get(n2))?.parent())?.id ?? null, n1, 'tree.parent(n2)');
+  assertEqual((await engine.tree.node(n1).parent())?.id ?? null, root, 'tree.parent(n1)');
+  assertEqual((await engine.tree.node(n2).parent())?.id ?? null, n1, 'tree.parent(n2)');
 
   assertEqual((await engine.tree.get(root)) !== undefined, true, 'tree.exists(root)');
   assertEqual((await engine.tree.get(n1)) !== undefined, true, 'tree.exists(n1)');
@@ -1331,7 +1339,7 @@ async function scenarioChangedSinceMatchesStateDiff(
   const snapshot = async (engine: TreecrdtEngine) => {
     const out = new Map<string, string>();
     for (const row of await engine.tree.dump()) {
-      const payload = row.tombstone ? null : await (await engine.tree.get(row.node))?.payload();
+      const payload = row.tombstone ? null : await engine.tree.node(row.node).payload();
       out.set(row.node, describe(row.parent, row.orderKey, row.tombstone, payload));
     }
     return out;
@@ -1395,6 +1403,69 @@ async function scenarioChangedSinceMatchesStateDiff(
     cursor = read.headSeq;
     before = after;
   }
+}
+
+async function scenarioTreeNodeHandle(ctx: TreecrdtEngineConformanceContext): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r-node');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(90);
+  const child = nodeIdFromInt(91);
+
+  assertEqual(engine.tree.node('0').id, engine.tree.root.id, 'node(root alias) is the root');
+  await engine.local.insert(replica, root, parent, { type: 'last' }, encoder.encode('parent'));
+  await engine.local.insert(replica, parent, child, { type: 'last' }, encoder.encode('child'));
+
+  const handle = engine.tree.node(parent);
+  assertEqual(handle.id, parent, 'node(id) canonical id');
+  assertBytesEqual(await handle.payload(), encoder.encode('parent'), 'node(id) payload');
+  assertEqual((await handle.parent())?.id, root, 'node(id) parent');
+  assertArrayEqual(
+    (await handle.children()).map((n) => n.id),
+    [child],
+    'node(id) children',
+  );
+
+  // node(id) skips get()'s existence check, so its reads must hide what the tree hides.
+  await engine.local.delete(replica, parent);
+  const hiddenHandles = {
+    'node(deleted)': engine.tree.node(parent),
+    'node(missing)': engine.tree.node(nodeIdFromInt(92)),
+  };
+  for (const [label, hidden] of Object.entries(hiddenHandles)) {
+    assertEqual(await hidden.payload(), null, `${label} has no payload`);
+    assertEqual(await hidden.parent(), undefined, `${label} has no parent`);
+    assertArrayEqual(
+      (await hidden.children()).map((n) => n.id),
+      [],
+      `${label} has no children`,
+    );
+  }
+}
+
+async function scenarioHandleKeptAcrossDelete(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r-held');
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(93);
+  const child = nodeIdFromInt(94);
+  await engine.local.insert(replica, root, parent, { type: 'last' }, new TextEncoder().encode('p'));
+  await engine.local.insert(replica, parent, child, { type: 'last' }, null);
+
+  const held = await engine.tree.get(parent);
+  assert(held, 'get(parent)');
+  await engine.local.delete(replica, parent);
+
+  // Only get() used to check visibility, so this handle kept reading the deleted node.
+  assertEqual(await held.payload(), null, 'a held handle reads no payload after the delete');
+  assertArrayEqual(
+    (await held.children()).map((n) => n.id),
+    [],
+    'a held handle lists no children after the delete',
+  );
 }
 
 async function scenarioTreeGetRootLazyNavigation(
@@ -1790,7 +1861,7 @@ async function scenarioDefensiveDeleteReactiveInsert(
     'parent restored after subtree insert',
   );
   assertArrayEqual(
-    ((await (await engine.tree.get(parent))?.children()) ?? []).map((node) => node.id),
+    (await engine.tree.node(parent).children()).map((node) => node.id),
     [child],
     'child visible under restored parent',
   );
@@ -1850,7 +1921,7 @@ async function scenarioDefensiveDeleteOutOfOrderChildInsert(
     'parent restored after out-of-order child insert',
   );
   assertArrayEqual(
-    ((await (await engine.tree.get(parent))?.children()) ?? []).map((node) => node.id),
+    (await engine.tree.node(parent).children()).map((node) => node.id),
     [child],
     'child visible under restored parent',
   );
@@ -1906,7 +1977,7 @@ async function scenarioPersistencePayloadReopen(
     'children after reopen (payload)',
   );
 
-  const payload = (await (await e2.tree.get(n1))?.payload()) ?? null;
+  const payload = await e2.tree.node(n1).payload();
   assert(payload !== null, 'tree.getPayload should return payload for node with payload');
   assertEqual(
     new TextDecoder().decode(payload),
@@ -2116,7 +2187,7 @@ async function scenarioSyncAuthSignedOps(ctx: TreecrdtEngineConformanceContext):
     // A deletes the parent without seeing B's concurrent child insertion.
     await b.local.insert(bPk, parent, child, { type: 'last' }, null, { authSession: sessionB });
     assertArrayEqual(
-      ((await (await a.tree.get(parent))?.children()) ?? []).map((node) => node.id),
+      (await a.tree.node(parent).children()).map((node) => node.id),
       [],
       'deleter has not seen the child',
     );
@@ -2156,7 +2227,7 @@ async function scenarioSyncAuthSignedOps(ctx: TreecrdtEngineConformanceContext):
         `${name} restores parent`,
       );
       assertArrayEqual(
-        ((await (await engine.tree.get(parent))?.children()) ?? []).map((node) => node.id),
+        (await engine.tree.node(parent).children()).map((node) => node.id),
         [child],
         `${name} preserves unseen child`,
       );
@@ -2614,7 +2685,7 @@ async function scenarioSyncAuthRestartRelayReServesSignedOps(
     'receiver sees subtree root after relay restart',
   );
   assertArrayEqual(
-    ((await (await c.tree.get(subtreeRoot))?.children()) ?? []).map((node) => node.id),
+    (await c.tree.node(subtreeRoot).children()).map((node) => node.id),
     [child],
     'receiver sees child under subtree after relay restart',
   );
