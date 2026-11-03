@@ -196,6 +196,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioTreeNodeHandle,
     },
     {
+      name: 'tree: a handle kept across a delete stops reading the node',
+      run: scenarioHandleKeptAcrossDelete,
+    },
+    {
       name: 'tree: changedSince reports each changed node once',
       run: scenarioChangedSinceReportsChangedNodes,
     },
@@ -1423,13 +1427,9 @@ async function scenarioTreeNodeHandle(ctx: TreecrdtEngineConformanceContext): Pr
     'node(id) children',
   );
 
-  // The reads themselves must hide what the tree hides: for node(id), which skips get()'s
-  // existence check, and for a handle taken before the delete.
-  const fetched = await engine.tree.get(parent);
-  assert(fetched, 'get(parent) before the delete');
+  // node(id) skips get()'s existence check, so its reads must hide what the tree hides.
   await engine.local.delete(replica, parent);
   const hiddenHandles = {
-    'a handle taken before the delete': fetched,
     'node(deleted)': engine.tree.node(parent),
     'node(missing)': engine.tree.node(nodeIdFromInt(92)),
   };
@@ -1442,6 +1442,30 @@ async function scenarioTreeNodeHandle(ctx: TreecrdtEngineConformanceContext): Pr
       `${label} has no children`,
     );
   }
+}
+
+async function scenarioHandleKeptAcrossDelete(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r-held');
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(93);
+  const child = nodeIdFromInt(94);
+  await engine.local.insert(replica, root, parent, { type: 'last' }, new TextEncoder().encode('p'));
+  await engine.local.insert(replica, parent, child, { type: 'last' }, null);
+
+  const held = await engine.tree.get(parent);
+  assert(held, 'get(parent)');
+  await engine.local.delete(replica, parent);
+
+  // Only get() used to check visibility, so this handle kept reading the deleted node.
+  assertEqual(await held.payload(), null, 'a held handle reads no payload after the delete');
+  assertArrayEqual(
+    (await held.children()).map((n) => n.id),
+    [],
+    'a held handle lists no children after the delete',
+  );
 }
 
 async function scenarioTreeGetRootLazyNavigation(
