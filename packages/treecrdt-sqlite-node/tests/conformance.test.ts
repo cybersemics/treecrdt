@@ -3,6 +3,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  getEd25519PublicKey,
+  issueTreecrdtCapabilityTokenV1,
+  randomEd25519SecretKey,
+} from '@treecrdt/auth';
+import {
   conformanceSlugify,
   runTreecrdtEngineConformanceScenario,
   treecrdtEngineConformanceScenarios,
@@ -14,7 +19,6 @@ import {
 } from '../dist/index.js';
 
 const root = '0'.repeat(32);
-const replica = Uint8Array.from({ length: 32 }, (_, i) => (i === 31 ? 1 : 0));
 
 function nodeIdFromInt(n: number): string {
   return n.toString(16).padStart(32, '0');
@@ -40,55 +44,56 @@ test('conformance registry includes materialization-event scenarios', () => {
   expect(names).toContain('local ops: materialization changes include writeId');
 });
 
-test('sqlite auth-aware local write rolls back on auth failure', async () => {
-  const client = await createNodeEngine({ docId: 'sqlite-auth-local-rollback' });
-  const events: unknown[] = [];
-  const unsubscribe = client.onMaterialized((event) => events.push(event));
-  const authSession = {
-    authorizeLocalOps: vi.fn(async () => {
-      throw new Error('local auth denied');
-    }),
-  };
-  const node = nodeIdFromInt(10);
+test('sqlite auth-aware local writes are authorized against the tree before the write', async () => {
+  const docId = 'sqlite-auth-local-scope';
+  const client = await createNodeEngine({ docId });
+  const issuerSk = randomEd25519SecretKey();
+  const localSk = randomEd25519SecretKey();
+  const [issuerPk, localPk] = await Promise.all([
+    getEd25519PublicKey(issuerSk),
+    getEd25519PublicKey(localSk),
+  ]);
+  const scope = nodeIdFromInt(20);
+  const outside = nodeIdFromInt(21);
+  const node = nodeIdFromInt(22);
+  const child = nodeIdFromInt(23);
 
   try {
-    await expect(
-      client.local.insert(replica, root, node, { type: 'last' }, null, { authSession }),
-    ).rejects.toThrow('local auth denied');
-
-    expect(authSession.authorizeLocalOps).toHaveBeenCalledTimes(1);
-    expect(events).toHaveLength(0);
-    expect(await client.tree.get(node)).toBeUndefined();
-    expect(await client.ops.all()).toHaveLength(0);
-  } finally {
-    unsubscribe();
-    await client.close();
-  }
-});
-
-test('sqlite auth-aware local write emits materialization after auth succeeds', async () => {
-  const client = await createNodeEngine({ docId: 'sqlite-auth-local-success' });
-  const events: unknown[] = [];
-  const unsubscribe = client.onMaterialized((event) => events.push(event));
-  const authSession = {
-    authorizeLocalOps: vi.fn(async () => {
-      expect(events).toHaveLength(0);
-    }),
-  };
-  const node = nodeIdFromInt(11);
-
-  try {
-    const op = await client.local.insert(replica, root, node, { type: 'last' }, null, {
-      authSession,
+    await client.local.insert(localPk, root, scope, { type: 'last' }, null);
+    await client.local.insert(localPk, root, outside, { type: 'last' }, null);
+    await client.local.insert(localPk, outside, node, { type: 'last' }, null);
+    const session = client.auth.createSession({
+      trust: { issuerPublicKeys: [issuerPk] },
+      local: {
+        privateKey: localSk,
+        publicKey: localPk,
+        capabilityTokens: [
+          issueTreecrdtCapabilityTokenV1({
+            issuerPrivateKey: issuerSk,
+            subjectPublicKey: localPk,
+            docId,
+            actions: ['write_structure', 'write_payload', 'delete', 'tombstone'],
+            rootNodeId: scope,
+          }),
+        ],
+      },
     });
+    await session.ready;
+    const authorizeLocalOps = vi.spyOn(session, 'authorizeLocalOps');
 
-    expect(op.kind.type).toBe('insert');
-    expect(authSession.authorizeLocalOps).toHaveBeenCalledTimes(1);
-    expect(events).toHaveLength(1);
-    expect(await client.tree.get(node)).toBeDefined();
-    expect(await client.ops.all()).toHaveLength(1);
+    // The source of a move is checked where the node is before the move, as peers check it.
+    await expect(
+      client.local.move(localPk, node, scope, { type: 'last' }, { authSession: session }),
+    ).rejects.toThrow('capability does not allow op');
+    expect((await (await client.tree.get(node))?.parent())?.id).toBe(outside);
+
+    // Op auth the session stores through this connection does not invalidate the minted op.
+    await client.local.insert(localPk, scope, child, { type: 'last' }, null, {
+      authSession: session,
+    });
+    expect(authorizeLocalOps).toHaveBeenCalledTimes(2);
+    expect((await (await client.tree.get(child))?.parent())?.id).toBe(scope);
   } finally {
-    unsubscribe();
     await client.close();
   }
 });
