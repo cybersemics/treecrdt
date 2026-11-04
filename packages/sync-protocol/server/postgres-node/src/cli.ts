@@ -3,6 +3,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { installHelloTraceSink, type HelloTraceRecord } from '@treecrdt/sync-protocol';
+import {
+  createSyncServerLogger,
+  resolveSyncServerLogLevel,
+  resolveSyncServerLogPretty,
+} from '@treecrdt/sync-server-core';
 
 import { startSyncServer } from './server.js';
 
@@ -59,6 +64,11 @@ function readPackageVersion(): string | undefined {
 }
 
 async function main() {
+  const log = createSyncServerLogger({
+    level: resolveSyncServerLogLevel(),
+    pretty: resolveSyncServerLogPretty(),
+    bindings: { component: 'sync-server' },
+  });
   const traceHelloToStdout = parseBooleanEnv('TREECRDT_SYNC_TRACE_HELLO', false);
   const disposeHelloTraceSink = traceHelloToStdout
     ? installHelloTraceSink((record: HelloTraceRecord) => {
@@ -148,28 +158,25 @@ async function main() {
       gitSha,
       gitDirty,
       startedAt,
+      log,
     });
     const clientHost = clientHostForBindHost(handle.host);
-    console.log(`TreeCRDT sync server listening on ${handle.host}:${handle.port}`);
-    console.log(`- bind: http://${handle.host}:${handle.port}`);
-    console.log(`- health: http://${clientHost}:${handle.port}/health`);
-    console.log(`- status: http://${clientHost}:${handle.port}/status`);
-    console.log(`- ws: ws://${clientHost}:${handle.port}`);
-    console.log(`- sync endpoint: ws://${clientHost}:${handle.port}/sync?docId=YOUR_DOC_ID`);
-    console.log(`- backend module: ${handle.backendModule}`);
-    if (packageVersion) console.log(`- version: ${packageVersion}`);
-    if (gitSha) console.log(`- git sha: ${gitSha}${gitDirty ? ' (dirty)' : ''}`);
-    if (authToken) {
-      console.log('- auth: static token enabled (bearer token or ?token=...)');
-    }
-    if (docIdPattern) console.log(`- docId policy: ${docIdPattern}`);
-    if (!allowDocCreate) console.log('- doc creation policy: deny unknown docId');
-    if (enablePgNotify) console.log(`- pg notify: enabled on channel ${pgNotifyChannel}`);
-    if (rateLimitMaxUpgrades > 0) {
-      console.log(
-        `- rate limit: ${rateLimitMaxUpgrades} upgrades per ${rateLimitWindowMs}ms per IP`,
-      );
-    }
+    log.info('sync server ready', {
+      bind: `${handle.host}:${handle.port}`,
+      health: `http://${clientHost}:${handle.port}/health`,
+      status: `http://${clientHost}:${handle.port}/status`,
+      sync: `ws://${clientHost}:${handle.port}/sync?docId=YOUR_DOC_ID`,
+      backendModule: handle.backendModule,
+      version: packageVersion,
+      gitSha: gitSha ? `${gitSha}${gitDirty ? '-dirty' : ''}` : undefined,
+      auth: authToken ? 'static_token' : 'none',
+      docIdPattern,
+      allowDocCreate,
+      pgNotify: enablePgNotify ? pgNotifyChannel : 'disabled',
+      rateLimit:
+        rateLimitMaxUpgrades > 0 ? `${rateLimitMaxUpgrades}/${rateLimitWindowMs}ms` : 'disabled',
+      logLevel: log.level,
+    });
   } finally {
     disposeHelloTraceSink?.();
   }

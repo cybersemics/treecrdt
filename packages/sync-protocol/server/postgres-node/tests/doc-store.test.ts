@@ -1,7 +1,10 @@
+import { Writable } from 'node:stream';
+
 import { expect, test, vi } from 'vitest';
 
 import type { Operation } from '@treecrdt/interface';
 import type { SyncBackend } from '@treecrdt/sync-protocol';
+import { createSyncServerLogger } from '@treecrdt/sync-server-core';
 
 import { createPostgresNodeDocStore } from '../dist/server.js';
 
@@ -83,6 +86,44 @@ test('apply queue remains usable after a failed append', async () => {
   await expect(handle.backend.applyOps([{} as Operation])).rejects.toThrow('boom');
   await expect(handle.backend.applyOps([{} as Operation])).resolves.toBeUndefined();
   expect(applyCalls).toBe(2);
+
+  await handle.release?.();
+  await store.closeAll();
+});
+
+test('broadcast failure is logged and does not fail the applied batch', async () => {
+  const lines: Array<Record<string, unknown>> = [];
+  const destination = new Writable({
+    write(chunk, _encoding, callback) {
+      for (const line of chunk.toString().split('\n')) {
+        if (line.trim().length > 0) lines.push(JSON.parse(line) as Record<string, unknown>);
+      }
+      callback();
+    },
+  });
+  const log = createSyncServerLogger({
+    level: 'warn',
+    destination,
+  });
+  const store = createPostgresNodeDocStore({
+    idleCloseMs: 60_000,
+    log,
+    backendFactory: {
+      open: async (docId) => makeBackend(docId),
+    },
+    broadcastDocUpdate: async () => {
+      throw new Error('notify down');
+    },
+  });
+
+  const handle = await store.provider.open('doc-broadcast');
+  await expect(handle.backend.applyOps([{} as Operation])).resolves.toBeUndefined();
+  expect(
+    lines.some(
+      (line) => line.msg === 'doc update broadcast failed' && line.error === 'notify down',
+    ),
+  ).toBe(true);
+  expect(lines.some((line) => line.msg === 'doc opened')).toBe(false);
 
   await handle.release?.();
   await store.closeAll();

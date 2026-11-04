@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { Writable } from 'node:stream';
 
 import { test, expect } from 'vitest';
 import WebSocket from 'ws';
@@ -10,7 +11,7 @@ import {
   wrapDuplexTransportWithCodec,
 } from '@treecrdt/sync-protocol/transport';
 
-import { startWebSocketSyncServer } from '../dist/index.js';
+import { createSyncServerLogger, startWebSocketSyncServer } from '../dist/index.js';
 
 type Deferred<T> = {
   promise: Promise<T>;
@@ -772,3 +773,126 @@ test(
   },
   { timeout: 20_000 },
 );
+
+function captureLogDestination(): {
+  lines: Array<Record<string, unknown>>;
+  destination: Writable;
+} {
+  const lines: Array<Record<string, unknown>> = [];
+  const destination = new Writable({
+    write(chunk, _encoding, callback) {
+      for (const line of chunk.toString().split('\n')) {
+        if (line.trim().length > 0) lines.push(JSON.parse(line) as Record<string, unknown>);
+      }
+      callback();
+    },
+  });
+  return { lines, destination };
+}
+
+test('logs listen, denied upgrades, and failed health checks', async () => {
+  const captured = captureLogDestination();
+  const log = createSyncServerLogger({
+    level: 'info',
+    destination: captured.destination,
+  });
+  const server = await startWebSocketSyncServer({
+    host: '127.0.0.1',
+    port: 0,
+    log,
+    codec: jsonCodec(),
+    healthCheck: async () => ({
+      ok: false,
+      statusCode: 503,
+      body: 'postgres unavailable',
+    }),
+    hooks: {
+      onAuthenticate: () => false,
+    },
+    docs: {
+      async open() {
+        throw new Error('docs.open should not run after an auth denial');
+      },
+    },
+  });
+
+  try {
+    expect(captured.lines.some((entry) => entry.msg === 'listening' && entry.level === 30)).toBe(
+      true,
+    );
+
+    const health = await httpGet(`http://${server.host}:${server.port}/health`);
+    expect(health.status).toBe(503);
+    expect(captured.lines.some((entry) => entry.msg === 'health check failed')).toBe(true);
+
+    await httpGet(`http://${server.host}:${server.port}/not-found`);
+    expect(captured.lines.some((entry) => entry.msg === 'http not found')).toBe(false);
+
+    await expect(
+      withTimeout(
+        connectWebSocketRejected(`ws://${server.host}:${server.port}/sync?docId=secret-doc`),
+        5_000,
+        'unauthorized upgrade rejection',
+      ),
+    ).resolves.toMatchObject({ status: 401 });
+    const denial = captured.lines.find((entry) => entry.msg === 'upgrade denied');
+    expect(denial).toMatchObject({ stage: 'authenticate', docId: 'secret-doc' });
+    expect(JSON.stringify(denial)).not.toContain('token');
+    expect(captured.lines.some((entry) => entry.msg === 'sync message received')).toBe(false);
+  } finally {
+    await server.close();
+  }
+
+  expect(captured.lines.some((entry) => entry.msg === 'closing')).toBe(true);
+});
+
+test('logs sent and received sync messages at debug', async () => {
+  const captured = captureLogDestination();
+  const log = createSyncServerLogger({
+    level: 'debug',
+    destination: captured.destination,
+  });
+  const docId = 'message-log';
+  const server = await startWebSocketSyncServer<TestOp>({
+    host: '127.0.0.1',
+    port: 0,
+    log,
+    codec: jsonCodec(),
+    docs: {
+      async open() {
+        return { backend: new MemoryBackend(docId) };
+      },
+    },
+  });
+
+  const ws = await connectWebSocket(
+    `ws://${server.host}:${server.port}/sync?docId=${encodeURIComponent(docId)}`,
+  );
+  const peer = new SyncPeer<TestOp>(new MemoryBackend(docId));
+  const transport = wrapDuplexTransportWithCodec(
+    createClientWebSocketTransport(ws),
+    jsonCodec<TestOp>(),
+  );
+  const detach = peer.attach(transport);
+
+  try {
+    await withTimeout(peer.syncOnce(transport, { all: {} }), 5_000, 'sync once for message logs');
+    expect(
+      captured.lines.some(
+        (entry) => entry.msg === 'sync message received' && entry.type === 'hello',
+      ),
+    ).toBe(true);
+    expect(
+      captured.lines.some(
+        (entry) => entry.msg === 'sync message sent' && entry.type === 'helloAck',
+      ),
+    ).toBe(true);
+    const received = captured.lines.find((entry) => entry.msg === 'sync message received');
+    expect(received).toMatchObject({ level: 20, docId, type: 'hello' });
+    expect(JSON.stringify(received)).not.toContain('sig');
+  } finally {
+    detach();
+    if (ws.readyState === WebSocket.OPEN) ws.close();
+    await server.close();
+  }
+});
