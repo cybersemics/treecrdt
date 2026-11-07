@@ -3,4 +3,4 @@
 '@treecrdt/sync-server-postgres-node': patch
 ---
 
-Add pino logs to the sync server. `TREECRDT_LOG_LEVEL` selects `debug`, `info`, `warn`, `error`, or `silent`. When it is unset, `NODE_ENV=production` uses `info` and other environments use `debug`. Debug logs include each sync message the server sends or receives.
+Add leveled sync-server logs. `TREECRDT_LOG_LEVEL` selects `debug`, `info`, `warn`, `error`, or `silent`, and defaults to `info` even when `NODE_ENV` is unset. JSON is the default format; `TREECRDT_LOG_PRETTY=true` opts into pretty lines. Debug logs include each sync message the server sends or receives. A failed Postgres LISTEN connection exits the CLI, and a clean WebSocket close is not reported as a handler error.

@@ -3,12 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { installHelloTraceSink, type HelloTraceRecord } from '@treecrdt/sync-protocol';
-import {
-  createSyncServerLogger,
-  resolveSyncServerLogLevel,
-  resolveSyncServerLogPretty,
-} from '@treecrdt/sync-server-core';
 
+import { createCliSyncServerLogger } from './log.js';
 import { startSyncServer } from './server.js';
 
 const LOCAL_POSTGRES_URL_EXAMPLE = 'postgres://postgres:postgres@127.0.0.1:5432/postgres';
@@ -64,11 +60,7 @@ function readPackageVersion(): string | undefined {
 }
 
 async function main() {
-  const log = createSyncServerLogger({
-    level: resolveSyncServerLogLevel(),
-    pretty: resolveSyncServerLogPretty(),
-    bindings: { component: 'sync-server' },
-  });
+  const log = await createCliSyncServerLogger();
   const traceHelloToStdout = parseBooleanEnv('TREECRDT_SYNC_TRACE_HELLO', false);
   const disposeHelloTraceSink = traceHelloToStdout
     ? installHelloTraceSink((record: HelloTraceRecord) => {
@@ -159,6 +151,9 @@ async function main() {
       gitDirty,
       startedAt,
       log,
+      onPgNotifyFatal: () => {
+        process.exit(1);
+      },
     });
     const clientHost = clientHostForBindHost(handle.host);
     log.info('sync server ready', {

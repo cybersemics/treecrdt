@@ -20,8 +20,6 @@
   },
   "dependencies": {
     "@treecrdt/sync-protocol": "workspace:*",
-    "pino": "^10.4.0",
-    "pino-pretty": "^13.2.0",
     "ws": "^8.18.3"
   },
   "devDependencies": {

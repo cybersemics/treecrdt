@@ -21,14 +21,16 @@
   },
   "dependencies": {
     "@treecrdt/interface": "workspace:*",
-    "@treecrdt/sync-protocol": "workspace:*",
     "@treecrdt/sync-postgres": "workspace:*",
+    "@treecrdt/sync-protocol": "workspace:*",
     "@treecrdt/sync-server-core": "workspace:*",
-    "pg": "^8.16.3"
+    "pg": "^8.16.3",
+    "pino": "^10.4.0"
   },
   "devDependencies": {
     "@types/node": "^20.19.25",
     "@types/pg": "^8.15.6",
+    "pino-pretty": "^13.2.0",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3",
     "vitest": "^1.6.0"

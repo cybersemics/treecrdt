@@ -62,6 +62,13 @@ export type SyncServerOptions = {
   hooks?: WebSocketSyncServerHooks;
   /** Defaults to a silent logger. The CLI passes one configured from the environment. */
   log?: SyncServerLogger;
+  /**
+   * Called once when the Postgres LISTEN connection fails after startup.
+   * The CLI exits so a supervisor can restart the process. The connection is
+   * not reconnected here: a client that has emitted `error` no longer delivers
+   * notifications, while `/health` can stay green on a different client.
+   */
+  onPgNotifyFatal?: (error: unknown) => void;
 };
 
 export type SyncServerHandle = {
@@ -102,6 +109,7 @@ type PostgresDocUpdateBusOptions = {
   channel: string;
   onDocUpdate: (docId: string) => void;
   log?: SyncServerLogger;
+  onFatal?: (error: unknown) => void;
 };
 
 export { createCapabilityMaterialStore, createOpAuthStore };
@@ -162,6 +170,7 @@ export class PostgresDocUpdateBus {
   private closed = false;
 
   private readonly log: SyncServerLogger;
+  private fatalNotified = false;
 
   private constructor(private readonly opts: PostgresDocUpdateBusOptions) {
     this.channel = ensurePostgresChannelName(opts.channel);
@@ -178,14 +187,17 @@ export class PostgresDocUpdateBus {
   }
 
   private async start(): Promise<void> {
-    await this.listenClient.connect();
-
     this.listenClient.on('error', (error: unknown) => {
+      if (this.closed || this.fatalNotified) return;
+      this.fatalNotified = true;
       this.log.error('pg notify connection error', {
         channel: this.channel,
         error: errorMessage(error),
       });
+      this.opts.onFatal?.(error);
     });
+
+    await this.listenClient.connect();
 
     this.listenClient.on('notification', (msg: { channel: string; payload?: string }) => {
       if (msg.channel !== this.channel) return;
@@ -691,6 +703,7 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
         postgresUrl,
         channel: pgNotifyChannel,
         log,
+        onFatal: opts.onPgNotifyFatal,
         onDocUpdate: (docId) => docs.notifyDocUpdate(docId),
       });
     } catch (err) {

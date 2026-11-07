@@ -4,6 +4,7 @@ const pgMockState = {
   clientActiveQueries: 0,
   clientQueries: [] as string[],
   poolQueries: [] as string[],
+  clientListeners: new Map<string, (error?: unknown) => void>(),
 };
 
 vi.mock('pg', () => {
@@ -18,7 +19,10 @@ vi.mock('pg', () => {
   }
 
   class MockClient {
-    on = vi.fn();
+    on(event: string, handler: (error?: unknown) => void) {
+      pgMockState.clientListeners.set(event, handler);
+      return this;
+    }
 
     async connect(): Promise<void> {}
 
@@ -44,6 +48,7 @@ beforeEach(() => {
   pgMockState.clientActiveQueries = 0;
   pgMockState.clientQueries.length = 0;
   pgMockState.poolQueries.length = 0;
+  pgMockState.clientListeners.clear();
 });
 
 test('doc update bus does not overlap application queries on a single pg client', async () => {
@@ -67,4 +72,25 @@ test('doc update bus does not overlap application queries on a single pg client'
   ).toEqual([]);
 
   await bus.close();
+});
+
+test('listen client error calls the fatal hook once and ignores errors after close', async () => {
+  const { PostgresDocUpdateBus } = await import('../src/server.ts');
+  const fatal = vi.fn();
+  const bus = await PostgresDocUpdateBus.create({
+    postgresUrl: 'postgres://example.invalid/treecrdt',
+    channel: 'treecrdt_sync_doc_updates',
+    onDocUpdate: () => {},
+    onFatal: fatal,
+  });
+
+  const onError = pgMockState.clientListeners.get('error');
+  expect(onError).toBeTypeOf('function');
+  onError?.(new Error('connection terminated'));
+  onError?.(new Error('connection terminated'));
+  expect(fatal).toHaveBeenCalledTimes(1);
+
+  await bus.close();
+  onError?.(new Error('after close'));
+  expect(fatal).toHaveBeenCalledTimes(1);
 });

@@ -1,10 +1,8 @@
-import { Writable } from 'node:stream';
-
 import { expect, test, vi } from 'vitest';
 
 import type { Operation } from '@treecrdt/interface';
 import type { SyncBackend } from '@treecrdt/sync-protocol';
-import { createSyncServerLogger } from '@treecrdt/sync-server-core';
+import type { SyncServerLogger } from '@treecrdt/sync-server-core';
 
 import { createPostgresNodeDocStore } from '../dist/server.js';
 
@@ -92,19 +90,18 @@ test('apply queue remains usable after a failed append', async () => {
 });
 
 test('broadcast failure is logged and does not fail the applied batch', async () => {
-  const lines: Array<Record<string, unknown>> = [];
-  const destination = new Writable({
-    write(chunk, _encoding, callback) {
-      for (const line of chunk.toString().split('\n')) {
-        if (line.trim().length > 0) lines.push(JSON.parse(line) as Record<string, unknown>);
-      }
-      callback();
-    },
-  });
-  const log = createSyncServerLogger({
+  const lines: Array<{ message: string; error?: string }> = [];
+  const log: SyncServerLogger = {
     level: 'warn',
-    destination,
-  });
+    debug() {},
+    info() {},
+    warn(message, fields) {
+      lines.push({ message, error: typeof fields?.error === 'string' ? fields.error : undefined });
+    },
+    error(message, fields) {
+      lines.push({ message, error: typeof fields?.error === 'string' ? fields.error : undefined });
+    },
+  };
   const store = createPostgresNodeDocStore({
     idleCloseMs: 60_000,
     log,
@@ -120,10 +117,10 @@ test('broadcast failure is logged and does not fail the applied batch', async ()
   await expect(handle.backend.applyOps([{} as Operation])).resolves.toBeUndefined();
   expect(
     lines.some(
-      (line) => line.msg === 'doc update broadcast failed' && line.error === 'notify down',
+      (line) => line.message === 'doc update broadcast failed' && line.error === 'notify down',
     ),
   ).toBe(true);
-  expect(lines.some((line) => line.msg === 'doc opened')).toBe(false);
+  expect(lines.some((line) => line.message === 'doc opened')).toBe(false);
 
   await handle.release?.();
   await store.closeAll();

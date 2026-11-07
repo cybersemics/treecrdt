@@ -1,14 +1,9 @@
 export {
   SYNC_SERVER_LOG_LEVELS,
-  createSyncServerLogger,
   resolveSyncServerLogLevel,
   resolveSyncServerLogPretty,
   silentSyncServerLogger,
+  syncServerErrorMessage,
 } from './log.js';
-export type {
-  SyncServerLogFields,
-  SyncServerLogLevel,
-  SyncServerLogger,
-  SyncServerLoggerOptions,
-} from './log.js';
+export type { SyncServerLogFields, SyncServerLogLevel, SyncServerLogger } from './log.js';
 export * from './server.js';
