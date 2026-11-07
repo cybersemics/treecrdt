@@ -11,7 +11,8 @@ env:
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-latest
+    # ubuntu-latest is Ubuntu 26.04. Playwright 1.57 has no Chromium build for it.
+    runs-on: ubuntu-24.04
     env:
       PLAYWRIGHT_BROWSERS_PATH: /home/runner/.cache/ms-playwright
 
