@@ -2,13 +2,21 @@ import http from 'node:http';
 
 import WebSocket, { WebSocketServer } from 'ws';
 
-import type { SyncBackend, SyncMessage, SyncPeerOptions } from '@treecrdt/sync-protocol';
+import type {
+  SyncBackend,
+  SyncMessage,
+  SyncMessagePayload,
+  SyncPeerOptions,
+} from '@treecrdt/sync-protocol';
 import { SyncPeer } from '@treecrdt/sync-protocol';
 import type { DuplexTransport, WireCodec } from '@treecrdt/sync-protocol/transport';
 import {
   createTransportCloseController,
   wrapDuplexTransportWithCodec,
 } from '@treecrdt/sync-protocol/transport';
+
+import type { SyncServerLogFields, SyncServerLogger } from './log.js';
+import { silentSyncServerLogger, syncServerErrorMessage } from './log.js';
 
 type Awaitable<T> = T | Promise<T>;
 type UpgradeSocket = {
@@ -18,6 +26,98 @@ type UpgradeSocket = {
   destroy(error?: Error): void;
 };
 
+function summarizeSyncMessage<Op>(message: SyncMessage<Op>): SyncServerLogFields {
+  const payload: SyncMessagePayload<Op> = message.payload;
+  const fields: SyncServerLogFields = {
+    docId: message.docId,
+    type: payload.case,
+  };
+  switch (payload.case) {
+    case 'hello':
+      fields.filters = payload.value.filters.length;
+      fields.capabilities = payload.value.capabilities.length;
+      fields.maxLamport = payload.value.maxLamport.toString();
+      break;
+    case 'helloAck':
+      fields.acceptedFilters = payload.value.acceptedFilters.length;
+      fields.rejectedFilters = payload.value.rejectedFilters.length;
+      fields.maxLamport = payload.value.maxLamport.toString();
+      break;
+    case 'ribltCodewords':
+      fields.filterId = payload.value.filterId;
+      fields.round = payload.value.round;
+      fields.codewords = payload.value.codewords.length;
+      fields.startIndex = payload.value.startIndex.toString();
+      break;
+    case 'ribltStatus': {
+      fields.filterId = payload.value.filterId;
+      fields.round = payload.value.round;
+      const status = payload.value.payload;
+      fields.status = status.case;
+      if (status.case === 'decoded') {
+        fields.senderMissing = status.value.senderMissing.length;
+        fields.receiverMissing = status.value.receiverMissing.length;
+      } else if (status.case === 'more') {
+        fields.credits = status.value.credits;
+      } else {
+        fields.reason = status.value.reason;
+      }
+      break;
+    }
+    case 'opsBatch':
+      fields.filterId = payload.value.filterId;
+      fields.ops = payload.value.ops.length;
+      fields.done = payload.value.done;
+      break;
+    case 'subscribe':
+      fields.subscriptionId = payload.value.subscriptionId;
+      fields.filter = 'all' in payload.value.filter ? 'all' : 'children';
+      break;
+    case 'subscribeAck':
+      fields.subscriptionId = payload.value.subscriptionId;
+      fields.currentLamport = payload.value.currentLamport.toString();
+      break;
+    case 'unsubscribe':
+      fields.subscriptionId = payload.value.subscriptionId;
+      break;
+    case 'error':
+      fields.code = payload.value.code;
+      fields.error = payload.value.message;
+      break;
+    default:
+      break;
+  }
+  return fields;
+}
+
+function withSyncMessageLogs<Op>(
+  transport: DuplexTransport<SyncMessage<Op>>,
+  log: SyncServerLogger,
+  docId: string,
+): DuplexTransport<SyncMessage<Op>> {
+  if (log.level !== 'debug') return transport;
+  const logMessage = (direction: 'sent' | 'received', message: SyncMessage<Op>) => {
+    try {
+      log.debug(`sync message ${direction}`, { docId, ...summarizeSyncMessage(message) });
+    } catch {
+      // logging must never affect server behavior
+    }
+  };
+  return {
+    send: async (message) => {
+      await transport.send(message);
+      logMessage('sent', message);
+    },
+    onMessage: (handler) =>
+      transport.onMessage((message) => {
+        logMessage('received', message);
+        handler(message);
+      }),
+    close: (reason) => transport.close(reason),
+    closeSignal: transport.closeSignal,
+  };
+}
+
 function toUint8Array(data: WebSocket.RawData): Uint8Array {
   if (data instanceof Uint8Array) return data;
   if (data instanceof ArrayBuffer) return new Uint8Array(data);
@@ -26,12 +126,27 @@ function toUint8Array(data: WebSocket.RawData): Uint8Array {
   return Buffer.from(data);
 }
 
+/** Close initiated by the remote WebSocket peer, with the status code attached. */
+class WebSocketPeerClose extends Error {
+  readonly code: number;
+
+  constructor(code: number, reasonText: string) {
+    const detail = reasonText.length > 0 ? `: ${reasonText}` : '';
+    super(`websocket closed (${code})${detail}`);
+    this.name = 'WebSocketPeerClose';
+    this.code = code;
+  }
+}
+
+function isCleanWebSocketClose(error: unknown): boolean {
+  return error instanceof WebSocketPeerClose && (error.code === 1000 || error.code === 1001);
+}
+
 function createWebSocketTransport(ws: WebSocket): DuplexTransport<Uint8Array> {
   const closeController = createTransportCloseController();
 
   ws.once('close', (code, reason) => {
-    const detail = reason.length > 0 ? `: ${reason.toString()}` : '';
-    closeController.close(new Error(`websocket closed (${code})${detail}`));
+    closeController.close(new WebSocketPeerClose(code, reason.toString()));
   });
   ws.once('error', (error) => closeController.close(error));
 
@@ -131,6 +246,8 @@ export type WebSocketSyncServerOptions<Op> = {
   statusInfo?: () => Awaitable<Record<string, unknown>>;
   maxPayloadBytes?: number;
   hooks?: WebSocketSyncServerHooks;
+  /** Defaults to a silent logger. Pass a leveled logger to record server events. */
+  log?: SyncServerLogger;
   codec: WireCodec<SyncMessage<Op>, Uint8Array>;
   docs: WebSocketSyncServerDocProvider<Op>;
 };
@@ -204,6 +321,7 @@ async function runUpgradeHook(
   hook: WebSocketSyncServerUpgradeHook | undefined,
   onError: WebSocketSyncServerHooks['onError'] | undefined,
   ctx: WebSocketSyncServerUpgradeContext,
+  log: SyncServerLogger,
 ): Promise<{ allow: true } | { allow: false; statusCode: number; body: string }> {
   if (!hook) return { allow: true };
   try {
@@ -215,6 +333,12 @@ async function runUpgradeHook(
     } catch {
       // ignore hook error callback failures
     }
+    log.error('upgrade hook failed', {
+      stage,
+      docId: ctx.docId,
+      remoteAddress: ctx.remoteAddress,
+      error: syncServerErrorMessage(error),
+    });
     const fallback = defaultDenyForStage(stage);
     return { allow: false, statusCode: fallback.statusCode, body: fallback.body };
   }
@@ -229,6 +353,7 @@ export async function startWebSocketSyncServer<Op>(
   const healthPath = opts.healthPath ?? '/health';
   const statusPath = opts.statusPath ?? '/status';
   const maxPayloadBytes = Number(opts.maxPayloadBytes ?? 10 * 1024 * 1024);
+  const log = opts.log ?? silentSyncServerLogger;
 
   if (!Number.isFinite(port) || port < 0) throw new Error(`invalid port: ${opts.port}`);
   if (!syncPath.startsWith('/')) throw new Error(`syncPath must start with "/": ${syncPath}`);
@@ -258,9 +383,14 @@ export async function startWebSocketSyncServer<Op>(
             requestedStatusCode <= 599
               ? requestedStatusCode
               : 503;
+          log.warn('health check failed', { statusCode, body: result.body ?? 'not ready' });
           res.writeHead(statusCode, { 'content-type': result.contentType ?? 'text/plain' });
           res.end(result.body ?? 'not ready');
-        } catch {
+        } catch (error) {
+          log.warn('health check failed', {
+            statusCode: 503,
+            error: syncServerErrorMessage(error),
+          });
           res.writeHead(503, { 'content-type': 'text/plain' });
           res.end('not ready');
         }
@@ -274,7 +404,8 @@ export async function startWebSocketSyncServer<Op>(
           const status = (await opts.statusInfo?.()) ?? { ok: true };
           res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify(status));
-        } catch {
+        } catch (error) {
+          log.error('status check failed', { error: syncServerErrorMessage(error) });
           res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ ok: false, error: 'status unavailable' }));
         }
@@ -282,6 +413,7 @@ export async function startWebSocketSyncServer<Op>(
       return;
     }
 
+    log.debug('http not found', { method: req.method, path: url.pathname });
     res.writeHead(404, { 'content-type': 'text/plain' });
     res.end('not found');
   });
@@ -318,18 +450,32 @@ export async function startWebSocketSyncServer<Op>(
       pending.push(peer.notifyLocalUpdate(ops));
     }
     if (pending.length === 0) return;
-    await Promise.allSettled(pending);
+    log.debug('notifying peers', { docId, peers: pending.length, ops: ops?.length });
+    const results = await Promise.allSettled(pending);
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        log.warn('peer notify failed', { docId, error: syncServerErrorMessage(result.reason) });
+      }
+    }
   };
 
   server.on('upgrade', (req, socket, head) => {
     const upgradeSocket = socket as UpgradeSocket;
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     if (url.pathname !== syncPath) {
+      log.debug('upgrade ignored', {
+        path: url.pathname,
+        remoteAddress: upgradeSocket.remoteAddress ?? null,
+      });
       upgradeSocket.destroy();
       return;
     }
     const docId = url.searchParams.get('docId');
     if (!docId) {
+      log.warn('upgrade rejected', {
+        reason: 'missing docId',
+        remoteAddress: upgradeSocket.remoteAddress ?? null,
+      });
       upgradeSocket.destroy();
       return;
     }
@@ -347,8 +493,15 @@ export async function startWebSocketSyncServer<Op>(
         opts.hooks?.onRateLimit,
         opts.hooks?.onError,
         ctx,
+        log,
       );
       if (!rateLimitDecision.allow) {
+        log.info('upgrade denied', {
+          stage: 'rate_limit',
+          docId,
+          statusCode: rateLimitDecision.statusCode,
+          remoteAddress: ctx.remoteAddress,
+        });
         denyUpgrade(upgradeSocket, rateLimitDecision.statusCode, rateLimitDecision.body);
         return;
       }
@@ -358,8 +511,15 @@ export async function startWebSocketSyncServer<Op>(
         opts.hooks?.onAuthenticate,
         opts.hooks?.onError,
         ctx,
+        log,
       );
       if (!authDecision.allow) {
+        log.info('upgrade denied', {
+          stage: 'authenticate',
+          docId,
+          statusCode: authDecision.statusCode,
+          remoteAddress: ctx.remoteAddress,
+        });
         denyUpgrade(upgradeSocket, authDecision.statusCode, authDecision.body);
         return;
       }
@@ -369,8 +529,15 @@ export async function startWebSocketSyncServer<Op>(
         opts.hooks?.onAuthorize,
         opts.hooks?.onError,
         ctx,
+        log,
       );
       if (!authorizeDecision.allow) {
+        log.info('upgrade denied', {
+          stage: 'authorize',
+          docId,
+          statusCode: authorizeDecision.statusCode,
+          remoteAddress: ctx.remoteAddress,
+        });
         denyUpgrade(upgradeSocket, authorizeDecision.statusCode, authorizeDecision.body);
         return;
       }
@@ -411,6 +578,7 @@ export async function startWebSocketSyncServer<Op>(
         try {
           await doc?.release?.();
         } catch {}
+        log.info('peer disconnected', { docId, attached: peerAnnounced });
       };
 
       // Let the transport's close subscribers reject protocol work before detaching them.
@@ -420,7 +588,8 @@ export async function startWebSocketSyncServer<Op>(
       let openedDoc: WebSocketSyncServerDocHandle<Op>;
       try {
         openedDoc = await opts.docs.open(docId);
-      } catch {
+      } catch (error) {
+        log.error('failed to open doc', { docId, error: syncServerErrorMessage(error) });
         if (!cleaned && ws.readyState === WebSocket.OPEN) {
           ws.close(1011, 'failed to open doc');
         }
@@ -436,7 +605,8 @@ export async function startWebSocketSyncServer<Op>(
 
       doc = openedDoc;
       const wire = createWebSocketTransport(ws);
-      const transport = wrapDuplexTransportWithCodec<Uint8Array, SyncMessage<Op>>(wire, opts.codec);
+      const decoded = wrapDuplexTransportWithCodec<Uint8Array, SyncMessage<Op>>(wire, opts.codec);
+      const transport = withSyncMessageLogs(decoded, log, docId);
       const docBackend = doc.backend;
       const backend: SyncBackend<Op> = {
         docId: docBackend.docId,
@@ -461,7 +631,10 @@ export async function startWebSocketSyncServer<Op>(
       peer = new SyncPeer<Op>(backend, doc.peerOptions);
       try {
         detach = peer.attach(transport, {
-          onError: () => {
+          onError: (ctx) => {
+            // 1000 and 1001 are peers leaving. Cleanup already logs the disconnect.
+            if (isCleanWebSocketClose(ctx.error)) return;
+            log.error('sync handler error', { docId, error: syncServerErrorMessage(ctx.error) });
             // Let a codec-triggered protocol close (1002) start before falling back
             // to a generic handler-error close.
             queueMicrotask(() => {
@@ -469,7 +642,8 @@ export async function startWebSocketSyncServer<Op>(
             });
           },
         });
-      } catch {
+      } catch (error) {
+        log.error('failed to attach peer', { docId, error: syncServerErrorMessage(error) });
         await cleanup();
         return;
       }
@@ -477,6 +651,10 @@ export async function startWebSocketSyncServer<Op>(
       addDocPeer(docId, peer);
       peerAnnounced = true;
       doc.onPeerAdded?.(peer);
+      log.info('peer connected', {
+        docId,
+        remoteAddress: req.socket.remoteAddress ?? null,
+      });
     })();
   });
 
@@ -487,8 +665,10 @@ export async function startWebSocketSyncServer<Op>(
 
   const address = server.address();
   const actualPort = typeof address === 'object' && address ? address.port : port;
+  log.info('listening', { host, port: actualPort, syncPath, healthPath, statusPath });
 
   const close = async (): Promise<void> => {
+    log.info('closing', { host, port: actualPort });
     try {
       for (const ws of wss.clients) ws.close();
     } catch {}

@@ -9,13 +9,14 @@ import { createCapabilityMaterialStore, createOpAuthStore } from '@treecrdt/sync
 import type { PostgresCapabilityMaterialStore, PostgresOpAuthStore } from '@treecrdt/sync-postgres';
 import { treecrdtSyncV0ProtobufCodec } from '@treecrdt/sync-protocol/protobuf';
 import type {
+  SyncServerLogger,
   WebSocketSyncServerDocHandle,
   WebSocketSyncServerDocProvider,
   WebSocketSyncServerHooks,
   WebSocketSyncServerUpgradeContext,
   WebSocketSyncServerUpgradeHook,
 } from '@treecrdt/sync-server-core';
-import { startWebSocketSyncServer } from '@treecrdt/sync-server-core';
+import { silentSyncServerLogger, startWebSocketSyncServer } from '@treecrdt/sync-server-core';
 import { Client as PgClient, Pool as PgPool } from 'pg';
 
 type Awaitable<T> = T | Promise<T>;
@@ -34,6 +35,7 @@ export type PostgresNodeDocStoreOptions = {
   idleCloseMs?: number;
   broadcastDocUpdate?: (docId: string) => Awaitable<void>;
   peerOptionsFactory?: (docId: string) => Awaitable<SyncPeerOptions<Operation> | undefined>;
+  log?: SyncServerLogger;
 };
 
 export type SyncServerOptions = {
@@ -58,6 +60,15 @@ export type SyncServerOptions = {
   gitDirty?: boolean;
   startedAt?: string;
   hooks?: WebSocketSyncServerHooks;
+  /** Defaults to a silent logger. The CLI passes one configured from the environment. */
+  log?: SyncServerLogger;
+  /**
+   * Called once when the Postgres LISTEN connection fails after startup.
+   * The CLI exits so a supervisor can restart the process. The connection is
+   * not reconnected here: a client that has emitted `error` no longer delivers
+   * notifications, while `/health` can stay green on a different client.
+   */
+  onPgNotifyFatal?: (error: unknown) => void;
 };
 
 export type SyncServerHandle = {
@@ -97,6 +108,8 @@ type PostgresDocUpdateBusOptions = {
   postgresUrl: string;
   channel: string;
   onDocUpdate: (docId: string) => void;
+  log?: SyncServerLogger;
+  onFatal?: (error: unknown) => void;
 };
 
 export { createCapabilityMaterialStore, createOpAuthStore };
@@ -156,11 +169,15 @@ export class PostgresDocUpdateBus {
   private readonly sourceId: string;
   private closed = false;
 
+  private readonly log: SyncServerLogger;
+  private fatalNotified = false;
+
   private constructor(private readonly opts: PostgresDocUpdateBusOptions) {
     this.channel = ensurePostgresChannelName(opts.channel);
     this.queryPool = new PgPool({ connectionString: opts.postgresUrl });
     this.listenClient = new PgClient({ connectionString: opts.postgresUrl });
     this.sourceId = randomUUID();
+    this.log = opts.log ?? silentSyncServerLogger;
   }
 
   static async create(opts: PostgresDocUpdateBusOptions): Promise<PostgresDocUpdateBus> {
@@ -170,23 +187,44 @@ export class PostgresDocUpdateBus {
   }
 
   private async start(): Promise<void> {
+    this.listenClient.on('error', (error: unknown) => {
+      if (this.closed || this.fatalNotified) return;
+      this.fatalNotified = true;
+      this.log.error('pg notify connection error', {
+        channel: this.channel,
+        error: errorMessage(error),
+      });
+      this.opts.onFatal?.(error);
+    });
+
     await this.listenClient.connect();
 
     this.listenClient.on('notification', (msg: { channel: string; payload?: string }) => {
       if (msg.channel !== this.channel) return;
-      if (!msg.payload) return;
+      if (!msg.payload) {
+        this.log.debug('pg notify ignored', { channel: this.channel, reason: 'empty payload' });
+        return;
+      }
       let payload: DocUpdatePayload;
       try {
         payload = JSON.parse(msg.payload) as DocUpdatePayload;
       } catch {
         payload = { docId: msg.payload };
       }
-      if (!payload || typeof payload.docId !== 'string' || payload.docId.length === 0) return;
-      if (payload.source && payload.source === this.sourceId) return;
+      if (!payload || typeof payload.docId !== 'string' || payload.docId.length === 0) {
+        this.log.debug('pg notify ignored', { channel: this.channel, reason: 'missing docId' });
+        return;
+      }
+      if (payload.source && payload.source === this.sourceId) {
+        this.log.debug('pg notify ignored', { docId: payload.docId, reason: 'self' });
+        return;
+      }
+      this.log.debug('pg notify received', { docId: payload.docId, channel: this.channel });
       this.opts.onDocUpdate(payload.docId);
     });
 
     await this.listenClient.query(`LISTEN ${this.channel}`);
+    this.log.info('pg notify listening', { channel: this.channel });
   }
 
   async hasDoc(docId: string): Promise<boolean> {
@@ -369,6 +407,7 @@ export function createPostgresNodeDocStore(
   if (!Number.isFinite(idleCloseMs) || idleCloseMs < 0)
     throw new Error(`invalid idleCloseMs: ${opts.idleCloseMs}`);
 
+  const log = opts.log ?? silentSyncServerLogger;
   const docs = new Map<string, DocContext>();
   const openInFlight = new Map<string, Promise<DocContext>>();
   let closing = false;
@@ -381,7 +420,12 @@ export function createPostgresNodeDocStore(
   const notifyDocUpdate = (docId: string, ops?: readonly Operation[]): void => {
     const ctx = docs.get(docId);
     if (!ctx) return;
-    for (const peer of ctx.peers) void peer.notifyLocalUpdate(ops);
+    log.debug('notifying doc peers', { docId, peers: ctx.peers.size, ops: ops?.length });
+    for (const peer of ctx.peers) {
+      void peer.notifyLocalUpdate(ops).catch((error: unknown) => {
+        log.warn('peer notify failed', { docId, error: errorMessage(error) });
+      });
+    }
   };
 
   const closeBackend = async (backend: SyncBackend<Operation>): Promise<void> => {
@@ -392,7 +436,7 @@ export function createPostgresNodeDocStore(
     }
   };
 
-  const closeContext = async (ctx: DocContext): Promise<void> => {
+  const closeContext = async (ctx: DocContext, reason: 'idle' | 'shutdown'): Promise<void> => {
     if (ctx.closed) return;
     ctx.closed = true;
     if (ctx.closeTimer) {
@@ -401,20 +445,21 @@ export function createPostgresNodeDocStore(
     }
     docs.delete(ctx.docId);
     ctx.peers.clear();
+    log.info('doc closed', { docId: ctx.docId, reason });
     await closeBackend(ctx.backend);
   };
 
   const scheduleClose = (ctx: DocContext): void => {
     if (ctx.closed) return;
     if (closing || idleCloseMs === 0) {
-      void closeContext(ctx);
+      void closeContext(ctx, closing ? 'shutdown' : 'idle');
       return;
     }
     if (ctx.closeTimer) return;
     ctx.closeTimer = setTimeout(() => {
       ctx.closeTimer = undefined;
       if (ctx.connections > 0) return;
-      void closeContext(ctx);
+      void closeContext(ctx, 'idle');
     }, idleCloseMs);
   };
 
@@ -428,12 +473,15 @@ export function createPostgresNodeDocStore(
         await backend.applyOps(ops);
       });
       // Keep the queue usable even after a failed apply.
-      ctx.applyQueue = run.catch(() => undefined);
+      ctx.applyQueue = run.catch((error: unknown) => {
+        log.warn('applyOps failed', { docId: ctx.docId, error: errorMessage(error) });
+      });
       await run;
       try {
         await opts.broadcastDocUpdate?.(ctx.docId);
-      } catch {
-        // ignore notify failures; local update path still proceeds
+      } catch (error) {
+        // Local peers still observe the applied ops. Cross-process fanout is best-effort.
+        log.warn('doc update broadcast failed', { docId: ctx.docId, error: errorMessage(error) });
       }
       // Local peers in this Node process can take the exact applied ops fast path.
       // Cross-process listeners still fall back to doc-level pg_notify invalidation.
@@ -485,6 +533,7 @@ export function createPostgresNodeDocStore(
       };
       ctx.backend = wrapBackendForContext(ctx, rawBackend);
       docs.set(docId, ctx);
+      log.debug('doc opened', { docId });
       return ctx;
     })();
 
@@ -522,7 +571,7 @@ export function createPostgresNodeDocStore(
             ctx.connections = Math.max(0, ctx.connections - 1);
             if (ctx.connections > 0) return;
             if (closing) {
-              await closeContext(ctx);
+              await closeContext(ctx, 'shutdown');
               return;
             }
             scheduleClose(ctx);
@@ -536,7 +585,9 @@ export function createPostgresNodeDocStore(
       closing = true;
       closeAllPromise = (async () => {
         await Promise.allSettled(Array.from(openInFlight.values()));
-        await Promise.allSettled(Array.from(docs.values()).map((ctx) => closeContext(ctx)));
+        await Promise.allSettled(
+          Array.from(docs.values()).map((ctx) => closeContext(ctx, 'shutdown')),
+        );
       })();
       await closeAllPromise;
     },
@@ -587,6 +638,7 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
   const gitDirty = Boolean(opts.gitDirty);
   const startedAt = opts.startedAt?.trim() || new Date().toISOString();
   const startedAtMs = Date.parse(startedAt);
+  const log = opts.log ?? silentSyncServerLogger;
 
   if (!Number.isFinite(port) || port <= 0) throw new Error(`invalid port: ${opts.port}`);
   if (maxCodewords != null && (!Number.isFinite(maxCodewords) || maxCodewords <= 0)) {
@@ -610,6 +662,7 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
     throw new Error(`invalid rateLimitWindowMs: ${opts.rateLimitWindowMs}`);
   }
 
+  log.info('loading postgres backend', { backendModule });
   const module = await loadPostgresBackendModule(backendModule);
   const backendFactory = module.createPostgresNapiSyncBackendFactory(postgresUrl);
   if (backendFactory.ensureSchema) await backendFactory.ensureSchema();
@@ -622,6 +675,7 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
   const docs = createPostgresNodeDocStore({
     backendFactory,
     idleCloseMs,
+    log,
     broadcastDocUpdate: async (docId) => {
       await docUpdateBus?.publishDocUpdate(docId);
     },
@@ -648,6 +702,8 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
       docUpdateBus = await PostgresDocUpdateBus.create({
         postgresUrl,
         channel: pgNotifyChannel,
+        log,
+        onFatal: opts.onPgNotifyFatal,
         onDocUpdate: (docId) => docs.notifyDocUpdate(docId),
       });
     } catch (err) {
@@ -697,6 +753,7 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
         codec: treecrdtSyncV0ProtobufCodec,
         docs: docs.provider,
         hooks,
+        log,
         healthCheck: async () => {
           try {
             await readinessProbe!.check();
@@ -739,6 +796,7 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
             allowDocCreate,
             idleCloseMs,
             maxPayloadBytes,
+            logLevel: log.level,
           };
         },
       });
