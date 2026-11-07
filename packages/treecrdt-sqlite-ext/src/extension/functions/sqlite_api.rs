@@ -1,3 +1,5 @@
+#[cfg(feature = "ext-sqlite")]
+use std::mem;
 use std::os::raw::{c_char, c_int, c_void};
 use std::slice;
 
@@ -157,6 +159,36 @@ fn api<'a>() -> Option<&'a sqlite3_api_routines> {
     unsafe { SQLITE3_API.as_ref() }
 }
 
+/// `sqlite3ext-sys` 0.0.1 generates `sqlite3_api_routines` with bindgen 0.60.
+/// On a newer libclang that struct becomes opaque (`_address` only), because
+/// bindgen cannot lay out the `va_list` parameters inside it. The C table is
+/// still a stable list of function pointers, appended to over time, so callers
+/// read slots by the order in sqlite3ext.h (SQLite 3.39.4).
+#[cfg(feature = "ext-sqlite")]
+#[repr(C)]
+struct SqliteApiTable {
+    slots: [*const c_void; 163],
+}
+
+#[cfg(feature = "ext-sqlite")]
+fn api_table() -> &'static SqliteApiTable {
+    let ptr = unsafe { SQLITE3_API };
+    assert!(!ptr.is_null(), "api table");
+    unsafe { &*(ptr.cast::<SqliteApiTable>()) }
+}
+
+#[cfg(feature = "ext-sqlite")]
+unsafe fn api_fn<T>(slot: usize) -> T {
+    debug_assert_eq!(mem::size_of::<T>(), mem::size_of::<*const c_void>());
+    let ptr = api_table().slots[slot];
+    unsafe { mem::transmute_copy(&ptr) }
+}
+
+#[cfg(feature = "ext-sqlite")]
+fn slot<T>(index: usize) -> T {
+    unsafe { api_fn::<Option<T>>(index).expect("sqlite api slot") }
+}
+
 #[cfg(feature = "ext-sqlite")]
 pub(super) unsafe fn set_sqlite3_api(p_api: *const sqlite3_api_routines) -> Result<(), c_int> {
     if p_api.is_null() {
@@ -195,9 +227,24 @@ pub(super) fn sqlite_create_function_v2(
 ) -> c_int {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
         unsafe {
-            (api.create_function_v2.unwrap())(
+            slot::<
+                unsafe extern "C" fn(
+                    *mut sqlite3,
+                    *const c_char,
+                    c_int,
+                    c_int,
+                    *mut c_void,
+                    Option<
+                        unsafe extern "C" fn(*mut sqlite3_context, c_int, *mut *mut sqlite3_value),
+                    >,
+                    Option<
+                        unsafe extern "C" fn(*mut sqlite3_context, c_int, *mut *mut sqlite3_value),
+                    >,
+                    Option<unsafe extern "C" fn(*mut sqlite3_context)>,
+                    Option<unsafe extern "C" fn(*mut c_void)>,
+                ) -> c_int,
+            >(162)(
                 db, name, n_arg, text_rep, p_app, x_func, x_step, x_final, x_destroy,
             )
         }
@@ -221,8 +268,24 @@ pub(super) fn sqlite_exec(
 ) -> c_int {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
-        unsafe { (api.exec.unwrap())(db, sql, cb, arg, errmsg) }
+        unsafe {
+            slot::<
+                unsafe extern "C" fn(
+                    *mut sqlite3,
+                    *const c_char,
+                    Option<
+                        unsafe extern "C" fn(
+                            *mut c_void,
+                            c_int,
+                            *mut *mut c_char,
+                            *mut *mut c_char,
+                        ) -> c_int,
+                    >,
+                    *mut c_void,
+                    *mut *mut c_char,
+                ) -> c_int,
+            >(55)(db, sql, cb, arg, errmsg)
+        }
     }
     #[cfg(feature = "static-link")]
     unsafe {
@@ -239,8 +302,17 @@ pub(super) fn sqlite_prepare_v2(
 ) -> c_int {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
-        unsafe { (api.prepare_v2.unwrap())(db, sql, n_byte, stmt, tail) }
+        unsafe {
+            slot::<
+                unsafe extern "C" fn(
+                    *mut sqlite3,
+                    *const c_char,
+                    c_int,
+                    *mut *mut sqlite3_stmt,
+                    *mut *const c_char,
+                ) -> c_int,
+            >(116)(db, sql, n_byte, stmt, tail)
+        }
     }
     #[cfg(feature = "static-link")]
     unsafe {
@@ -251,8 +323,7 @@ pub(super) fn sqlite_prepare_v2(
 pub(super) fn sqlite_changes(db: *mut sqlite3) -> c_int {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
-        unsafe { (api.changes.unwrap())(db) }
+        unsafe { slot::<unsafe extern "C" fn(*mut sqlite3) -> c_int>(15)(db) }
     }
     #[cfg(feature = "static-link")]
     unsafe {
@@ -269,8 +340,17 @@ pub(super) unsafe fn sqlite_bind_blob(
 ) -> c_int {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
-        unsafe { (api.bind_blob.unwrap())(stmt, idx, ptr, len, destructor) }
+        unsafe {
+            slot::<
+                unsafe extern "C" fn(
+                    *mut sqlite3_stmt,
+                    c_int,
+                    *const c_void,
+                    c_int,
+                    Option<unsafe extern "C" fn(*mut c_void)>,
+                ) -> c_int,
+            >(2)(stmt, idx, ptr, len, destructor)
+        }
     }
     #[cfg(feature = "static-link")]
     {
@@ -287,8 +367,17 @@ pub(super) unsafe fn sqlite_bind_text(
 ) -> c_int {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
-        unsafe { (api.bind_text.unwrap())(stmt, idx, ptr, len, destructor) }
+        unsafe {
+            slot::<
+                unsafe extern "C" fn(
+                    *mut sqlite3_stmt,
+                    c_int,
+                    *const c_char,
+                    c_int,
+                    Option<unsafe extern "C" fn(*mut c_void)>,
+                ) -> c_int,
+            >(10)(stmt, idx, ptr, len, destructor)
+        }
     }
     #[cfg(feature = "static-link")]
     {
@@ -299,8 +388,9 @@ pub(super) unsafe fn sqlite_bind_text(
 pub(super) unsafe fn sqlite_bind_int64(stmt: *mut sqlite3_stmt, idx: c_int, val: i64) -> c_int {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
-        unsafe { (api.bind_int64.unwrap())(stmt, idx, val) }
+        unsafe {
+            slot::<unsafe extern "C" fn(*mut sqlite3_stmt, c_int, i64) -> c_int>(5)(stmt, idx, val)
+        }
     }
     #[cfg(feature = "static-link")]
     {
@@ -311,8 +401,7 @@ pub(super) unsafe fn sqlite_bind_int64(stmt: *mut sqlite3_stmt, idx: c_int, val:
 pub(super) unsafe fn sqlite_bind_null(stmt: *mut sqlite3_stmt, idx: c_int) -> c_int {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
-        unsafe { (api.bind_null.unwrap())(stmt, idx) }
+        unsafe { slot::<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> c_int>(6)(stmt, idx) }
     }
     #[cfg(feature = "static-link")]
     {
@@ -323,8 +412,7 @@ pub(super) unsafe fn sqlite_bind_null(stmt: *mut sqlite3_stmt, idx: c_int) -> c_
 pub(super) unsafe fn sqlite_step(stmt: *mut sqlite3_stmt) -> c_int {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
-        unsafe { (api.step.unwrap())(stmt) }
+        unsafe { slot::<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int>(94)(stmt) }
     }
     #[cfg(feature = "static-link")]
     {
@@ -335,8 +423,7 @@ pub(super) unsafe fn sqlite_step(stmt: *mut sqlite3_stmt) -> c_int {
 pub(super) unsafe fn sqlite_reset(stmt: *mut sqlite3_stmt) -> c_int {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
-        unsafe { (api.reset.unwrap())(stmt) }
+        unsafe { slot::<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int>(77)(stmt) }
     }
     #[cfg(feature = "static-link")]
     {
@@ -347,8 +434,7 @@ pub(super) unsafe fn sqlite_reset(stmt: *mut sqlite3_stmt) -> c_int {
 pub(super) unsafe fn sqlite_clear_bindings(stmt: *mut sqlite3_stmt) -> c_int {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
-        unsafe { (api.clear_bindings.unwrap())(stmt) }
+        unsafe { slot::<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int>(118)(stmt) }
     }
     #[cfg(feature = "static-link")]
     {
@@ -359,8 +445,7 @@ pub(super) unsafe fn sqlite_clear_bindings(stmt: *mut sqlite3_stmt) -> c_int {
 pub(super) unsafe fn sqlite_finalize(stmt: *mut sqlite3_stmt) -> c_int {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
-        unsafe { (api.finalize.unwrap())(stmt) }
+        unsafe { slot::<unsafe extern "C" fn(*mut sqlite3_stmt) -> c_int>(57)(stmt) }
     }
     #[cfg(feature = "static-link")]
     {
@@ -371,8 +456,7 @@ pub(super) unsafe fn sqlite_finalize(stmt: *mut sqlite3_stmt) -> c_int {
 pub(super) unsafe fn sqlite_value_blob(val: *mut sqlite3_value) -> *const c_void {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
-        unsafe { (api.value_blob.unwrap())(val) }
+        unsafe { slot::<unsafe extern "C" fn(*mut sqlite3_value) -> *const c_void>(102)(val) }
     }
     #[cfg(feature = "static-link")]
     {
@@ -383,8 +467,7 @@ pub(super) unsafe fn sqlite_value_blob(val: *mut sqlite3_value) -> *const c_void
 pub(super) unsafe fn sqlite_value_bytes(val: *mut sqlite3_value) -> c_int {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
-        unsafe { (api.value_bytes.unwrap())(val) }
+        unsafe { slot::<unsafe extern "C" fn(*mut sqlite3_value) -> c_int>(103)(val) }
     }
     #[cfg(feature = "static-link")]
     {
@@ -395,8 +478,7 @@ pub(super) unsafe fn sqlite_value_bytes(val: *mut sqlite3_value) -> c_int {
 pub(super) unsafe fn sqlite_value_int64(val: *mut sqlite3_value) -> i64 {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
-        unsafe { (api.value_int64.unwrap())(val) }
+        unsafe { slot::<unsafe extern "C" fn(*mut sqlite3_value) -> i64>(107)(val) }
     }
     #[cfg(feature = "static-link")]
     {
@@ -407,8 +489,7 @@ pub(super) unsafe fn sqlite_value_int64(val: *mut sqlite3_value) -> i64 {
 pub(super) unsafe fn sqlite_value_text(val: *mut sqlite3_value) -> *const c_char {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
-        unsafe { (api.value_text.unwrap())(val) as *const c_char }
+        unsafe { slot::<unsafe extern "C" fn(*mut sqlite3_value) -> *const c_char>(109)(val) }
     }
     #[cfg(feature = "static-link")]
     {
@@ -419,8 +500,7 @@ pub(super) unsafe fn sqlite_value_text(val: *mut sqlite3_value) -> *const c_char
 pub(super) unsafe fn sqlite_value_type(val: *mut sqlite3_value) -> c_int {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
-        unsafe { (api.value_type.unwrap())(val) }
+        unsafe { slot::<unsafe extern "C" fn(*mut sqlite3_value) -> c_int>(113)(val) }
     }
     #[cfg(feature = "static-link")]
     {
@@ -436,10 +516,16 @@ pub(super) fn sqlite_result_text(
 ) {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
         unsafe {
-            (api.result_text.unwrap())(ctx, val, len, destructor);
-        }
+            slot::<
+                unsafe extern "C" fn(
+                    *mut sqlite3_context,
+                    *const c_char,
+                    c_int,
+                    Option<unsafe extern "C" fn(*mut c_void)>,
+                ),
+            >(85)(ctx, val, len, destructor)
+        };
     }
     #[cfg(feature = "static-link")]
     unsafe {
@@ -450,10 +536,8 @@ pub(super) fn sqlite_result_text(
 pub(super) fn sqlite_result_error_code(ctx: *mut sqlite3_context, code: c_int) {
     #[cfg(feature = "ext-sqlite")]
     {
-        if let Some(api) = api() {
-            unsafe {
-                (api.result_error_code.unwrap())(ctx, code);
-            }
+        if api().is_some() {
+            unsafe { slot::<unsafe extern "C" fn(*mut sqlite3_context, c_int)>(146)(ctx, code) };
         }
     }
     #[cfg(feature = "static-link")]
@@ -465,10 +549,8 @@ pub(super) fn sqlite_result_error_code(ctx: *mut sqlite3_context, code: c_int) {
 pub(super) fn sqlite_result_int(ctx: *mut sqlite3_context, val: c_int) {
     #[cfg(feature = "ext-sqlite")]
     {
-        if let Some(api) = api() {
-            unsafe {
-                (api.result_int.unwrap())(ctx, val);
-            }
+        if api().is_some() {
+            unsafe { slot::<unsafe extern "C" fn(*mut sqlite3_context, c_int)>(82)(ctx, val) };
         }
     }
     #[cfg(feature = "static-link")]
@@ -480,10 +562,12 @@ pub(super) fn sqlite_result_int(ctx: *mut sqlite3_context, val: c_int) {
 pub(super) fn sqlite_result_error(ctx: *mut sqlite3_context, msg: *const c_char) {
     #[cfg(feature = "ext-sqlite")]
     {
-        if let Some(api) = api() {
+        if api().is_some() {
             unsafe {
-                (api.result_error.unwrap())(ctx, msg, -1);
-            }
+                slot::<unsafe extern "C" fn(*mut sqlite3_context, *const c_char, c_int)>(80)(
+                    ctx, msg, -1,
+                )
+            };
         }
     }
     #[cfg(feature = "static-link")]
@@ -495,8 +579,7 @@ pub(super) fn sqlite_result_error(ctx: *mut sqlite3_context, msg: *const c_char)
 pub(super) fn sqlite_context_db_handle(ctx: *mut sqlite3_context) -> *mut sqlite3 {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
-        unsafe { (api.context_db_handle.unwrap())(ctx) }
+        unsafe { slot::<unsafe extern "C" fn(*mut sqlite3_context) -> *mut sqlite3>(149)(ctx) }
     }
     #[cfg(feature = "static-link")]
     unsafe {
@@ -507,8 +590,9 @@ pub(super) fn sqlite_context_db_handle(ctx: *mut sqlite3_context) -> *mut sqlite
 pub(super) unsafe fn sqlite_column_blob(stmt: *mut sqlite3_stmt, idx: c_int) -> *const c_void {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
-        unsafe { (api.column_blob.unwrap())(stmt, idx) }
+        unsafe {
+            slot::<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *const c_void>(19)(stmt, idx)
+        }
     }
     #[cfg(feature = "static-link")]
     {
@@ -519,8 +603,7 @@ pub(super) unsafe fn sqlite_column_blob(stmt: *mut sqlite3_stmt, idx: c_int) -> 
 pub(super) unsafe fn sqlite_column_bytes(stmt: *mut sqlite3_stmt, idx: c_int) -> c_int {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
-        unsafe { (api.column_bytes.unwrap())(stmt, idx) }
+        unsafe { slot::<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> c_int>(20)(stmt, idx) }
     }
     #[cfg(feature = "static-link")]
     {
@@ -531,8 +614,7 @@ pub(super) unsafe fn sqlite_column_bytes(stmt: *mut sqlite3_stmt, idx: c_int) ->
 pub(super) unsafe fn sqlite_column_int64(stmt: *mut sqlite3_stmt, idx: c_int) -> i64 {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
-        unsafe { (api.column_int64.unwrap())(stmt, idx) }
+        unsafe { slot::<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> i64>(29)(stmt, idx) }
     }
     #[cfg(feature = "static-link")]
     {
@@ -543,8 +625,9 @@ pub(super) unsafe fn sqlite_column_int64(stmt: *mut sqlite3_stmt, idx: c_int) ->
 pub(super) unsafe fn sqlite_column_text(stmt: *mut sqlite3_stmt, idx: c_int) -> *const c_char {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
-        unsafe { (api.column_text.unwrap())(stmt, idx) as *const c_char }
+        unsafe {
+            slot::<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> *const c_char>(36)(stmt, idx)
+        }
     }
     #[cfg(feature = "static-link")]
     {
@@ -555,8 +638,7 @@ pub(super) unsafe fn sqlite_column_text(stmt: *mut sqlite3_stmt, idx: c_int) -> 
 pub(super) unsafe fn sqlite_column_type(stmt: *mut sqlite3_stmt, idx: c_int) -> c_int {
     #[cfg(feature = "ext-sqlite")]
     {
-        let api = api().expect("api table");
-        unsafe { (api.column_type.unwrap())(stmt, idx) }
+        unsafe { slot::<unsafe extern "C" fn(*mut sqlite3_stmt, c_int) -> c_int>(38)(stmt, idx) }
     }
     #[cfg(feature = "static-link")]
     {
