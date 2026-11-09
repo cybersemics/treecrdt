@@ -11,7 +11,9 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 [dependencies]
 blake3 = "1.6"
 treecrdt-core = { path = "../treecrdt-core" }
-sqlite3ext-sys = { version = "0.0.1", optional = true }
+# bindgen 0.60 in the published crate emits opaque API tables with Clang 22.
+# Return to crates.io when https://github.com/asg017/sqlite-loadable-rs/pull/34 is released.
+sqlite3ext-sys = { git = "https://github.com/marcus-pousette/sqlite-loadable-rs", rev = "e785419dddb0b44eb6e2a98d0d8f6697fd3092ee", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_bytes = { version = "0.11", optional = true }
 serde_json = { version = "1.0", optional = true }
