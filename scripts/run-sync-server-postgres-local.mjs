@@ -18,6 +18,9 @@ function canConnect(host, port, timeoutMs = 1000) {
   });
 }
 
+if (!process.env.TREECRDT_LOG_LEVEL) process.env.TREECRDT_LOG_LEVEL = "debug";
+if (!process.env.TREECRDT_LOG_PRETTY) process.env.TREECRDT_LOG_PRETTY = "true";
+
 if (!process.env.TREECRDT_POSTGRES_URL || process.env.TREECRDT_POSTGRES_URL.trim().length === 0) {
   process.env.TREECRDT_POSTGRES_URL = DEFAULT_POSTGRES_URL;
   console.log(`[sync-server:postgres:local] using default TREECRDT_POSTGRES_URL=${DEFAULT_POSTGRES_URL}`);
