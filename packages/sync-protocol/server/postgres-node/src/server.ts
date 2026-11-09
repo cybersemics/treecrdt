@@ -64,9 +64,8 @@ export type SyncServerOptions = {
   log?: SyncServerLogger;
   /**
    * Called once when the Postgres LISTEN connection fails after startup.
-   * The CLI exits so a supervisor can restart the process. The connection is
-   * not reconnected here: a client that has emitted `error` no longer delivers
-   * notifications, while `/health` can stay green on a different client.
+   * The server becomes unready and shuts down by default. A supplied callback
+   * takes responsibility for shutdown.
    */
   onPgNotifyFatal?: (error: unknown) => void;
 };
@@ -672,6 +671,9 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
   await capabilityMaterialStore.init();
 
   let docUpdateBus: PostgresDocUpdateBus | undefined;
+  let pgNotifyFailure: { error: unknown } | undefined;
+  let close: SyncServerHandle['close'] | undefined;
+  let closePromise: Promise<void> | undefined;
   const docs = createPostgresNodeDocStore({
     backendFactory,
     idleCloseMs,
@@ -703,7 +705,18 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
         postgresUrl,
         channel: pgNotifyChannel,
         log,
-        onFatal: opts.onPgNotifyFatal,
+        onFatal: (error) => {
+          pgNotifyFailure = { error };
+          // Startup checks the recorded failure before returning a handle.
+          if (!close || closePromise) return;
+          if (opts.onPgNotifyFatal) {
+            opts.onPgNotifyFatal(error);
+          } else {
+            void close().catch((closeError) => {
+              log.error('failed to close sync server', { error: errorMessage(closeError) });
+            });
+          }
+        },
         onDocUpdate: (docId) => docs.notifyDocUpdate(docId),
       });
     } catch (err) {
@@ -744,6 +757,12 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
     onError: opts.hooks?.onError,
   };
 
+  const pgNotifyUnavailable = 'postgres notification listener unavailable';
+  const checkReadiness = async () => {
+    if (!pgNotifyFailure) await readinessProbe!.check();
+    if (pgNotifyFailure) throw new Error(pgNotifyUnavailable);
+  };
+
   const server = await (async () => {
     try {
       return await startWebSocketSyncServer<Operation>({
@@ -756,13 +775,13 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
         log,
         healthCheck: async () => {
           try {
-            await readinessProbe!.check();
+            await checkReadiness();
             return { ok: true };
           } catch {
             return {
               ok: false,
               statusCode: 503,
-              body: 'postgres unavailable',
+              body: pgNotifyFailure ? pgNotifyUnavailable : 'postgres unavailable',
             };
           }
         },
@@ -770,7 +789,7 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
           let ready = true;
           let readyDetail = 'ok';
           try {
-            await readinessProbe!.check();
+            await checkReadiness();
           } catch (error) {
             ready = false;
             readyDetail = errorMessage(error);
@@ -810,18 +829,28 @@ export async function startSyncServer(opts: SyncServerOptions): Promise<SyncServ
     }
   })();
 
-  return {
-    host: server.host,
-    port: server.port,
-    idleCloseMs,
-    backendModule,
-    close: async () => {
+  close = () => {
+    closePromise ??= (async () => {
       await server.close();
       await docs.closeAll();
       await docUpdateBus?.close();
       await opAuthStore.close();
       await capabilityMaterialStore.close();
       await readinessProbe?.close?.();
-    },
+    })();
+    return closePromise;
+  };
+
+  if (pgNotifyFailure) {
+    await close();
+    throw pgNotifyFailure.error;
+  }
+
+  return {
+    host: server.host,
+    port: server.port,
+    idleCloseMs,
+    backendModule,
+    close,
   };
 }

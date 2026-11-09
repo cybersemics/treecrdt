@@ -904,7 +904,13 @@ test('logs sent and received sync messages at debug', async () => {
   }
 });
 
-test('a clean websocket close is not a sync handler error', async () => {
+test.each([
+  { mode: 'client normal closure', code: 1000 },
+  { mode: 'client going away', code: 1001 },
+  { mode: 'client close without a code', code: 1005 },
+  { mode: 'server shutdown', code: 1005 },
+  { mode: 'abrupt disconnect', code: 1006 },
+])('logs a sync handler error only for an abnormal close ($mode)', async ({ mode, code }) => {
   const captured = captureLogs('info');
   const docId = 'clean-close';
   const server = await startWebSocketSyncServer<TestOp>({
@@ -922,17 +928,24 @@ test('a clean websocket close is not a sync handler error', async () => {
   const ws = await connectWebSocket(
     `ws://${server.host}:${server.port}/sync?docId=${encodeURIComponent(docId)}`,
   );
+  let shutdown: Promise<void> | undefined;
   try {
     await waitUntil(() => captured.lines.some((entry) => entry.message === 'peer connected'), {
       message: 'expected the server to attach the peer',
     });
-    ws.close(1000);
+    const closed = new Promise<number>((resolve) => ws.once('close', resolve));
+    if (mode === 'server shutdown') shutdown = server.close();
+    else if (code === 1006) ws.terminate();
+    else ws.close(code === 1005 ? undefined : code);
+    await expect(withTimeout(closed, 5_000, 'websocket close')).resolves.toBe(code);
     await waitUntil(() => captured.lines.some((entry) => entry.message === 'peer disconnected'), {
       message: 'expected the server to log the disconnect',
     });
-    expect(captured.lines.some((entry) => entry.message === 'sync handler error')).toBe(false);
+    expect(captured.lines.some((entry) => entry.message === 'sync handler error')).toBe(
+      code === 1006,
+    );
   } finally {
     if (ws.readyState === WebSocket.OPEN) ws.close();
-    await server.close();
+    await (shutdown ?? server.close());
   }
 });

@@ -62,7 +62,9 @@ Environment variables:
 - `TREECRDT_LOG_LEVEL` (`debug`, `info`, `warn`, `error`, or `silent`). The default is `info`, including when `NODE_ENV` is unset.
 - `TREECRDT_LOG_PRETTY` (optional). `true` prints human-readable lines. The default is JSON. If the pretty printer is not installed, the CLI still writes JSON.
 
-Logs go through [pino](https://github.com/pinojs/pino). `debug` includes doc open, peer fanout, ignored notifies, and each sync message the server sends or receives (`sync message sent` / `sync message received`, with the message type and counts). Message logs omit op payloads, signatures, tokens, and the Postgres URL. `info` includes listen, connect, disconnect, and denied upgrades. `warn` and `error` cover failed health checks, apply failures, and hook errors. A Postgres LISTEN failure is logged and the CLI exits so a supervisor can restart it; the connection is not reconnected in-process. Library callers of `startSyncServer` stay quiet unless they pass `log`, and they can pass `onPgNotifyFatal` for the same listener failure.
+Logs go through [pino](https://github.com/pinojs/pino). `debug` includes doc open, peer fanout, ignored notifies, and each sync message the server sends or receives (`sync message sent` / `sync message received`, with the message type and counts). Message logs omit op payloads, signatures, tokens, and the Postgres URL. `info` includes listen, connect, disconnect, and denied upgrades. `warn` and `error` cover failed health checks, apply failures, and hook errors. Library callers of `startSyncServer` can pass `log` to enable logging.
+
+If Postgres LISTEN fails, the server becomes unready and shuts down by default. A library caller can pass `onPgNotifyFatal` to take responsibility for shutdown. The CLI uses this callback to exit so a supervisor can restart the process.
 
 Health check:
 

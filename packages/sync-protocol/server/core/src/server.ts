@@ -126,27 +126,30 @@ function toUint8Array(data: WebSocket.RawData): Uint8Array {
   return Buffer.from(data);
 }
 
-/** Close initiated by the remote WebSocket peer, with the status code attached. */
-class WebSocketPeerClose extends Error {
+class WebSocketCloseError extends Error {
   readonly code: number;
 
   constructor(code: number, reasonText: string) {
     const detail = reasonText.length > 0 ? `: ${reasonText}` : '';
     super(`websocket closed (${code})${detail}`);
-    this.name = 'WebSocketPeerClose';
+    this.name = 'WebSocketCloseError';
     this.code = code;
   }
 }
 
 function isCleanWebSocketClose(error: unknown): boolean {
-  return error instanceof WebSocketPeerClose && (error.code === 1000 || error.code === 1001);
+  // ws reports 1005 when a close frame omits its status code.
+  return (
+    error instanceof WebSocketCloseError &&
+    (error.code === 1000 || error.code === 1001 || error.code === 1005)
+  );
 }
 
 function createWebSocketTransport(ws: WebSocket): DuplexTransport<Uint8Array> {
   const closeController = createTransportCloseController();
 
   ws.once('close', (code, reason) => {
-    closeController.close(new WebSocketPeerClose(code, reason.toString()));
+    closeController.close(new WebSocketCloseError(code, reason.toString()));
   });
   ws.once('error', (error) => closeController.close(error));
 
@@ -632,7 +635,6 @@ export async function startWebSocketSyncServer<Op>(
       try {
         detach = peer.attach(transport, {
           onError: (ctx) => {
-            // 1000 and 1001 are peers leaving. Cleanup already logs the disconnect.
             if (isCleanWebSocketClose(ctx.error)) return;
             log.error('sync handler error', { docId, error: syncServerErrorMessage(ctx.error) });
             // Let a codec-triggered protocol close (1002) start before falling back
