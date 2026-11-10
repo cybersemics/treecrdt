@@ -23,14 +23,15 @@ export type StorageMode = 'memory' | 'opfs';
 export type ClientMode = 'direct' | 'worker';
 export type RuntimeMode = 'direct' | 'dedicated-worker' | 'shared-worker';
 
-export type TreecrdtClient = TreecrdtEngine & {
-  mode: ClientMode;
-  runtime: RuntimeMode;
-  storage: StorageMode;
-  runner: SqliteRunner;
-  tree: Required<Pick<TreecrdtEngineTree, 'changedSince'>>;
-  drop: () => Promise<void>;
-};
+export type TreecrdtClient = TreecrdtEngine &
+  Required<Pick<TreecrdtEngine, 'onMaterializedDurable'>> & {
+    mode: ClientMode;
+    runtime: RuntimeMode;
+    storage: StorageMode;
+    runner: SqliteRunner;
+    tree: Required<Pick<TreecrdtEngineTree, 'changedSince'>>;
+    drop: () => Promise<void>;
+  };
 
 export type ClientOptions = {
   /** Stable logical document identity used by CRDT operations and sync; cannot be detected. */

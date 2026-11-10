@@ -8,6 +8,7 @@ import type {
 import { addMaterializationWriteId, emptyMaterializationOutcome } from './engine.js';
 import type {
   LocalWriteOptions,
+  MaterializationCursorStore,
   MaterializationEvent,
   MaterializationOutcome,
   MaterializationSource,
@@ -926,6 +927,43 @@ export function decodeSqliteChangedNodes(raw: unknown, payloads: boolean): Treec
         : {}),
     };
   });
+}
+
+const MATERIALIZATION_CURSORS_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS treecrdt_materialization_cursors (
+  name TEXT PRIMARY KEY,
+  version INTEGER NOT NULL,
+  head_seq INTEGER NOT NULL
+) WITHOUT ROWID;
+`;
+
+/**
+ * Keeps `onMaterializedDurable` positions in the database they describe, so dropping the database
+ * drops them too.
+ */
+export function createTreecrdtSqliteMaterializationCursors(
+  runner: SqliteRunner,
+): MaterializationCursorStore {
+  return {
+    load: async (name) => {
+      await runner.exec(MATERIALIZATION_CURSORS_SCHEMA_SQL);
+      const text = await runner.getText(
+        'SELECT json_array(version, head_seq) FROM treecrdt_materialization_cursors WHERE name = ?1',
+        [name],
+      );
+      if (text === null) return null;
+      const [version, headSeq] = JSON.parse(text) as [number, number];
+      return { version, headSeq };
+    },
+    // A subscription loads before it saves, so the table exists.
+    save: async (name, { version, headSeq }) => {
+      // RETURNING makes the write a statement that returns data, which every runner's getText runs.
+      await runner.getText(
+        'INSERT OR REPLACE INTO treecrdt_materialization_cursors (name, version, head_seq) VALUES (?1, ?2, ?3) RETURNING 1',
+        [name, version, headSeq],
+      );
+    },
+  };
 }
 
 /** Builds `tree.changedSince` over a raw adapter read, handling cursors and decoding. */

@@ -90,11 +90,34 @@ worker only when they load the same worker script URL. Bundlers usually hash tha
 by content, so after a deploy that changes the worker, a tab on the new build waits
 the same way until the old build's tabs close their clients or go away.
 
-Callers only see `TreecrdtClient` (`ops` / `tree` / `local` / `onMaterialized` / `close` / `drop`).
+Callers only see `TreecrdtClient` (`ops` / `tree` / `local` / `onMaterialized` / `onMaterializedDurable` / `close` / `drop`).
 
 ### Keeping derived data in step
 
-`tree.changedSince(since)` returns nodes whose visible state changed after a `headSeq`, once each, with their current state. Changes are recorded in the same commit as the state. Save the cursor only after applying every returned page successfully, so a failed update can be retried after a crash or reload. `since = 0` reads every node.
+`onMaterializedDurable(name, listener)` is `onMaterialized` that remembers how far the listener got. Use it for anything derived from the tree that has to survive restarts, such as an index table:
+
+```ts
+const subscription = await client.onMaterializedDurable(
+  'search-index',
+  async (event) => {
+    for (const change of event.changes) await updateIndex(change);
+  },
+  { version: 1, reset: () => clearIndex() },
+);
+
+await client.local.insert(replica, parent, node, { type: 'last' }, payload);
+await subscription.settled(); // the index now includes the insert
+await subscription.close();
+```
+
+- The call resolves once the listener has caught up with every change since it last ran. With no stored position for `version`, `reset` runs first and every node is delivered.
+- Events arrive in order, one at a time and at least once. If the listener rejects, its position stays where it was, and the same changes are delivered again with the next event or the next `settled()`.
+- After a gap, a change reports a node's current state instead of how it got there: a live node as `insert` (a root as `payload`), a removed one as `delete`. Apply each change as "make it so", because a node reported as `insert` may already be in your index.
+- Events are forwarded in the order the client emits them. One that arrives after a later one is not applied late; the subscription reads the affected nodes' current state instead.
+- The position is stored in the client's database, so dropping the database drops it. It is saved after a catch-up, at most every two seconds while events flow, and on `close()`. `client.close()` closes open subscriptions first.
+- A name can be open once per client.
+
+`tree.changedSince(since)` is the read underneath, for callers that keep their own cursor. It returns nodes whose visible state changed after a `headSeq`, once each, with their current state. Changes are recorded in the same commit as the state. Save the cursor only after applying every returned page successfully, so a failed update can be retried after a crash or reload. `since = 0` reads every node.
 
 ```ts
 let page = await client.tree.changedSince(loadCursor() ?? 0, { payloads: true, limit: 500 });
