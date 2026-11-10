@@ -4,6 +4,8 @@ import {
   runTreecrdtEngineConformanceScenario,
   treecrdtEngineConformanceScenarios,
 } from '@treecrdt/engine-conformance';
+import type { Operation } from '@treecrdt/interface';
+import type { MaterializationEvent } from '@treecrdt/interface/engine';
 import { createTreecrdtClient } from '../dist/index.node.js';
 
 const root = '0'.repeat(32);
@@ -56,6 +58,34 @@ test('createTreecrdtClient rejects cross-tab mode on Node', async () => {
 
 test('createTreecrdtClient rejects an empty docId', async () => {
   await expect(createTreecrdtClient({ docId: '' })).rejects.toThrow(/non-empty docId/);
+});
+
+test('appendMany reports each chunk when it commits', async () => {
+  const client = await createWaEngine({ docId: 'wa-sqlite-node-append-chunks' });
+  const events: MaterializationEvent[] = [];
+  client.onMaterialized((event) => events.push(event));
+  // One op more than a chunk holds. That op is invalid, so the second chunk fails.
+  const inserts: Operation[] = Array.from({ length: 2500 }, (_, i) => ({
+    meta: { id: { replica, counter: i + 1 }, lamport: i + 1 },
+    kind: {
+      type: 'insert',
+      parent: root,
+      node: nodeIdFromInt(i + 1),
+      orderKey: Uint8Array.of(1 + (i >> 8), i & 0xff),
+    },
+  }));
+  const deleteWithoutKnownState: Operation = {
+    meta: { id: { replica, counter: 2501 }, lamport: 2501 },
+    kind: { type: 'delete', node: nodeIdFromInt(1) },
+  };
+
+  try {
+    await expect(client.ops.appendMany([...inserts, deleteWithoutKnownState])).rejects.toThrow();
+    // The first chunk is in the database, so its changes are reported although the call failed.
+    expect(events.map((event) => event.changes.length)).toEqual([2500]);
+  } finally {
+    await client.close();
+  }
 });
 
 for (const scenario of treecrdtEngineConformanceScenarios()) {
