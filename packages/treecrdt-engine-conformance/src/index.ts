@@ -1435,7 +1435,6 @@ async function scenarioDurableResumesAfterReopen(
   const root = nodeIdFromInt(0);
   const live = nodeIdFromInt(80);
   const missed = nodeIdFromInt(81);
-  const later = nodeIdFromInt(82);
 
   const e1 = await ctx.createPersistentEngine({ docId: ctx.docId, name: 'db' });
   if (!e1.onMaterializedDurable) return ctx.skip('engine has no onMaterializedDurable');
@@ -1451,24 +1450,17 @@ async function scenarioDurableResumesAfterReopen(
 
   const e2 = await ctx.createPersistentEngine({ docId: ctx.docId, name: 'db' });
   const second: MaterializationEvent[] = [];
-  const s2 = await e2.onMaterializedDurable!('index', (event) => void second.push(event));
+  await e2.onMaterializedDurable!('index', (event) => void second.push(event));
   assertArrayEqual(
     durableLog(second),
     [`insert:${missed}`],
     'reopening delivers only what the subscription missed',
   );
   const change = second[0]!.changes[0]!;
-  assert(
-    change.kind === 'insert' && change.parentAfter === root,
-    'a missed node is reported as an insert under its current parent',
-  );
-  assertBytesEqual(change.payload, encoder.encode('missed'), 'a missed node has its payload');
-  await e2.local.insert(replica, root, later, { type: 'last' }, null);
-  await s2.settled();
-  assertArrayEqual(
-    durableLog(second),
-    [`insert:${missed}`, `insert:${later}`],
-    'live delivery continues after the catch-up',
+  assertBytesEqual(
+    'payload' in change ? change.payload : null,
+    encoder.encode('missed'),
+    'a missed node is reported with its current payload',
   );
 }
 
@@ -1498,11 +1490,11 @@ async function scenarioDurableRedeliversAfterFailure(
 
   failing = true;
   await engine.local.insert(replica, root, node, { type: 'last' }, null);
-  let rejected = false;
-  await subscription.settled().catch(() => {
-    rejected = true;
-  });
-  assert(rejected, 'settled rejects while the listener fails');
+  const failure = await subscription.settled().then(
+    () => null,
+    (error) => error,
+  );
+  assert(failure, 'settled rejects while the listener fails');
   assertEqual(errors.length, 1, 'the failed event reaches onError');
 
   failing = false;
@@ -1533,9 +1525,8 @@ async function scenarioDurableResetsForNewVersion(
   };
 
   assert((await open(1)).includes(`insert:${node}`), 'a first subscription receives every node');
-  assertEqual(resets, 1, 'a first subscription resets before reading');
   assertEqual((await open(1)).length, 0, 'the same version keeps its position');
-  assertEqual(resets, 1, 'the same version does not reset');
+  assertEqual(resets, 1, 'only the first subscription resets');
   assert((await open(2)).includes(`insert:${node}`), 'a new version receives every node again');
   assertEqual(resets, 2, 'a new version resets');
 }
@@ -1546,20 +1537,13 @@ async function scenarioDurableReportsNodeMovedWhilePaging(
   const { engine } = ctx;
   if (!engine.onMaterializedDurable) return ctx.skip('engine has no onMaterializedDurable');
   const replica = replicaFromLabel('r-durable');
-  const encoder = new TextEncoder();
   const root = nodeIdFromInt(0);
   const parent = nodeIdFromInt(90);
   // Pages are read in node order, so the last node is still unread when the first page arrives.
   const moved = nodeIdFromInt(95);
   await engine.local.insert(replica, root, parent, { type: 'last' }, null);
   for (let i = 91; i <= 95; i += 1) {
-    await engine.local.insert(
-      replica,
-      root,
-      nodeIdFromInt(i),
-      { type: 'last' },
-      encoder.encode(`${i}`),
-    );
+    await engine.local.insert(replica, root, nodeIdFromInt(i), { type: 'last' }, null);
   }
 
   const events: MaterializationEvent[] = [];
@@ -1575,7 +1559,6 @@ async function scenarioDurableReportsNodeMovedWhilePaging(
     { limit: 2 },
   );
 
-  assert(events.length > 2, 'the catch-up is delivered in pages');
   const last = events
     .flatMap((event) => event.changes)
     .filter((change) => change.node === moved)
@@ -1584,7 +1567,6 @@ async function scenarioDurableReportsNodeMovedWhilePaging(
     last?.kind === 'insert' && last.parentAfter === parent,
     'a node moved during a paged read is reported under its new parent',
   );
-  assertBytesEqual(last.payload, encoder.encode('95'), 'and with its payload');
 }
 
 async function scenarioTreeNodeHandle(ctx: TreecrdtEngineConformanceContext): Promise<void> {

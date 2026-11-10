@@ -127,67 +127,82 @@ for (const scenario of treecrdtEngineConformanceScenarios()) {
   });
 }
 
+/** `onMaterializedDurable` over `client` with positions kept in memory, for the test to inspect. */
+function durableOver(
+  client: Awaited<ReturnType<typeof createNodeEngine>>,
+  onMaterialized = client.onMaterialized,
+) {
+  const positions = new Map<string, MaterializationCursor>();
+  const { onMaterializedDurable } = createDurableMaterialization({
+    changedSince: client.tree.changedSince,
+    onMaterialized,
+    cursors: {
+      load: async (name) => positions.get(name) ?? null,
+      save: async (name, cursor) => void positions.set(name, cursor),
+    },
+  });
+  return { onMaterializedDurable, positions };
+}
+
 test('a durable subscription reads again when an event arrives after a later one', async () => {
   const client = await createNodeEngine({ docId: 'durable-out-of-order' });
   await client.local.insert(replica, root, nodeIdFromInt(1), { type: 'last' }, null);
   // The subscription listens to a dispatcher the test feeds, so the test chooses the order.
   const dispatcher = createMaterializationDispatcher();
-  const stored = new Map<string, MaterializationCursor>();
-  const durable = createDurableMaterialization({
-    changedSince: client.tree.changedSince,
-    onMaterialized: dispatcher.onMaterialized,
-    cursors: {
-      load: async (name) => stored.get(name) ?? null,
-      save: async (name, cursor) => void stored.set(name, cursor),
-    },
-  });
+  const delivered: string[][] = [];
+  const subscription = await durableOver(client, dispatcher.onMaterialized).onMaterializedDurable(
+    'index',
+    (event) => void delivered.push(event.changes.map((change) => `${change.kind}:${change.node}`)),
+  );
+  delivered.length = 0;
   const emitted: MaterializationEvent[] = [];
   client.onMaterialized((event) => emitted.push(event));
-  const delivered: string[][] = [];
-  const subscription = await durable.onMaterializedDurable('index', (event) => {
-    delivered.push(event.changes.map((change) => `${change.kind}:${change.node}`));
-  });
-  delivered.length = 0;
+  const a = nodeIdFromInt(2);
+  const b = nodeIdFromInt(3);
+  await client.local.insert(replica, root, a, { type: 'last' }, null);
+  await client.local.insert(replica, root, b, { type: 'last' }, null);
 
-  try {
-    const a = nodeIdFromInt(2);
-    const b = nodeIdFromInt(3);
-    await client.local.insert(replica, root, a, { type: 'last' }, null);
-    await client.local.insert(replica, root, b, { type: 'last' }, null);
+  // The second insert's event overtakes the first, then arrives once more.
+  dispatcher.emitEvent(emitted[1]!);
+  dispatcher.emitEvent(emitted[0]!);
+  dispatcher.emitEvent(emitted[1]!);
+  await subscription.settled();
 
-    // The second insert's event overtakes the first, then arrives once more.
-    dispatcher.emitEvent(emitted[1]!);
-    dispatcher.emitEvent(emitted[0]!);
-    dispatcher.emitEvent(emitted[1]!);
-    await subscription.settled();
-
-    expect(delivered).toEqual([[`insert:${b}`], [`insert:${a}`, `insert:${b}`]]);
-  } finally {
-    await client.close();
-  }
+  expect(delivered).toEqual([[`insert:${b}`], [`insert:${a}`, `insert:${b}`]]);
+  await client.close();
 });
 
 test('a durable subscription starts over when its position is ahead of the database', async () => {
   const client = await createNodeEngine({ docId: 'durable-position-ahead' });
   const node = nodeIdFromInt(1);
   await client.local.insert(replica, root, node, { type: 'last' }, null);
-  const durable = createDurableMaterialization({
-    changedSince: client.tree.changedSince,
-    onMaterialized: client.onMaterialized,
-    cursors: { load: async () => ({ version: 0, headSeq: 999 }), save: async () => undefined },
-  });
+  const { onMaterializedDurable, positions } = durableOver(client);
+  positions.set('index', { version: 0, headSeq: 999 });
   const reset = vi.fn();
   const delivered: string[] = [];
 
-  try {
-    await durable.onMaterializedDurable(
-      'index',
-      (event) => void delivered.push(...event.changes.map((change) => change.node)),
-      { reset },
-    );
-    expect(reset).toHaveBeenCalledTimes(1);
-    expect(delivered).toContain(node);
-  } finally {
-    await client.close();
-  }
+  await onMaterializedDurable(
+    'index',
+    (event) => void delivered.push(...event.changes.map((change) => change.node)),
+    { reset },
+  );
+
+  expect(reset).toHaveBeenCalledTimes(1);
+  expect(delivered).toContain(node);
+  await client.close();
+});
+
+test('a durable subscription saves its position no more often than saveIntervalMs', async () => {
+  const client = await createNodeEngine({ docId: 'durable-save-interval' });
+  const { onMaterializedDurable, positions } = durableOver(client);
+  const eager = await onMaterializedDurable('eager', () => undefined, { saveIntervalMs: 0 });
+  const lazy = await onMaterializedDurable('lazy', () => undefined);
+  const opened = positions.get('lazy')!.headSeq;
+
+  await client.local.insert(replica, root, nodeIdFromInt(1), { type: 'last' }, null);
+  await Promise.all([eager.settled(), lazy.settled()]);
+
+  expect(positions.get('eager')!.headSeq).toBeGreaterThan(opened);
+  expect(positions.get('lazy')!.headSeq).toBe(opened);
+  await client.close();
 });

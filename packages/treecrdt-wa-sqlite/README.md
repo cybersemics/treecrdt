@@ -110,12 +110,10 @@ await subscription.settled(); // the index now includes the insert
 await subscription.close();
 ```
 
-- The call resolves once the listener has caught up with every change since it last ran. With no stored position for `version`, `reset` runs first and every node is delivered.
-- Events arrive in order, one at a time and at least once. If the listener rejects, its position stays where it was, and the same changes are delivered again with the next event or the next `settled()`.
-- After a gap, a change reports a node's current state instead of how it got there: a live node as `insert` (a root as `payload`), a removed one as `delete`. Apply each change as "make it so", because a node reported as `insert` may already be in your index.
-- Events are forwarded in the order the client emits them. One that arrives after a later one is not applied late; the subscription reads the affected nodes' current state instead.
-- The position is stored in the client's database, so dropping the database drops it. It is saved after a catch-up, at most every two seconds while events flow, and on `close()`. `client.close()` closes open subscriptions first.
-- A name can be open once per client.
+- The call resolves once the listener has caught up. With no usable position for `version`, `reset` runs first and every node is delivered.
+- Events arrive in order, one at a time and at least once. The listener may be async: the position moves only after it resolves, and a rejected call is delivered again with the next event or `settled()`.
+- After a gap, a change reports a node's current state instead of how it got there: a live node as `insert` (a root as `payload`), a removed one as `delete`. Apply each change as "make it so".
+- The position is stored in the client's database and saved after a catch-up, every `saveIntervalMs` (default 2000) while events flow, and on `close()`. `client.close()` closes open subscriptions first.
 
 `tree.changedSince(since)` is the read underneath, for callers that keep their own cursor. It returns nodes whose visible state changed after a `headSeq`, once each, with their current state. Changes are recorded in the same commit as the state. Save the cursor only after applying every returned page successfully, so a failed update can be retried after a crash or reload. `since = 0` reads every node.
 

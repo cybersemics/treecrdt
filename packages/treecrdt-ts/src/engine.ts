@@ -129,12 +129,14 @@ export function addMaterializationWriteId(
 export type DurableMaterializationListener = (event: MaterializationEvent) => void | Promise<void>;
 
 export type DurableMaterializationOptions = {
-  /** Bump when what the listener derives changes. A position stored by another version is discarded. */
+  /** Bump when what the listener derives changes; another version's position is discarded. */
   version?: number;
-  /** Clears what the listener derives. Called before every change is delivered from the start. */
+  /** Clears what the listener derives. Called before every node is delivered from the start. */
   reset?: () => void | Promise<void>;
   /** Maximum changes per event while catching up. Default 500. */
   limit?: number;
+  /** Milliseconds between saves of the position while events flow. Default 2000; 0 saves always. */
+  saveIntervalMs?: number;
   /** Receives a failed delivery. Without it, a failure only shows in `settled()`. */
   onError?: (error: unknown) => void;
 };
@@ -146,7 +148,6 @@ export type DurableMaterializationSubscription = {
   close: () => Promise<void>;
 };
 
-/** How far a durable subscription has been delivered, and for which listener version. */
 export type MaterializationCursor = { version: number; headSeq: number };
 
 /** Where `onMaterializedDurable` keeps each subscription's position. */
@@ -154,10 +155,6 @@ export type MaterializationCursorStore = {
   load: (name: string) => Promise<MaterializationCursor | null>;
   save: (name: string, cursor: MaterializationCursor) => Promise<void>;
 };
-
-const DURABLE_CATCH_UP_LIMIT = 500;
-/** While events flow, a position is saved at most this often. `close` always saves it. */
-const DURABLE_SAVE_INTERVAL_MS = 2000;
 
 /** Reports a node's current state as a change, for a listener that missed how it got there. */
 function changeFromState(node: TreecrdtChangedNode): Change {
@@ -169,10 +166,7 @@ function changeFromState(node: TreecrdtChangedNode): Change {
 }
 
 /**
- * Builds `onMaterializedDurable` over an engine's `changedSince` and `onMaterialized`.
- *
- * Events are forwarded as they arrive, one at a time. A subscription reads `changedSince` from its
- * position instead when it opens, after a failed delivery, and when an event arrives out of order.
+ * Builds `onMaterializedDurable` over an engine's `changedSince` and `onMaterialized`. The returned
  * `close` closes every open subscription; call it before the engine closes.
  */
 export function createDurableMaterialization(deps: {
@@ -191,8 +185,7 @@ export function createDurableMaterialization(deps: {
     opts = {},
   ) => {
     if (open.has(name)) throw new Error(`onMaterializedDurable: "${name}" is already open`);
-    const version = opts.version ?? 0;
-    const limit = opts.limit ?? DURABLE_CATCH_UP_LIMIT;
+    const { version = 0, limit = 500, saveIntervalMs = 2000 } = opts;
 
     /** Every change up to here has been delivered. */
     let cursor = 0;
@@ -217,7 +210,6 @@ export function createDurableMaterialization(deps: {
       saved = headSeq;
     };
 
-    /** Delivers the current state of every node changed after the cursor. */
     const catchUp = async () => {
       if (resetPending) {
         await opts.reset?.();
@@ -268,7 +260,7 @@ export function createDurableMaterialization(deps: {
         }
         await listener(event);
         cursor = event.headSeq;
-        if (Date.now() - savedAt >= DURABLE_SAVE_INTERVAL_MS) await save();
+        if (Date.now() - savedAt >= saveIntervalMs) await save();
       });
 
     const close = () =>
@@ -620,19 +612,13 @@ export type TreecrdtEngine = {
   local: TreecrdtEngineLocal;
   onMaterialized: (listener: MaterializationListener) => () => void;
   /**
-   * `onMaterialized` that keeps its place under `name`, so the listener misses no change across
-   * restarts or failed deliveries. Resolves once the listener has caught up.
+   * `onMaterialized` that keeps its place under `name`: events arrive in order and at least once,
+   * each after the previous listener call has settled. Resolves once the listener has caught up.
    *
-   * Events arrive in order and at least once, each after the previous listener call has settled.
-   * A subscription with no usable position (none stored for `opts.version`, or one ahead of the
-   * database) calls `opts.reset`, then receives every node.
-   *
-   * After a gap, a change reports a node's current state rather than how it got there: a live node
-   * as `insert` (or `payload` for a root), a removed one as `delete`, with no `source`. So apply
-   * each change as "make it so": a node reported as `insert` may already be known.
-   *
-   * A rejected listener call leaves the position where it was. Its changes are delivered again
-   * with the next event, the next `settled()` or the next subscription under this name.
+   * After a gap (opening, a rejected listener call, an event out of order) a change reports a
+   * node's current state: a live node as `insert` (`payload` for a root), a removed one as
+   * `delete`, with no `source`. So apply each change as "make it so". With no usable position,
+   * `opts.reset` runs first and every node is delivered.
    *
    * Optional: implemented by the SQLite-backed engines.
    */
