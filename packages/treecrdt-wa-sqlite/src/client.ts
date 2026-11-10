@@ -12,11 +12,7 @@ import {
   type TreecrdtSqliteWriter,
 } from '@treecrdt/interface/sqlite';
 import { bytesToHex, nodeIdFromBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
-import type {
-  LocalWriteOptions,
-  MaterializationOutcome,
-  WriteOptions,
-} from '@treecrdt/interface/engine';
+import type { LocalWriteOptions, WriteOptions } from '@treecrdt/interface/engine';
 import { createTreecrdtEngineLocal, createTreecrdtTreeNodes } from '@treecrdt/interface/engine';
 import type { MaterializationListener } from './session.js';
 import type { RuntimeConnection, RuntimeStrategy } from './runtime/types.js';
@@ -132,21 +128,16 @@ export async function createClientFromBackend(runtime: RuntimeConnection): Promi
   };
 
   const appendMany = async (operations: Operation[], writeOpts?: WriteOptions) => {
-    if (operations.length <= APPEND_MANY_CHUNK_SIZE) {
-      const outcome = await guard(() => session.operations.appendMany(operations));
+    // Each chunk commits on its own, so each reports its own event. One merged event at the end
+    // would come after the event of a write that landed between two chunks, and would never come
+    // for the committed chunks if a later one failed.
+    let start = 0;
+    do {
+      const chunk = operations.slice(start, start + APPEND_MANY_CHUNK_SIZE);
+      const outcome = await guard(() => session.operations.appendMany(chunk));
       materialized.emitOutcome(outcome, writeOpts?.writeId);
-      return;
-    }
-
-    const outcomes: MaterializationOutcome[] = [];
-    for (let start = 0; start < operations.length; start += APPEND_MANY_CHUNK_SIZE) {
-      outcomes.push(
-        await guard(() =>
-          session.operations.appendMany(operations.slice(start, start + APPEND_MANY_CHUNK_SIZE)),
-        ),
-      );
-    }
-    materialized.emitOutcome(mergeMaterializationOutcomes(outcomes), writeOpts?.writeId);
+      start += APPEND_MANY_CHUNK_SIZE;
+    } while (start < operations.length);
   };
 
   const localEngine = createTreecrdtEngineLocal({
@@ -293,12 +284,4 @@ export async function createClientFromBackend(runtime: RuntimeConnection): Promi
 
 function toBytes(bytes: Uint8Array | number[]): Uint8Array {
   return bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
-}
-
-function mergeMaterializationOutcomes(outcomes: MaterializationOutcome[]): MaterializationOutcome {
-  const last = outcomes[outcomes.length - 1];
-  return {
-    headSeq: last?.headSeq ?? 0,
-    changes: outcomes.flatMap((outcome) => outcome.changes),
-  };
 }
