@@ -210,12 +210,6 @@ where
         placement: LocalPlacement,
     ) -> Result<PreparedLocalOp> {
         let old_parent = self.parent(node)?;
-        // Moving the root, or a node under itself or its own descendant, leaves the tree unchanged
-        // (see `apply_move`), so it reports no change. The op is still recorded: replay can apply a
-        // move that is a cycle now once an earlier concurrent move arrives.
-        let rejected = node == NodeId::ROOT
-            || (new_parent != NodeId::TRASH
-                && (node == new_parent || Self::introduces_cycle(&self.nodes, node, new_parent)?));
         let after = self.resolve_after_for_placement(new_parent, placement, Some(node))?;
         let (replica, counter, lamport, seed) = self.next_op_meta();
         let order_key = self.allocate_child_key_after(new_parent, node, after, &seed)?;
@@ -238,16 +232,12 @@ where
             plan: LocalFinalizePlan {
                 parent_hints,
                 extra_index_records,
-                changes: if rejected {
-                    Vec::new()
-                } else {
-                    vec![MaterializationChange::Move {
-                        node,
-                        parent_before: old_parent,
-                        parent_after: new_parent,
-                        source: None,
-                    }]
-                },
+                changes: vec![MaterializationChange::Move {
+                    node,
+                    parent_before: old_parent,
+                    parent_after: new_parent,
+                    source: None,
+                }],
             },
         })
     }
@@ -318,6 +308,15 @@ where
     ) -> Result<(Operation, LocalFinalizePlan)> {
         let PreparedLocalOp { op, mut plan } = prepared;
         let (op, tombstone_changed) = self.commit_local(op)?;
+        // A move the tree rejected, of the root or into the node's own subtree, changed nothing.
+        // The op is still recorded: replay can apply it once an earlier concurrent move arrives.
+        let moved_under = match &op.kind {
+            OperationKind::Move { new_parent, .. } => Some(*new_parent),
+            _ => None,
+        };
+        if moved_under.is_some() && self.nodes.parent(op.kind.node())? != moved_under {
+            plan.changes.clear();
+        }
         // A local write can restore or hide the node and its ancestors, as a remote apply of the
         // same op would. The plan already reports a local delete of its own node.
         let deleted = match &op.kind {
