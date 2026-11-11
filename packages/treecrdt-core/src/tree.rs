@@ -316,8 +316,21 @@ where
         &mut self,
         prepared: PreparedLocalOp,
     ) -> Result<(Operation, LocalFinalizePlan)> {
-        let op = self.commit_local(prepared.op)?;
-        Ok((op, prepared.plan))
+        let PreparedLocalOp { op, mut plan } = prepared;
+        let (op, tombstone_changed) = self.commit_local(op)?;
+        // A local write can restore or hide the node and its ancestors, as a remote apply of the
+        // same op would. The plan already reports a local delete of its own node.
+        let deleted = match &op.kind {
+            OperationKind::Delete { node, .. } => Some(*node),
+            _ => None,
+        };
+        plan.changes.extend(
+            tombstone_changed
+                .into_iter()
+                .filter(|delta| Some(delta.node) != deleted)
+                .filter_map(|delta| materialization_change_from_tombstone_delta(delta, None)),
+        );
+        Ok((op, plan))
     }
 
     pub fn apply_remote(&mut self, op: Operation) -> Result<()> {
@@ -565,14 +578,6 @@ where
         Ok(self.finalize_local_with_outcome(op, index, head_seq, plan)?.head_seq)
     }
 
-    fn refresh_tombstones_upward<I>(&mut self, starts: I) -> Result<()>
-    where
-        I: IntoIterator<Item = NodeId>,
-    {
-        let _ = self.refresh_tombstones_upward_with_delta(starts)?;
-        Ok(())
-    }
-
     /// Refresh tombstone cache for nodes on the upward closure of `starts`.
     ///
     /// Returns every node whose cached tombstone value actually changed.
@@ -768,18 +773,18 @@ where
         &mut self.nodes
     }
 
-    fn commit_local(&mut self, op: Operation) -> Result<Operation> {
+    fn commit_local(&mut self, op: Operation) -> Result<(Operation, Vec<TombstoneDelta>)> {
         self.version_vector.observe(&self.replica_id, op.meta.id.counter);
         if !self.storage.apply(op.clone())? {
-            return Ok(op);
+            return Ok((op, Vec::new()));
         }
         let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
         let mut starts = affected_parents(snapshot.parent, &op.kind);
         starts.push(op.kind.node());
-        self.refresh_tombstones_upward(starts)?;
+        let tombstone_changed = self.refresh_tombstones_upward_with_delta(starts)?;
         self.op_count += 1;
         self.head = Some(op.clone());
-        Ok(op)
+        Ok((op, tombstone_changed))
     }
 
     fn seed(replica: &ReplicaId, counter: u64) -> Vec<u8> {
