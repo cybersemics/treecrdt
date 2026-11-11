@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import {
   createTreecrdtSqliteAdapter,
   createTreecrdtSqliteChangedSince,
+  createTreecrdtSqliteMaterializationCursors,
   createTreecrdtSqliteWriter,
   decodeSqliteNodeIds,
   decodeSqliteOpRefs,
@@ -20,6 +21,7 @@ import {
 } from '@treecrdt/interface/ids';
 import type { Operation, ReplicaId, TreecrdtAdapter } from '@treecrdt/interface';
 import {
+  createDurableMaterialization,
   createMaterializationDispatcher,
   createTreecrdtEngineLocal,
   createTreecrdtTreeNodes,
@@ -133,11 +135,12 @@ export function createTreecrdtClient(
   db: any,
   opts: { docId?: string; maxBulkOps?: number } = {},
 ): Promise<
-  TreecrdtEngine & {
-    runner: SqliteRunner;
-    auth: TreecrdtSqliteAuthApi;
-    tree: Required<Pick<TreecrdtEngineTree, 'changedSince'>>;
-  }
+  TreecrdtEngine &
+    Required<Pick<TreecrdtEngine, 'onMaterializedDurable'>> & {
+      runner: SqliteRunner;
+      auth: TreecrdtSqliteAuthApi;
+      tree: Required<Pick<TreecrdtEngineTree, 'changedSince'>>;
+    }
 > {
   const runner = createRunner(db);
   const materialized = createMaterializationDispatcher();
@@ -146,6 +149,14 @@ export function createTreecrdtClient(
     onMaterialized: materialized.emitEvent,
   });
   const docId = opts.docId ?? 'treecrdt';
+  const changedSince = createTreecrdtSqliteChangedSince((query) =>
+    adapter.treeChangedSince!(query),
+  );
+  const durable = createDurableMaterialization({
+    changedSince,
+    onMaterialized: materialized.onMaterialized,
+    cursors: createTreecrdtSqliteMaterializationCursors(runner),
+  });
 
   const ready = Promise.resolve(adapter.setDocId(docId));
 
@@ -254,14 +265,17 @@ export function createTreecrdtClient(
       }),
       dump: treeDumpImpl,
       nodeCount: treeNodeCountImpl,
-      changedSince: createTreecrdtSqliteChangedSince((query) => adapter.treeChangedSince!(query)),
+      changedSince,
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
     auth: createTreecrdtSqliteAuthApi({ runner, docId }),
     local,
     onMaterialized: materialized.onMaterialized,
+    onMaterializedDurable: durable.onMaterializedDurable,
     runner,
     close: async () => {
+      // Durable subscriptions save their position while the database is still open.
+      await durable.close().catch(() => undefined);
       if (typeof db?.close === 'function') db.close();
     },
   }));

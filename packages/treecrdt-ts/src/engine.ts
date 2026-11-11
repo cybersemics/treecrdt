@@ -125,6 +125,192 @@ export function addMaterializationWriteId(
   };
 }
 
+/** Listener for `onMaterializedDurable`. The next event waits for the returned promise. */
+export type DurableMaterializationListener = (event: MaterializationEvent) => void | Promise<void>;
+
+export type DurableMaterializationOptions = {
+  /** Bump when what the listener derives changes; another version's position is discarded. */
+  version?: number;
+  /** Clears what the listener derives. Called before every node is delivered from the start. */
+  reset?: () => void | Promise<void>;
+  /** Maximum changes per event while catching up. Default 500. */
+  limit?: number;
+  /** Milliseconds between saves of the position while events flow. Default 2000; 0 saves always. */
+  saveIntervalMs?: number;
+  /** Receives a failed delivery. Without it, a failure only shows in `settled()`. */
+  onError?: (error: unknown) => void;
+};
+
+export type DurableMaterializationSubscription = {
+  /** Resolves once everything materialized before the call is delivered; rejects if that fails. */
+  settled: () => Promise<void>;
+  /** Stops delivery, waits for the listener and saves the position. */
+  close: () => Promise<void>;
+};
+
+export type MaterializationCursor = { version: number; headSeq: number };
+
+/** Where `onMaterializedDurable` keeps each subscription's position. */
+export type MaterializationCursorStore = {
+  load: (name: string) => Promise<MaterializationCursor | null>;
+  save: (name: string, cursor: MaterializationCursor) => Promise<void>;
+};
+
+/** Reports a node's current state as a change, for a listener that missed how it got there. */
+function changeFromState(node: TreecrdtChangedNode): Change {
+  if (node.tombstone) return { kind: 'delete', node: node.node, parentBefore: null };
+  const payload = node.payload ?? null;
+  // Only a root has no parent, and a root is never inserted.
+  if (node.parent === null) return { kind: 'payload', node: node.node, payload };
+  return { kind: 'insert', node: node.node, parentAfter: node.parent, payload };
+}
+
+/**
+ * Builds `onMaterializedDurable` over an engine's `changedSince` and `onMaterialized`. The returned
+ * `close` closes every open subscription; call it before the engine closes.
+ */
+export function createDurableMaterialization(deps: {
+  changedSince: NonNullable<TreecrdtEngineTree['changedSince']>;
+  onMaterialized: TreecrdtEngine['onMaterialized'];
+  cursors: MaterializationCursorStore;
+}): {
+  onMaterializedDurable: NonNullable<TreecrdtEngine['onMaterializedDurable']>;
+  close: () => Promise<void>;
+} {
+  const open = new Map<string, () => Promise<void>>();
+
+  const onMaterializedDurable: NonNullable<TreecrdtEngine['onMaterializedDurable']> = async (
+    name,
+    listener,
+    opts = {},
+  ) => {
+    if (open.has(name)) throw new Error(`onMaterializedDurable: "${name}" is already open`);
+    const { version = 0, limit = 500, saveIntervalMs = 2000 } = opts;
+
+    /** Every change up to here has been delivered. */
+    let cursor = 0;
+    /** Head of the last `changedSince` read. No change at or below it can still be missing. */
+    let verified = 0;
+    let saved: number | null = null;
+    let savedAt = 0;
+    /** The next delivery must read from the cursor: nothing was read yet, or a delivery failed. */
+    let stale = true;
+    let resetPending = false;
+    /** Opening failed, so deliveries queued behind it must not reach the listener. */
+    let abandoned = false;
+    let closing: Promise<void> | null = null;
+    let unsubscribe = () => {};
+    let tail: Promise<void> = Promise.resolve();
+
+    const save = async () => {
+      savedAt = Date.now();
+      if (cursor === saved) return;
+      const headSeq = cursor;
+      await deps.cursors.save(name, { version, headSeq });
+      saved = headSeq;
+    };
+
+    const catchUp = async () => {
+      if (resetPending) {
+        await opts.reset?.();
+        resetPending = false;
+      }
+      for (;;) {
+        let page = await deps.changedSince(cursor, { payloads: true, limit });
+        const paged = page.next !== null;
+        for (;;) {
+          if (page.nodes.length > 0) {
+            await listener({ headSeq: page.headSeq, changes: page.nodes.map(changeFromState) });
+          }
+          if (!page.next) break;
+          page = await deps.changedSince(page.next, { payloads: true, limit });
+        }
+        cursor = verified = page.headSeq;
+        // A node that changes during a paged read is left out of it, so read again from its end.
+        if (!paged) break;
+      }
+      stale = false;
+      await save();
+    };
+
+    /** Runs deliveries one at a time. A failure rejects the returned promise, not the queue. */
+    const enqueue = (work: () => Promise<void>): Promise<void> => {
+      const run = tail.then(async () => {
+        if (abandoned) return;
+        try {
+          await work();
+        } catch (error) {
+          stale = true;
+          throw error;
+        }
+      });
+      tail = run.catch(() => undefined);
+      return run;
+    };
+
+    const deliver = (event: MaterializationEvent) =>
+      enqueue(async () => {
+        if (stale) return catchUp();
+        // Already covered by a read, or the event just delivered arriving again.
+        if (event.headSeq <= verified || event.headSeq === cursor) return;
+        if (event.headSeq < cursor) {
+          // A later event overtook this one, so the cursor no longer says what was delivered.
+          cursor = verified;
+          return catchUp();
+        }
+        await listener(event);
+        cursor = event.headSeq;
+        if (Date.now() - savedAt >= saveIntervalMs) await save();
+      });
+
+    const close = () =>
+      (closing ??= (async () => {
+        unsubscribe();
+        try {
+          let pending: Promise<void>;
+          do {
+            pending = tail;
+            await pending;
+          } while (pending !== tail);
+          await save();
+        } finally {
+          open.delete(name);
+        }
+      })());
+
+    open.set(name, close);
+    try {
+      const stored = await deps.cursors.load(name);
+      const head = (await deps.changedSince(0, { limit: 1 })).headSeq;
+      // A position ahead of the database belongs to a tree that has since been rebuilt.
+      if (stored?.version === version && stored.headSeq <= head) cursor = saved = stored.headSeq;
+      else resetPending = true;
+      // Subscribe before reading, so an event that arrives during the read waits behind it.
+      unsubscribe = deps.onMaterialized((event) => {
+        deliver(event).catch((error) => opts.onError?.(error));
+      });
+      await enqueue(catchUp);
+    } catch (error) {
+      abandoned = true;
+      unsubscribe();
+      open.delete(name);
+      throw error;
+    }
+
+    return {
+      settled: () => (closing ? tail : enqueue(async () => (stale ? catchUp() : undefined))),
+      close,
+    };
+  };
+
+  return {
+    onMaterializedDurable,
+    close: async () => {
+      await Promise.all([...open.values()].map((close) => close()));
+    },
+  };
+}
+
 export type WriteOptions = {
   writeId?: string;
 };
@@ -425,5 +611,21 @@ export type TreecrdtEngine = {
   meta: TreecrdtEngineMeta;
   local: TreecrdtEngineLocal;
   onMaterialized: (listener: MaterializationListener) => () => void;
+  /**
+   * `onMaterialized` that keeps its place under `name`: events arrive in order and at least once,
+   * each after the previous listener call has settled. Resolves once the listener has caught up.
+   *
+   * After a gap (opening, a rejected listener call, an event out of order) a change reports a
+   * node's current state: a live node as `insert` (`payload` for a root), a removed one as
+   * `delete`, with no `source`. So apply each change as "make it so". With no usable position,
+   * `opts.reset` runs first and every node is delivered.
+   *
+   * Optional: implemented by the SQLite-backed engines.
+   */
+  onMaterializedDurable?: (
+    name: string,
+    listener: DurableMaterializationListener,
+    opts?: DurableMaterializationOptions,
+  ) => Promise<DurableMaterializationSubscription>;
   close: () => Promise<void>;
 };

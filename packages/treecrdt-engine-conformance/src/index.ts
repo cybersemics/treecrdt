@@ -220,6 +220,22 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioChangedSinceMatchesStateDiff,
     },
     {
+      name: 'onMaterializedDurable: resumes where it stopped after reopening',
+      run: scenarioDurableResumesAfterReopen,
+    },
+    {
+      name: 'onMaterializedDurable: delivers a failed change again',
+      run: scenarioDurableRedeliversAfterFailure,
+    },
+    {
+      name: 'onMaterializedDurable: a new version resets and receives every node',
+      run: scenarioDurableResetsForNewVersion,
+    },
+    {
+      name: 'onMaterializedDurable: reports a node moved during a paged catch-up',
+      run: scenarioDurableReportsNodeMovedWhilePaging,
+    },
+    {
       name: 'oprefs_all + ops.get: preserve order and reject missing refs',
       run: scenarioOpsGetPreservesOrderAndRejectsMissingRefs,
     },
@@ -1403,6 +1419,154 @@ async function scenarioChangedSinceMatchesStateDiff(
     cursor = read.headSeq;
     before = after;
   }
+}
+
+/** Changes delivered to a durable listener, in order, as `kind:node`. */
+function durableLog(events: MaterializationEvent[]): string[] {
+  return events.flatMap((event) => event.changes.map((change) => `${change.kind}:${change.node}`));
+}
+
+async function scenarioDurableResumesAfterReopen(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  if (!ctx.createPersistentEngine) return;
+  const replica = replicaFromLabel('r-durable');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const live = nodeIdFromInt(80);
+  const missed = nodeIdFromInt(81);
+
+  const e1 = await ctx.createPersistentEngine({ docId: ctx.docId, name: 'db' });
+  if (!e1.onMaterializedDurable) return ctx.skip('engine has no onMaterializedDurable');
+  const first: MaterializationEvent[] = [];
+  const s1 = await e1.onMaterializedDurable('index', (event) => void first.push(event));
+  first.length = 0;
+  await e1.local.insert(replica, root, live, { type: 'last' }, null);
+  await s1.settled();
+  assertArrayEqual(durableLog(first), [`insert:${live}`], 'a live event is delivered');
+  await s1.close();
+  await e1.local.insert(replica, root, missed, { type: 'last' }, encoder.encode('missed'));
+  await e1.close();
+
+  const e2 = await ctx.createPersistentEngine({ docId: ctx.docId, name: 'db' });
+  const second: MaterializationEvent[] = [];
+  await e2.onMaterializedDurable!('index', (event) => void second.push(event));
+  assertArrayEqual(
+    durableLog(second),
+    [`insert:${missed}`],
+    'reopening delivers only what the subscription missed',
+  );
+  const change = second[0]!.changes[0]!;
+  assertBytesEqual(
+    'payload' in change ? change.payload : null,
+    encoder.encode('missed'),
+    'a missed node is reported with its current payload',
+  );
+}
+
+async function scenarioDurableRedeliversAfterFailure(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engine.onMaterializedDurable) return ctx.skip('engine has no onMaterializedDurable');
+  const replica = replicaFromLabel('r-durable');
+  const root = nodeIdFromInt(0);
+  const node = nodeIdFromInt(83);
+  // A position of 0 reads every node, so start from a database that already has one.
+  await engine.local.insert(replica, root, nodeIdFromInt(85), { type: 'last' }, null);
+
+  const delivered: MaterializationEvent[] = [];
+  const errors: unknown[] = [];
+  let failing = false;
+  const subscription = await engine.onMaterializedDurable(
+    'index',
+    (event) => {
+      if (failing) throw new Error('listener failed');
+      delivered.push(event);
+    },
+    { onError: (error) => errors.push(error) },
+  );
+  delivered.length = 0;
+
+  failing = true;
+  await engine.local.insert(replica, root, node, { type: 'last' }, null);
+  const failure = await subscription.settled().then(
+    () => null,
+    (error) => error,
+  );
+  assert(failure, 'settled rejects while the listener fails');
+  assertEqual(errors.length, 1, 'the failed event reaches onError');
+
+  failing = false;
+  await subscription.settled();
+  assertArrayEqual(durableLog(delivered), [`insert:${node}`], 'the failed change is delivered');
+}
+
+async function scenarioDurableResetsForNewVersion(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engine.onMaterializedDurable) return ctx.skip('engine has no onMaterializedDurable');
+  const replica = replicaFromLabel('r-durable');
+  const node = nodeIdFromInt(84);
+  await engine.local.insert(replica, nodeIdFromInt(0), node, { type: 'last' }, null);
+
+  let resets = 0;
+  /** Subscribes, closes, and returns what the subscription received while opening. */
+  const open = async (version: number): Promise<string[]> => {
+    const events: MaterializationEvent[] = [];
+    const subscription = await engine.onMaterializedDurable!(
+      'index',
+      (event) => void events.push(event),
+      { version, reset: () => void (resets += 1) },
+    );
+    await subscription.close();
+    return durableLog(events);
+  };
+
+  assert((await open(1)).includes(`insert:${node}`), 'a first subscription receives every node');
+  assertEqual((await open(1)).length, 0, 'the same version keeps its position');
+  assertEqual(resets, 1, 'only the first subscription resets');
+  assert((await open(2)).includes(`insert:${node}`), 'a new version receives every node again');
+  assertEqual(resets, 2, 'a new version resets');
+}
+
+async function scenarioDurableReportsNodeMovedWhilePaging(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engine.onMaterializedDurable) return ctx.skip('engine has no onMaterializedDurable');
+  const replica = replicaFromLabel('r-durable');
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(90);
+  // Pages are read in node order, so the last node is still unread when the first page arrives.
+  const moved = nodeIdFromInt(95);
+  await engine.local.insert(replica, root, parent, { type: 'last' }, null);
+  for (let i = 91; i <= 95; i += 1) {
+    await engine.local.insert(replica, root, nodeIdFromInt(i), { type: 'last' }, null);
+  }
+
+  const events: MaterializationEvent[] = [];
+  let movedDuringRead = false;
+  await engine.onMaterializedDurable(
+    'index',
+    async (event) => {
+      events.push(event);
+      if (movedDuringRead) return;
+      movedDuringRead = true;
+      await engine.local.move(replica, moved, parent, { type: 'last' });
+    },
+    { limit: 2 },
+  );
+
+  const last = events
+    .flatMap((event) => event.changes)
+    .filter((change) => change.node === moved)
+    .pop();
+  assert(
+    last?.kind === 'insert' && last.parentAfter === parent,
+    'a node moved during a paged read is reported under its new parent',
+  );
 }
 
 async function scenarioTreeNodeHandle(ctx: TreecrdtEngineConformanceContext): Promise<void> {

@@ -2,6 +2,7 @@ import * as Comlink from 'comlink';
 import type { Operation, ReplicaId } from '@treecrdt/interface';
 import {
   createTreecrdtSqliteChangedSince,
+  createTreecrdtSqliteMaterializationCursors,
   createTreecrdtSqliteWriter,
   decodeSqliteNodeIds,
   decodeSqliteOpRefs,
@@ -17,7 +18,11 @@ import type {
   MaterializationOutcome,
   WriteOptions,
 } from '@treecrdt/interface/engine';
-import { createTreecrdtEngineLocal, createTreecrdtTreeNodes } from '@treecrdt/interface/engine';
+import {
+  createDurableMaterialization,
+  createTreecrdtEngineLocal,
+  createTreecrdtTreeNodes,
+} from '@treecrdt/interface/engine';
 import type { MaterializationListener } from './session.js';
 import type { RuntimeConnection, RuntimeStrategy } from './runtime/types.js';
 import { resolveBrowserEnvironment } from './runtime/resolve.js';
@@ -179,6 +184,17 @@ export async function createClientFromBackend(runtime: RuntimeConnection): Promi
     ) => localWriterFor(replica).payload(node, payload, writeOpts),
   });
 
+  const changedSince = createTreecrdtSqliteChangedSince((query) =>
+    guard(() => session.tree.changedSince(query)),
+  );
+  const durable = createDurableMaterialization({
+    changedSince,
+    onMaterialized: materialized.onMaterialized,
+    cursors: createTreecrdtSqliteMaterializationCursors(runner),
+  });
+  /** Lets durable subscriptions finish and save their position while the database is open. */
+  const closeDurable = () => durable.close().catch(() => undefined);
+
   const releaseSubscription = async () => {
     try {
       await Promise.resolve(connection.unsubscribeMaterialized(subscribedListener));
@@ -233,9 +249,7 @@ export async function createClientFromBackend(runtime: RuntimeConnection): Promi
       }),
       dump: () => guard(async () => decodeSqliteTreeRows(await session.tree.dump())),
       nodeCount: () => guard(async () => Number(await session.tree.nodeCount())),
-      changedSince: createTreecrdtSqliteChangedSince((query) =>
-        guard(() => session.tree.changedSince(query)),
-      ),
+      changedSince,
     },
     meta: {
       headLamport: () => guard(async () => Number(await session.operations.headLamport())),
@@ -246,6 +260,7 @@ export async function createClientFromBackend(runtime: RuntimeConnection): Promi
     },
     local: localEngine,
     onMaterialized: materialized.onMaterialized,
+    onMaterializedDurable: durable.onMaterializedDurable,
     close: async () => {
       if (closePromise) return await closePromise;
       if (dropPromise) {
@@ -256,6 +271,7 @@ export async function createClientFromBackend(runtime: RuntimeConnection): Promi
         return await closePromise;
       }
       closePromise = (async () => {
+        await closeDurable();
         closed = true;
         try {
           await connection.close();
@@ -277,6 +293,7 @@ export async function createClientFromBackend(runtime: RuntimeConnection): Promi
         return await dropPromise;
       }
       dropPromise = (async () => {
+        await closeDurable();
         closed = true;
         try {
           await connection.drop();
