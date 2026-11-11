@@ -1,5 +1,12 @@
 # @treecrdt/wasm
 
+## 0.1.2
+
+### Patch Changes
+
+- Updated dependencies [b2394a9]
+  - @treecrdt/interface@0.5.0
+
 ## 0.1.1
 
 ### Patch Changes

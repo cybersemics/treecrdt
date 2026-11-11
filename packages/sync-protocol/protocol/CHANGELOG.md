@@ -1,5 +1,12 @@
 # @treecrdt/sync-protocol
 
+## 0.2.2
+
+### Patch Changes
+
+- Updated dependencies [b2394a9]
+  - @treecrdt/interface@0.5.0
+
 ## 0.2.1
 
 ### Patch Changes

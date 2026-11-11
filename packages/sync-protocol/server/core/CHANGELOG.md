@@ -1,5 +1,11 @@
 # @treecrdt/sync-server-core
 
+## 0.1.6
+
+### Patch Changes
+
+- @treecrdt/sync-protocol@0.2.2
+
 ## 0.1.5
 
 ### Patch Changes

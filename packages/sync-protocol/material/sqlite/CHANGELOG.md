@@ -1,5 +1,14 @@
 # @treecrdt/sync-sqlite
 
+## 0.1.5
+
+### Patch Changes
+
+- Updated dependencies [b2394a9]
+  - @treecrdt/interface@0.5.0
+  - @treecrdt/sync-protocol@0.2.2
+  - @treecrdt/auth@0.2.2
+
 ## 0.1.4
 
 ### Patch Changes
