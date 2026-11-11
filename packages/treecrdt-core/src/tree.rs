@@ -210,6 +210,12 @@ where
         placement: LocalPlacement,
     ) -> Result<PreparedLocalOp> {
         let old_parent = self.parent(node)?;
+        // Moving the root, or a node under itself or its own descendant, leaves the tree unchanged
+        // (see `apply_move`), so it reports no change. The op is still recorded: replay can apply a
+        // move that is a cycle now once an earlier concurrent move arrives.
+        let rejected = node == NodeId::ROOT
+            || (new_parent != NodeId::TRASH
+                && (node == new_parent || Self::introduces_cycle(&self.nodes, node, new_parent)?));
         let after = self.resolve_after_for_placement(new_parent, placement, Some(node))?;
         let (replica, counter, lamport, seed) = self.next_op_meta();
         let order_key = self.allocate_child_key_after(new_parent, node, after, &seed)?;
@@ -232,12 +238,16 @@ where
             plan: LocalFinalizePlan {
                 parent_hints,
                 extra_index_records,
-                changes: vec![MaterializationChange::Move {
-                    node,
-                    parent_before: old_parent,
-                    parent_after: new_parent,
-                    source: None,
-                }],
+                changes: if rejected {
+                    Vec::new()
+                } else {
+                    vec![MaterializationChange::Move {
+                        node,
+                        parent_before: old_parent,
+                        parent_after: new_parent,
+                        source: None,
+                    }]
+                },
             },
         })
     }

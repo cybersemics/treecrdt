@@ -160,6 +160,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioLocalOpsMaterializationWriteId,
     },
     {
+      name: 'local ops: a move into its own subtree reports no change',
+      run: scenarioLocalMoveIntoOwnSubtree,
+    },
+    {
       name: 'append/appendMany: idempotent + headLamport monotonic',
       run: scenarioAppendIdempotentAndHeadLamportMonotonic,
     },
@@ -597,6 +601,26 @@ async function scenarioLocalInsertWithPayload(
   assertEqual(first.kind.type, 'insert', 'ops.all first kind');
   if (first.kind.type !== 'insert') throw new Error(`expected insert op, got ${first.kind.type}`);
   assertBytesEqual(first.kind.payload ?? null, payload, 'ops.all insert payload');
+}
+
+async function scenarioLocalMoveIntoOwnSubtree(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(44);
+  const child = nodeIdFromInt(45);
+  await engine.local.insert(replica, root, parent, { type: 'last' }, null);
+  await engine.local.insert(replica, parent, child, { type: 'last' }, null);
+
+  const events = await captureMaterializationEvents(engine, async () => {
+    await engine.local.move(replica, parent, child, { type: 'last' });
+    await engine.local.move(replica, parent, parent, { type: 'last' });
+  });
+
+  assertEqual((await engine.tree.node(parent).parent())?.id, root, 'the node stays where it was');
+  assertEqual(events.length, 0, 'a move into its own subtree reports no change');
 }
 
 async function scenarioLocalOpsMaterializationWriteId(
