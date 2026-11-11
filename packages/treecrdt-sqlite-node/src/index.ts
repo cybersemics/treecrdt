@@ -149,6 +149,14 @@ export function createTreecrdtClient(
 
   const ready = Promise.resolve(adapter.setDocId(docId));
 
+  // Writes run one at a time, so a write's event is emitted before the next write commits.
+  let writes: Promise<unknown> = Promise.resolve();
+  const serialized = <T>(write: () => Promise<T>): Promise<T> => {
+    const run = writes.then(write);
+    writes = run.catch(() => undefined);
+    return run;
+  };
+
   const localWriters = new Map<string, TreecrdtSqliteWriter>();
   const localWriterKey = (replica: ReplicaId) => bytesToHex(replica);
   const localWriterFor = (replica: ReplicaId) => {
@@ -199,25 +207,27 @@ export function createTreecrdtClient(
     payload: Uint8Array | null,
     writeOpts?: LocalWriteOptions,
   ) =>
-    localWriterFor(replica).insert(parent, node, placement, {
-      ...writeOpts,
-      ...(payload ? { payload } : {}),
-    });
+    serialized(() =>
+      localWriterFor(replica).insert(parent, node, placement, {
+        ...writeOpts,
+        ...(payload ? { payload } : {}),
+      }),
+    );
   const localMoveImpl = async (
     replica: ReplicaId,
     node: string,
     newParent: string,
     placement: TreecrdtSqlitePlacement,
     writeOpts?: LocalWriteOptions,
-  ) => localWriterFor(replica).move(node, newParent, placement, writeOpts);
+  ) => serialized(() => localWriterFor(replica).move(node, newParent, placement, writeOpts));
   const localDeleteImpl = async (replica: ReplicaId, node: string, writeOpts?: LocalWriteOptions) =>
-    localWriterFor(replica).delete(node, writeOpts);
+    serialized(() => localWriterFor(replica).delete(node, writeOpts));
   const localPayloadImpl = async (
     replica: ReplicaId,
     node: string,
     payload: Uint8Array | null,
     writeOpts?: LocalWriteOptions,
-  ) => localWriterFor(replica).payload(node, payload, writeOpts);
+  ) => serialized(() => localWriterFor(replica).payload(node, payload, writeOpts));
 
   const local = createTreecrdtEngineLocal({
     insert: localInsertImpl,
@@ -231,14 +241,16 @@ export function createTreecrdtClient(
     storage: 'sqlite',
     docId,
     ops: {
-      append: async (op, writeOpts?: WriteOptions) => {
-        const outcome = await adapter.appendOp(op, nodeIdToBytes16, encodeReplica);
-        materialized.emitOutcome(outcome, writeOpts?.writeId);
-      },
-      appendMany: async (ops, writeOpts?: WriteOptions) => {
-        const outcome = await adapter.appendOps!(ops, nodeIdToBytes16, encodeReplica);
-        materialized.emitOutcome(outcome, writeOpts?.writeId);
-      },
+      append: (op, writeOpts?: WriteOptions) =>
+        serialized(async () => {
+          const outcome = await adapter.appendOp(op, nodeIdToBytes16, encodeReplica);
+          materialized.emitOutcome(outcome, writeOpts?.writeId);
+        }),
+      appendMany: (ops, writeOpts?: WriteOptions) =>
+        serialized(async () => {
+          const outcome = await adapter.appendOps!(ops, nodeIdToBytes16, encodeReplica);
+          materialized.emitOutcome(outcome, writeOpts?.writeId);
+        }),
       all: () => opsSinceImpl(0),
       since: opsSinceImpl,
       children: async (parent) => opsByOpRefsImpl(await opRefsChildrenImpl(parent)),

@@ -160,6 +160,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioLocalOpsMaterializationWriteId,
     },
     {
+      name: 'local ops: a move into its own subtree reports no change',
+      run: scenarioLocalMoveIntoOwnSubtree,
+    },
+    {
       name: 'append/appendMany: idempotent + headLamport monotonic',
       run: scenarioAppendIdempotentAndHeadLamportMonotonic,
     },
@@ -174,6 +178,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
     {
       name: 'materialization events: defensive restore',
       run: scenarioMaterializationEventDefensiveRestore,
+    },
+    {
+      name: 'local ops: a write under a deleted parent reports its restore',
+      run: scenarioLocalWriteReportsRestoredParent,
     },
     {
       name: 'tree: children slice pagination',
@@ -218,6 +226,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
     {
       name: 'tree: changedSince matches state diffs across replicas',
       run: scenarioChangedSinceMatchesStateDiff,
+    },
+    {
+      name: 'materialization events: applied in order, they reproduce the tree',
+      run: scenarioMaterializationEventsReproduceTree,
     },
     {
       name: 'oprefs_all + ops.get: preserve order and reject missing refs',
@@ -591,6 +603,26 @@ async function scenarioLocalInsertWithPayload(
   assertBytesEqual(first.kind.payload ?? null, payload, 'ops.all insert payload');
 }
 
+async function scenarioLocalMoveIntoOwnSubtree(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(44);
+  const child = nodeIdFromInt(45);
+  await engine.local.insert(replica, root, parent, { type: 'last' }, null);
+  await engine.local.insert(replica, parent, child, { type: 'last' }, null);
+
+  const events = await captureMaterializationEvents(engine, async () => {
+    await engine.local.move(replica, parent, child, { type: 'last' });
+    await engine.local.move(replica, parent, parent, { type: 'last' });
+  });
+
+  assertEqual((await engine.tree.node(parent).parent())?.id, root, 'the node stays where it was');
+  assertEqual(events.length, 0, 'a move into its own subtree reports no change');
+}
+
 async function scenarioLocalOpsMaterializationWriteId(
   ctx: TreecrdtEngineConformanceContext,
 ): Promise<void> {
@@ -902,6 +934,38 @@ async function scenarioMaterializationEventDefensiveRestore(
     [child],
     'child should remain visible',
   );
+}
+
+async function scenarioLocalWriteReportsRestoredParent(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r-local-restore');
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(80);
+  const child = nodeIdFromInt(81);
+  await engine.local.insert(replica, root, parent, { type: 'last' }, null);
+  await engine.local.insert(replica, parent, child, { type: 'last' }, null);
+  await engine.local.delete(replica, parent);
+  const cursor = engine.tree.changedSince ? (await readAllChangedSince(engine, 0)).headSeq : 0;
+
+  // The delete didn't know about this write, so it restores the parent, as it does on peers.
+  const events = await captureMaterializationEvents(engine, async () => {
+    await engine.local.payload(replica, child, Uint8Array.of(1));
+  });
+  assert(
+    events.some((event) =>
+      event.changes.some((change) => change.kind === 'restore' && change.node === parent),
+    ),
+    'the event reports the restored parent',
+  );
+  if (engine.tree.changedSince) {
+    const { nodes } = await readAllChangedSince(engine, cursor);
+    assert(
+      nodes.some((n) => n.node === parent && !n.tombstone),
+      'changedSince lists the restored parent',
+    );
+  }
 }
 
 async function scenarioChildrenSlicePagination(
@@ -1310,18 +1374,7 @@ async function scenarioChangedSinceMatchesStateDiff(
     [a, replicaFromLabel('rA')],
     [b, replicaFromLabel('rB')],
   ]);
-  const encoder = new TextEncoder();
-  const root = nodeIdFromInt(0);
-  let nextNode = 100;
-  // Deterministic xorshift32, so a failing round reproduces.
-  let seed = 0x9e3779b9;
-  const random = () => {
-    seed ^= seed << 13;
-    seed ^= seed >>> 17;
-    seed ^= seed << 5;
-    return (seed >>> 0) / 0x1_0000_0000;
-  };
-  const pick = <T>(items: T[]): T => items[Math.floor(random() * items.length)]!;
+  const { random, step } = randomLocalWrites(0x9e3779b9, replicas);
   const describe = (
     parent: string | null,
     orderKey: Uint8Array | null,
@@ -1343,28 +1396,6 @@ async function scenarioChangedSinceMatchesStateDiff(
       out.set(row.node, describe(row.parent, row.orderKey, row.tombstone, payload));
     }
     return out;
-  };
-
-  const step = async (engine: TreecrdtEngine) => {
-    const replica = replicas.get(engine)!;
-    const live = (await engine.tree.dump()).filter((row) => !row.tombstone).map((row) => row.node);
-    const others = live.filter((node) => node !== root);
-    const roll = random();
-    if (roll < 0.4 || others.length < 2) {
-      const node = nodeIdFromInt(nextNode++);
-      await engine.local.insert(replica, pick(live), node, { type: 'last' }, encoder.encode(node));
-    } else if (roll < 0.65) {
-      await engine.local.payload(
-        replica,
-        pick(others),
-        encoder.encode(`p${Math.floor(random() * 4)}`),
-      );
-    } else if (roll < 0.9) {
-      // A move under the node itself or a descendant doesn't throw; it is stored, tree unchanged.
-      await engine.local.move(replica, pick(others), pick(live), { type: 'first' });
-    } else {
-      await engine.local.delete(replica, pick(others));
-    }
   };
 
   let cursor = (await readAllChangedSince(a, 0)).headSeq;
@@ -1403,6 +1434,141 @@ async function scenarioChangedSinceMatchesStateDiff(
     cursor = read.headSeq;
     before = after;
   }
+}
+
+/**
+ * Seeded local writes for two-replica walks, so a failing round reproduces. Each `step` inserts,
+ * updates, moves or deletes a node on one engine, including moves under the node itself or its
+ * own descendant.
+ */
+function randomLocalWrites(seed: number, replicas: Map<TreecrdtEngine, ReplicaId>) {
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  let nextNode = 100;
+  // Deterministic xorshift32.
+  const random = () => {
+    seed ^= seed << 13;
+    seed ^= seed >>> 17;
+    seed ^= seed << 5;
+    return (seed >>> 0) / 0x1_0000_0000;
+  };
+  const pick = <T>(items: T[]): T => items[Math.floor(random() * items.length)]!;
+  const step = async (engine: TreecrdtEngine) => {
+    const replica = replicas.get(engine)!;
+    const live = (await engine.tree.dump()).filter((row) => !row.tombstone).map((row) => row.node);
+    const others = live.filter((node) => node !== root);
+    const roll = random();
+    if (roll < 0.4 || others.length < 2) {
+      const node = nodeIdFromInt(nextNode++);
+      await engine.local.insert(replica, pick(live), node, { type: 'last' }, encoder.encode(node));
+    } else if (roll < 0.65) {
+      await engine.local.payload(
+        replica,
+        pick(others),
+        encoder.encode(`p${Math.floor(random() * 4)}`),
+      );
+    } else if (roll < 0.9) {
+      // A move under the node itself or a descendant doesn't throw; it is stored, tree unchanged.
+      await engine.local.move(replica, pick(others), pick(live), { type: 'first' });
+    } else {
+      await engine.local.delete(replica, pick(others));
+    }
+  };
+  return { random, step };
+}
+
+async function scenarioMaterializationEventsReproduceTree(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const a = ctx.engine;
+  const b = await ctx.createEngine({ docId: ctx.docId, name: 'peer-b' });
+  const replicas = new Map([
+    [a, replicaFromLabel('rA')],
+    [b, replicaFromLabel('rB')],
+  ]);
+  const { random, step } = randomLocalWrites(0x2545f491, replicas);
+  const root = nodeIdFromInt(0);
+  type NodeState = { parent: string | null; tombstone: boolean; payload: Uint8Array | null };
+  const describe = ({ parent, tombstone, payload }: NodeState) =>
+    JSON.stringify([parent, tombstone, tombstone || !payload ? null : bytesToHex(payload)]);
+  const read = async () => {
+    const out = new Map<string, NodeState>();
+    for (const row of await a.tree.dump()) {
+      const payload = row.tombstone ? null : await a.tree.node(row.node).payload();
+      out.set(row.node, { parent: row.parent, tombstone: row.tombstone, payload });
+    }
+    return out;
+  };
+
+  // The same state per node, built only from the events.
+  const reported = await read();
+  let lastHeadSeq = 0;
+  let outOfOrder = 0;
+  a.onMaterialized((event) => {
+    if (event.headSeq <= lastHeadSeq) outOfOrder += 1;
+    lastHeadSeq = event.headSeq;
+    for (const change of event.changes) {
+      const node = reported.get(change.node) ?? { parent: null, tombstone: false, payload: null };
+      if (change.kind === 'insert' || change.kind === 'restore') {
+        const parent = change.parentAfter ?? node.parent;
+        reported.set(change.node, { parent, tombstone: false, payload: change.payload });
+      } else if (change.kind === 'move') {
+        reported.set(change.node, { ...node, parent: change.parentAfter });
+      } else if (change.kind === 'payload') {
+        reported.set(change.node, { ...node, payload: change.payload });
+      } else {
+        reported.set(change.node, { ...node, tombstone: true });
+      }
+    }
+  });
+  const assertEventsReproduceTree = async (label: string) => {
+    assertEqual(outOfOrder, 0, `${label}: events arrive in commit order`);
+    const tree = await read();
+    for (const node of new Set([...tree.keys(), ...reported.keys()])) {
+      const fromEvents = reported.get(node);
+      const actual = tree.get(node);
+      assertEqual(
+        fromEvents && describe(fromEvents),
+        actual && describe(actual),
+        `${label}: events describe ${node}`,
+      );
+    }
+  };
+
+  for (let round = 0; round < 10; round += 1) {
+    for (let i = 0; i < 4; i += 1) {
+      await step(a);
+      await step(b);
+    }
+    if (random() < 0.7) await a.ops.appendMany(await b.ops.all());
+    if (random() < 0.5) await b.ops.appendMany(await a.ops.all());
+    await assertEventsReproduceTree(`round ${round}`);
+  }
+
+  // A large append can commit in chunks. A local write issued while it runs, on a node the append
+  // also updates, must still be reported in commit order. Every appended op leaves a lamport free
+  // after it, so the local write falls between two of them and never ties with one.
+  const node = nodeIdFromInt(99);
+  await a.local.insert(replicas.get(a)!, root, node, { type: 'last' }, null);
+  const replica = replicaFromLabel('rC');
+  const head = await a.meta.headLamport();
+  const meta = (i: number) => ({ replica, counter: i + 1, lamport: head + 2 + 2 * i });
+  const ops = [
+    makePayloadOp({ ...meta(0), node, payload: new Uint8Array([1]) }),
+    ...Array.from({ length: 2600 }, (_, i) =>
+      makeInsertOp({
+        ...meta(i + 1),
+        parent: root,
+        node: nodeIdFromInt(0x10000 + i),
+        orderKey: orderKeyFromPosition(i),
+      }),
+    ),
+  ];
+  await Promise.all([
+    a.ops.appendMany(ops),
+    a.local.payload(replicas.get(a)!, node, new Uint8Array([2])),
+  ]);
+  await assertEventsReproduceTree('large append');
 }
 
 async function scenarioTreeNodeHandle(ctx: TreecrdtEngineConformanceContext): Promise<void> {
