@@ -1,5 +1,15 @@
 # @treecrdt/sync-server-postgres-node
 
+## 0.1.7
+
+### Patch Changes
+
+- Updated dependencies [3c714fe]
+  - @treecrdt/interface@0.6.0
+  - @treecrdt/sync-postgres@0.1.6
+  - @treecrdt/sync-protocol@0.2.3
+  - @treecrdt/sync-server-core@0.1.7
+
 ## 0.1.6
 
 ### Patch Changes

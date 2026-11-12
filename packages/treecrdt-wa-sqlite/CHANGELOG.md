@@ -1,5 +1,16 @@
 # @treecrdt/wa-sqlite
 
+## 1.3.0
+
+### Minor Changes
+
+- 3c714fe: Add `run(sql, params)` to `SqliteRunner`. It runs one statement with bound parameters to completion and returns nothing, so parameterized writes no longer need `getText` with `RETURNING 1` appended. `client.runner` implements it, and TreeCRDT's own writes (`onMaterializedDurable` positions and the sync-sqlite stores) now use it. Custom runners must implement `run`.
+
+### Patch Changes
+
+- Updated dependencies [3c714fe]
+  - @treecrdt/interface@0.6.0
+
 ## 1.2.0
 
 ### Minor Changes
