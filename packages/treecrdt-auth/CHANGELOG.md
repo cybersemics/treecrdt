@@ -1,5 +1,14 @@
 # @treecrdt/auth
 
+## 0.2.3
+
+### Patch Changes
+
+- Updated dependencies [3c714fe]
+  - @treecrdt/interface@0.6.0
+  - @treecrdt/sync-protocol@0.2.3
+  - @treecrdt/wasm@0.1.3
+
 ## 0.2.2
 
 ### Patch Changes
