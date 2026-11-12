@@ -1,9 +1,8 @@
 # TreeCRDT Sync v0: Auth Extension (COSE + CWT) (Draft)
 
-This document defines an optional auth extension for Sync v0, focused on:
-
-- Integrity: prevent forged operations.
-- Authorization: subtree-scoped write permissions (and a path to read gating).
+The direct grants below implement full-document ownership ([#38](https://github.com/cybersemics/treecrdt/issues/38))
+but are not yet accepted by sync sessions or the server. The remaining sections describe the
+existing capability-based implementation being replaced under [#255](https://github.com/cybersemics/treecrdt/issues/255).
 
 It is intentionally **ACL-agnostic at the TreeCRDT core layer**: the CRDT operation
 types and merge semantics do not change. Authorization is enforced by the sync layer
@@ -14,6 +13,53 @@ drafts. Recreate signatures and proof material after format changes.
 
 Sync v0, VersionVector v0, and auth domains such as `treecrdt/op-sig/v1` identify independently
 versioned formats. The `/v1` suffix does not imply a prior auth release or a Sync protocol upgrade.
+
+## Document identity and direct owner grants
+
+The authority signs a grant of full-document ownership to a distinct, document-scoped replica
+key. Both public keys must be canonical 32-byte Ed25519 points of non-small order.
+
+Grants use [COSE_Sign1](https://www.rfc-editor.org/rfc/rfc9052.html#section-4.2) with RFC 8949 core
+deterministic CBOR: definite lengths, shortest encodings, and bytewise lexicographic map-key order.
+Only the claims below are accepted. Grants are at most 1,024 bytes, with no CBOR tags, duplicate
+keys, or trailing bytes.
+
+```
+doc_id = "treecrdt:doc:v1:" || base64url_no_padding(
+  blake3(utf8("treecrdt/document-id/v1") || 0x00 || authority_public_key)
+)
+COSE_Sign1 = [protected_bstr, {}, payload_bstr, signature_bstr]
+protected = {1: -19} // Ed25519
+replica_key = {1: 1, -1: 6, -2: replica_public_key} // type: OKP, curve: Ed25519, public key
+confirmation = {1: replica_key}  // COSE_Key
+payload = {
+  3: doc_id,                       // CWT audience
+  4: expires_at,                   // CWT expiration, Unix seconds
+  8: confirmation,                 // cnf
+  "authority_pk": authority_public_key
+}
+signature_input = CBOR([
+  "Signature1", protected_bstr, utf8("treecrdt/owner-grant/v1"), payload_bstr
+])
+grant_id = blake3(
+  utf8("treecrdt/owner-grant-id/v1") || 0x00 || complete_COSE_Sign1_bytes
+)[0..16]
+```
+
+Document IDs use the full 32-byte digest and canonical unpadded base64url. Grant IDs use the first
+16 bytes of the digest. The unprotected header is empty; the signature domain is COSE external AAD.
+The Ed25519 COSE identifier follows [RFC 9864 §2.2](https://www.rfc-editor.org/rfc/rfc9864.html#section-2.2);
+CWT claims use [RFC 8392](https://www.rfc-editor.org/rfc/rfc8392.html) and the confirmation key uses
+[RFC 8747 §3.2](https://www.rfc-editor.org/rfc/rfc8747.html#section-3.2). Shared test vectors:
+[`fixtures/owner-grant-v1.json`](../../../fixtures/owner-grant-v1.json).
+
+`verifyGrant` checks the authority-to-document binding, expected document and replica, and strict
+Ed25519 signature. Expiry must be a safe non-negative integer; `nowSec >= expiresAt` rejects the
+grant, using the current clock by default. Delegation is unsupported; admission must separately
+check revocation and replica key possession.
+
+`createMemoryAuthKeyProvider` requires Web Crypto Ed25519 and keeps non-extractable private keys
+only in memory. Losing the provider loses its keys; it provides no backup or recovery.
 
 ## Threat model (baseline)
 

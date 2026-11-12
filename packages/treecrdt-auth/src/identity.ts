@@ -4,6 +4,7 @@ import type { Capability } from '@treecrdt/sync-protocol';
 
 import { base64urlDecode, base64urlEncode } from './base64url.js';
 import { coseSign1Ed25519, coseVerifySign1Ed25519 } from './cose.js';
+import { equalBytes } from './internal/bytes.js';
 
 const ED25519_PUBLIC_KEY_LEN = 32;
 
@@ -216,11 +217,8 @@ export async function verifyReplicaChainV1(opts: {
 
   if (opts.expectedReplicaPublicKey) {
     assertEd25519PublicKey(opts.expectedReplicaPublicKey, 'expectedReplicaPublicKey');
-    const a = opts.expectedReplicaPublicKey;
-    const b = replica.replicaPublicKey;
-    if (a.length !== b.length) throw new Error('ReplicaCertV1.replica_pk mismatch');
-    for (let i = 0; i < a.length; i += 1) {
-      if (a[i] !== b[i]) throw new Error('ReplicaCertV1.replica_pk mismatch');
+    if (!equalBytes(opts.expectedReplicaPublicKey, replica.replicaPublicKey)) {
+      throw new Error('ReplicaCertV1.replica_pk mismatch');
     }
   }
 
