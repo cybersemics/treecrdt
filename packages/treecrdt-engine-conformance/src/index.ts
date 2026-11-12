@@ -160,6 +160,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioLocalOpsMaterializationWriteId,
     },
     {
+      name: 'local ops: a move into its own subtree reports no change',
+      run: scenarioLocalMoveIntoOwnSubtree,
+    },
+    {
       name: 'append/appendMany: idempotent + headLamport monotonic',
       run: scenarioAppendIdempotentAndHeadLamportMonotonic,
     },
@@ -174,6 +178,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
     {
       name: 'materialization events: defensive restore',
       run: scenarioMaterializationEventDefensiveRestore,
+    },
+    {
+      name: 'local ops: a write under a deleted parent reports its restore',
+      run: scenarioLocalWriteReportsRestoredParent,
     },
     {
       name: 'tree: children slice pagination',
@@ -612,6 +620,26 @@ async function scenarioLocalInsertWithPayload(
   assertBytesEqual(first.kind.payload ?? null, payload, 'ops.all insert payload');
 }
 
+async function scenarioLocalMoveIntoOwnSubtree(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(44);
+  const child = nodeIdFromInt(45);
+  await engine.local.insert(replica, root, parent, { type: 'last' }, null);
+  await engine.local.insert(replica, parent, child, { type: 'last' }, null);
+
+  const events = await captureMaterializationEvents(engine, async () => {
+    await engine.local.move(replica, parent, child, { type: 'last' });
+    await engine.local.move(replica, parent, parent, { type: 'last' });
+  });
+
+  assertEqual((await engine.tree.node(parent).parent())?.id, root, 'the node stays where it was');
+  assertEqual(events.length, 0, 'a move into its own subtree reports no change');
+}
+
 async function scenarioLocalOpsMaterializationWriteId(
   ctx: TreecrdtEngineConformanceContext,
 ): Promise<void> {
@@ -923,6 +951,38 @@ async function scenarioMaterializationEventDefensiveRestore(
     [child],
     'child should remain visible',
   );
+}
+
+async function scenarioLocalWriteReportsRestoredParent(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r-local-restore');
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(80);
+  const child = nodeIdFromInt(81);
+  await engine.local.insert(replica, root, parent, { type: 'last' }, null);
+  await engine.local.insert(replica, parent, child, { type: 'last' }, null);
+  await engine.local.delete(replica, parent);
+  const cursor = engine.tree.changedSince ? (await readAllChangedSince(engine, 0)).headSeq : 0;
+
+  // The delete didn't know about this write, so it restores the parent, as it does on peers.
+  const events = await captureMaterializationEvents(engine, async () => {
+    await engine.local.payload(replica, child, Uint8Array.of(1));
+  });
+  assert(
+    events.some((event) =>
+      event.changes.some((change) => change.kind === 'restore' && change.node === parent),
+    ),
+    'the event reports the restored parent',
+  );
+  if (engine.tree.changedSince) {
+    const { nodes } = await readAllChangedSince(engine, cursor);
+    assert(
+      nodes.some((n) => n.node === parent && !n.tombstone),
+      'changedSince lists the restored parent',
+    );
+  }
 }
 
 async function scenarioChildrenSlicePagination(
