@@ -83,7 +83,6 @@ export function createPendingOpsStore(opts: {
 INSERT OR REPLACE INTO treecrdt_sync_pending_ops
   (doc_id, op_ref, op, sig, proof_ref, reason, message, created_at_ms)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-RETURNING 1
 `;
 
   const listSql = `
@@ -111,7 +110,6 @@ WHERE doc_id = ?1
   const deleteSql = `
 DELETE FROM treecrdt_sync_pending_ops
 WHERE doc_id = ?1 AND op_ref = ?2
-RETURNING 1
 `;
 
   const opRefForOp = (op: Operation): OpRef =>
@@ -133,7 +131,7 @@ RETURNING 1
         const opBytes = encodeTreecrdtSyncV0Operation(p.op);
         const proofRef = p.auth.proofRef ?? null;
         const message = p.message ?? null;
-        await opts.runner.getText(insertSql, [
+        await opts.runner.run(insertSql, [
           opts.docId,
           opRef,
           opBytes,
@@ -189,7 +187,7 @@ RETURNING 1
     deletePendingOps: async (ops) => {
       if (ops.length === 0) return;
       for (const op of ops) {
-        await opts.runner.getText(deleteSql, [opts.docId, opRefForOp(op)]);
+        await opts.runner.run(deleteSql, [opts.docId, opRefForOp(op)]);
       }
     },
   };
@@ -206,7 +204,6 @@ export function createOpAuthStore(opts: {
 INSERT OR REPLACE INTO treecrdt_sync_op_auth
   (doc_id, op_ref, sig, proof_ref, created_at_ms)
 VALUES (?1, ?2, ?3, ?4, ?5)
-RETURNING 1
 `;
 
   const selectByRefsSql = (n: number) => {
@@ -237,7 +234,7 @@ FROM (
 
       for (const e of entries) {
         const proofRef = e.auth.proofRef ?? null;
-        await opts.runner.getText(insertSql, [opts.docId, e.opRef, e.auth.sig, proofRef, nowMs()]);
+        await opts.runner.run(insertSql, [opts.docId, e.opRef, e.auth.sig, proofRef, nowMs()]);
       }
     },
 
@@ -279,7 +276,6 @@ export function createCapabilityMaterialStore(opts: {
 INSERT OR REPLACE INTO treecrdt_sync_capability
   (doc_id, name, value, created_at_ms)
 VALUES (?1, ?2, ?3, ?4)
-RETURNING 1
 `;
 
   const listSql = `
@@ -301,7 +297,7 @@ FROM (
       if (caps.length === 0) return;
 
       for (const cap of caps) {
-        await opts.runner.getText(insertSql, [opts.docId, cap.name, cap.value, nowMs()]);
+        await opts.runner.run(insertSql, [opts.docId, cap.name, cap.value, nowMs()]);
       }
     },
 

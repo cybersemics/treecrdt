@@ -280,6 +280,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioSyncAuthExcludedRootNotSynced,
     },
     {
+      name: 'sqlite runner: run binds parameters',
+      run: scenarioSqliteRunnerRunBindsParameters,
+    },
+    {
       name: 'auth: sqlite subtree evaluator allow/deny/unknown',
       run: scenarioAuthSqliteSubtreeEvaluator,
     },
@@ -435,6 +439,7 @@ function engineRunnerOrNull(engine: TreecrdtEngine): SqliteRunner | null {
   const candidate = (engine as any)?.runner as Partial<SqliteRunner> | undefined;
   if (!candidate) return null;
   if (typeof candidate.exec !== 'function') return null;
+  if (typeof candidate.run !== 'function') return null;
   if (typeof candidate.getText !== 'function') return null;
   return candidate as SqliteRunner;
 }
@@ -2479,6 +2484,26 @@ async function scenarioSyncAuthScopedTokenRejectsAllFilter(
   } finally {
     detach();
   }
+}
+
+async function scenarioSqliteRunnerRunBindsParameters(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const runner = engineRunnerOrNull(ctx.engine);
+  if (!runner) return ctx.skip('engine has no SQLite runner');
+
+  await runner.exec('CREATE TABLE run_params (i INTEGER, t TEXT, b BLOB, n)');
+  await runner.run('INSERT INTO run_params (i, t, b, n) VALUES (?1, ?2, ?3, ?4)', [
+    7,
+    'text',
+    new Uint8Array([1, 2, 255]),
+    null,
+  ]);
+  assertEqual(
+    await runner.getText('SELECT json_array(i, t, hex(b), typeof(n)) FROM run_params'),
+    '[7,"text","0102FF","null"]',
+    'run binds each parameter',
+  );
 }
 
 async function scenarioAuthSqliteSubtreeEvaluator(
