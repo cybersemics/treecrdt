@@ -105,6 +105,9 @@ function createRunner(db: any): SqliteRunner {
 
   const runner: SqliteRunner = {
     exec: (sql) => db.exec(sql),
+    run: (sql, params = []) => {
+      prepare(sql).run(toBindings(params));
+    },
     getText: (sql, params = []) => {
       const row = prepare(sql).get(toBindings(params));
       if (row === undefined || row === null) return null;

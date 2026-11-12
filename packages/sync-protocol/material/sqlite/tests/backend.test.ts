@@ -29,6 +29,7 @@ test("backend children(parent) includes the parent's latest payload opRef", asyn
   const runnerCalls: string[] = [];
   const runner: SqliteRunner = {
     exec: async () => {},
+    run: async () => {},
     getText: async (sql: string, params?: unknown[]) => {
       runnerCalls.push(sql);
       if (sql.includes('treecrdt_ensure_materialized')) return '1';
@@ -78,6 +79,7 @@ test("backend children(parent) does not duplicate the parent's payload opRef", a
 
   const runner: SqliteRunner = {
     exec: async () => {},
+    run: async () => {},
     getText: async (sql: string) => {
       if (sql.includes('treecrdt_ensure_materialized')) return '1';
       if (sql.includes('FROM tree_payload')) {
@@ -119,6 +121,7 @@ test('backend children(parent) falls back to ops table when tree_payload is miss
   const runnerCalls: string[] = [];
   const runner: SqliteRunner = {
     exec: async () => {},
+    run: async () => {},
     getText: async (sql: string) => {
       runnerCalls.push(sql);
       if (sql.includes('treecrdt_ensure_materialized')) return '1';

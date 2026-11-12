@@ -7,7 +7,7 @@ import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 
 /**
- * Open wa-sqlite handle: statement APIs + SqliteRunner (exec/getText).
+ * Open wa-sqlite handle: statement APIs + SqliteRunner (exec/run/getText).
  * Pass directly to createTreecrdtSqliteAdapter — no runner wrapper.
  */
 export type Database = {

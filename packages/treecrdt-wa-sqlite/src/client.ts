@@ -120,7 +120,8 @@ export async function createClientFromBackend(runtime: RuntimeConnection): Promi
 
   const runner: SqliteRunner = {
     exec: (sql) => guard(() => session.sqlExec(sql)),
-    getText: (sql, params = []) => guard(() => session.sqlGetText(sql, params as any)),
+    run: (sql, params = []) => guard(() => session.sqlRun(sql, params)),
+    getText: (sql, params = []) => guard(() => session.sqlGetText(sql, params)),
   };
 
   const localWriters = new Map<string, TreecrdtSqliteWriter>();

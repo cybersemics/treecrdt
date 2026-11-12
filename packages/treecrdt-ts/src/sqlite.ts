@@ -32,6 +32,8 @@ export type SqlCall = {
 
 export type SqliteRunner = {
   exec: (sql: string) => Promise<void> | void;
+  /** Runs one statement with bound parameters to completion, without reading a result. */
+  run: (sql: string, params?: SqlCall['params']) => Promise<void> | void;
   getText: (sql: string, params?: SqlCall['params']) => Promise<string | null> | string | null;
 };
 
@@ -957,9 +959,8 @@ export function createTreecrdtSqliteMaterializationCursors(
     },
     // A subscription loads before it saves, so the table exists.
     save: async (name, { version, headSeq }) => {
-      // RETURNING makes the write a statement that returns data, which every runner's getText runs.
-      await runner.getText(
-        'INSERT OR REPLACE INTO treecrdt_materialization_cursors (name, version, head_seq) VALUES (?1, ?2, ?3) RETURNING 1',
+      await runner.run(
+        'INSERT OR REPLACE INTO treecrdt_materialization_cursors (name, version, head_seq) VALUES (?1, ?2, ?3)',
         [name, version, headSeq],
       );
     },
