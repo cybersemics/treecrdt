@@ -228,6 +228,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioDurableRedeliversAfterFailure,
     },
     {
+      name: 'onMaterializedDurable: idle waits for queued deliveries without retrying',
+      run: scenarioDurableIdleDoesNotRetry,
+    },
+    {
       name: 'onMaterializedDurable: a new version resets and receives every node',
       run: scenarioDurableResetsForNewVersion,
     },
@@ -1505,6 +1509,39 @@ async function scenarioDurableRedeliversAfterFailure(
   failing = false;
   await subscription.settled();
   assertArrayEqual(durableLog(delivered), [`insert:${node}`], 'the failed change is delivered');
+}
+
+async function scenarioDurableIdleDoesNotRetry(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engine.onMaterializedDurable) return ctx.skip('engine has no onMaterializedDurable');
+  const replica = replicaFromLabel('r-durable');
+  const root = nodeIdFromInt(0);
+
+  let calls = 0;
+  let failing = false;
+  const errors: unknown[] = [];
+  const subscription = await engine.onMaterializedDurable(
+    'index',
+    async () => {
+      if (!failing) return;
+      // Fail after the write has resolved, so idle() has to wait for the delivery.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      calls += 1;
+      throw new Error('listener failed');
+    },
+    { onError: (error) => errors.push(error) },
+  );
+
+  failing = true;
+  await engine.local.insert(replica, root, nodeIdFromInt(86), { type: 'last' }, null);
+  await subscription.idle();
+  assertEqual(calls, 1, 'idle waits for the queued delivery');
+  assertEqual(errors.length, 1, 'its failure reaches onError');
+
+  await subscription.idle();
+  assertEqual(calls, 1, 'idle does not deliver the failed change again');
 }
 
 async function scenarioDurableResetsForNewVersion(

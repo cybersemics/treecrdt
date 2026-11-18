@@ -144,6 +144,11 @@ export type DurableMaterializationOptions = {
 export type DurableMaterializationSubscription = {
   /** Resolves once everything materialized before the call is delivered; rejects if that fails. */
   settled: () => Promise<void>;
+  /**
+   * Resolves once the deliveries queued before the call have finished, whether or not they
+   * succeeded. Unlike `settled()`, it never starts a catch-up and never rejects.
+   */
+  idle: () => Promise<void>;
   /** Stops delivery, waits for the listener and saves the position. */
   close: () => Promise<void>;
 };
@@ -299,6 +304,7 @@ export function createDurableMaterialization(deps: {
 
     return {
       settled: () => (closing ? tail : enqueue(async () => (stale ? catchUp() : undefined))),
+      idle: () => tail,
       close,
     };
   };
