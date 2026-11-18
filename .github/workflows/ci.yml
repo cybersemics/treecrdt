@@ -11,7 +11,8 @@ env:
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-latest
+    # Playwright 1.57 supports Ubuntu 24.04, but not Ubuntu 26.04.
+    runs-on: ubuntu-24.04
     env:
       PLAYWRIGHT_BROWSERS_PATH: /home/runner/.cache/ms-playwright
 
@@ -171,6 +172,25 @@ jobs:
 
       - name: Run native node tests
         run: pnpm run test:native-node
+
+  sqlite-extension-clang22:
+    runs-on: ubuntu-26.04
+    env:
+      LIBCLANG_PATH: /usr/lib/llvm-22/lib
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Clang 22 bindings library
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-22-dev
+
+      - name: Test SQLite extension with Clang 22
+        run: cargo test -p treecrdt-sqlite-ext --test extension_roundtrip --features ext-sqlite --locked
 
   postgres-backend-tests:
     runs-on: ubuntu-latest

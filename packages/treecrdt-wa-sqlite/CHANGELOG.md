@@ -1,5 +1,80 @@
 # @treecrdt/wa-sqlite
 
+## 1.3.0
+
+### Minor Changes
+
+- 3c714fe: Add `run(sql, params)` to `SqliteRunner`. It runs one statement with bound parameters to completion and returns nothing, so parameterized writes no longer need `getText` with `RETURNING 1` appended. `client.runner` implements it, and TreeCRDT's own writes (`onMaterializedDurable` positions and the sync-sqlite stores) now use it. Custom runners must implement `run`.
+
+### Patch Changes
+
+- Updated dependencies [3c714fe]
+  - @treecrdt/interface@0.6.0
+
+## 1.2.0
+
+### Minor Changes
+
+- b2394a9: Add `onMaterializedDurable(name, listener, { version, reset, limit, saveIntervalMs, onError })` to the SQLite-backed engines. It is `onMaterialized` that keeps its place: the listener receives every change in order and at least once, across restarts and failed deliveries, so applications no longer store a `changedSince` cursor or write the catch-up loop themselves. After a gap, changes report each node's current state. The position is kept per name in a new `treecrdt_materialization_cursors` table, and closing the client closes open subscriptions.
+
+### Patch Changes
+
+- Updated dependencies [b2394a9]
+  - @treecrdt/interface@0.5.0
+
+## 1.1.0
+
+### Minor Changes
+
+- fc2c6e5: Add `tree.node(id)`, a node handle that skips the existence query `tree.get(id)` runs, so reading a known node by id is one query: `await tree.node(id).children()`. A node that is not visible reads as empty: no payload, no children and no parent.
+
+### Patch Changes
+
+- a5d694f: Stop node reads from returning a deleted node's data. Only `tree.get(id)` checked visibility, so a handle kept across a delete still read the deleted node's payload and children, and so did adapter `treePayload` and `treeChildren`. They now check it in the same query.
+- Updated dependencies [fc2c6e5]
+- Updated dependencies [a5d694f]
+  - @treecrdt/interface@0.4.0
+
+## 1.0.0
+
+### Major Changes
+
+- 97166eb: Reduce `createTreecrdtClient()` options to a required `docId` plus optional `persistent`, `filename`, `crossTab`, and `assetsBaseUrl` options. The public `storage` / `runtime` / nested `assets` configuration and the `TreecrdtStorage`, `TreecrdtRuntime`, and `TreecrdtAssets` types are removed. The package now selects storage and runtime internally: in-memory + direct runtime by default, OPFS + dedicated worker for `persistent: true`, and a shared worker when `crossTab: true`. Browser assets default to Vite's `BASE_URL` but the base remains overridable for custom asset routing; Vite continues to emit and resolve the WASM through its asset graph. Persistent filenames are derived deterministically from `docId` when omitted using a readable prefix and the first 16 bytes of its SHA-256 hash encoded as base64url (the derivation is exported as `opfsFilenameForDocId`). The previous `auto` default (OPFS when available) becomes in-memory; persistence is always explicit and never silently falls back — when OPFS is unavailable or fails to initialize, client creation throws with the reason. Cross-tab mode throws when `SharedWorker` is unavailable. On Node, `persistent: true` and `crossTab: true` throw; use `@treecrdt/sqlite-node` for file persistence.
+
+### Minor Changes
+
+- 992283a: Use canonical VersionVector v0 bytes across storage and sync. The new `@treecrdt/wasm/codec` entry
+  point lazily loads the shared Rust implementation and exposes synchronous codec methods once ready.
+  Recreate development databases that contain the unreleased JSON format.
+- e1a6f4d: Replace keyset `treeChildrenPage` with optional index/length slices on `treeChildren` and `TreecrdtNode.children()`. Live (non-tombstoned) children are paginated in stable order.
+- 9a0534f: Replace the custom worker RPC with Comlink and split session data access from connection lifecycle. `createWaSqliteApi` is removed; low-level callers that open a wa-sqlite handle themselves should initialize the extension, set the doc id, then pass the database to `createTreecrdtSqliteAdapter` from `@treecrdt/interface/sqlite`. `createTreecrdtClient()` is unchanged for typical apps.
+- e69c29b: Replace the flat public `tree` surface with a lazy `get()` / `root` Node API, and split the wa-sqlite session into `operations` and `tree` sub-objects. Callers navigate with `tree.get(id)?.payload()` / `parent()` / `children()` instead of `exists` / `getPayload` / `parent` / `children`; Node handles expose canonical 32-character lowercase hex ids, root aliases resolve to the always-available root handle, and `parent()` returns `undefined` when either the node or its parent is not visible. Select browser runtime wiring via an exhaustive strategy map instead of ad hoc branching.
+- be09f09: Add `tree.changedSince(since, { limit, payloads })` to the SQLite-backed engines. It returns each node whose visible state changed after a `headSeq`, with its current state and the read's `headSeq`, so applications can keep derived data in step across restarts without rebuilding it. Materialization records each changed node's `headSeq` in a new `tree_changes` table within the same commit; `since = 0` reads every node. Existing databases gain the table on open. Paged reads are resumable catch-up, not frozen snapshots: nodes changed during paging may be deferred to the next read. A `since` ahead of the database's `headSeq` is rejected. Catch-up reads scan that table, which keeps recording cheap; follow `onMaterialized` between them.
+- 792a8a0: Initialize the shared TreeCRDT schema through awaited SQL in one transaction,
+  replacing the custom VFS retry loop. Failed initialization rolls back schema changes.
+  Document ID setup shares the write transaction so concurrent opens cannot race.
+
+  Low-level callers must now pass the connection's SQL runner as the third argument
+  to `initializeTreecrdtExtension(module, handle, db, docId)`, with an optional document
+  ID to initialize in the same transaction. Rebuild the vendor WASM and
+  adapter together. `createTreecrdtClient()` callers need no changes.
+
+- ff82374: Open persistent OPFS databases in WAL mode with exclusive locking, roughly halving the cost of a single-operation commit. A database is now held by one client until it closes: without `crossTab`, another client opening the same database, for example in a second tab, waits until the first client closes or its tab goes away. Use `crossTab: true` to share a persistent database between tabs. Connections that open these files directly must run `PRAGMA locking_mode=EXCLUSIVE` before their first statement.
+
+### Patch Changes
+
+- 49ca3c9: Reduce local insert, move, delete, and payload overhead by preparing SQLite helper statements only when each operation needs them.
+- 04663ab: Correct replayed move notifications to use actual before/after parents, and prevent duplicate replay/repair deletion notifications from cancelling each other out.
+- 4686794: Send SQLite operation batches as CBOR blobs instead of JSON byte arrays. Update the adapter and extension together: JSON batch input is no longer accepted. Stored operations and sync formats are unchanged.
+- 73a7205: Allow persistent OPFS storage on pages that are not cross-origin isolated. `detectOpfsSupport()` and `createTreecrdtClient({ persistent: true })` no longer require COOP/COEP headers.
+- 972f402: Build the bundled wa-sqlite assets from upstream using its existing extension inputs instead of a fork.
+- Updated dependencies [e1a6f4d]
+- Updated dependencies [e69c29b]
+- Updated dependencies [4686794]
+- Updated dependencies [be09f09]
+- Updated dependencies [e829a41]
+  - @treecrdt/interface@0.3.0
+
 ## 0.4.2
 
 ### Patch Changes

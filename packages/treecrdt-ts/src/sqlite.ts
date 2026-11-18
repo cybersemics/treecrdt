@@ -8,6 +8,7 @@ import type {
 import { addMaterializationWriteId, emptyMaterializationOutcome } from './engine.js';
 import type {
   LocalWriteOptions,
+  MaterializationCursorStore,
   MaterializationEvent,
   MaterializationOutcome,
   MaterializationSource,
@@ -31,6 +32,8 @@ export type SqlCall = {
 
 export type SqliteRunner = {
   exec: (sql: string) => Promise<void> | void;
+  /** Runs one statement with bound parameters to completion, without reading a result. */
+  run: (sql: string, params?: SqlCall['params']) => Promise<void> | void;
   getText: (sql: string, params?: SqlCall['params']) => Promise<string | null> | string | null;
 };
 
@@ -418,6 +421,11 @@ async function treecrdtOpsByOpRefs(runner: SqliteRunner, opRefs: Uint8Array[]): 
   ]);
 }
 
+/** Whether node `?1` is visible: the root always is, any other node needs a live row. */
+const NODE_VISIBLE_SQL =
+  "(?1 = X'00000000000000000000000000000000' \
+   OR EXISTS (SELECT 1 FROM tree_nodes AS visible WHERE visible.node = ?1 AND visible.tombstone = 0))";
+
 /**
  * Fetch materialized children for a parent node (16-byte id).
  *
@@ -432,17 +440,12 @@ async function treecrdtTreeChildren(
   emitOutcome?: (outcome: MaterializationOutcome) => void,
 ): Promise<unknown[]> {
   await treecrdtEnsureMaterialized(runner, emitOutcome);
-  const baseSelect =
-    'SELECT lower(hex(node)) AS node_hex FROM tree_nodes WHERE parent = ?1 AND tombstone = 0 ORDER BY order_key, node';
+  const baseSelect = `SELECT lower(hex(node)) AS node_hex FROM tree_nodes \
+     WHERE parent = ?1 AND tombstone = 0 AND ${NODE_VISIBLE_SQL} ORDER BY order_key, node`;
   if (offset === null && limit === null) {
     return sqliteGetJsonOrEmpty(
       runner,
-      "SELECT COALESCE(json_group_array(node_hex), '[]') FROM (\
-       SELECT lower(hex(node)) AS node_hex \
-       FROM tree_nodes \
-       WHERE parent = ?1 AND tombstone = 0 \
-       ORDER BY order_key, node\
-       )",
+      `SELECT COALESCE(json_group_array(node_hex), '[]') FROM (${baseSelect})`,
       [parent],
     );
   }
@@ -605,7 +608,7 @@ async function treecrdtTreeExists(
 
 /**
  * Fetch the payload for a node (16-byte id).
- * Returns the opaque byte payload or null if the node has no payload.
+ * Returns the opaque byte payload, or null if the node has no payload or is not visible.
  */
 async function treecrdtTreePayload(
   runner: SqliteRunner,
@@ -614,7 +617,7 @@ async function treecrdtTreePayload(
 ): Promise<Uint8Array | null> {
   await treecrdtEnsureMaterialized(runner, emitOutcome);
   const hex = await runner.getText(
-    'SELECT hex(payload) FROM tree_payload WHERE node = ?1 LIMIT 1',
+    `SELECT hex(payload) FROM tree_payload WHERE node = ?1 AND ${NODE_VISIBLE_SQL} LIMIT 1`,
     [node],
   );
   if (hex === null || hex === undefined || hex === '') return null;
@@ -926,6 +929,42 @@ export function decodeSqliteChangedNodes(raw: unknown, payloads: boolean): Treec
         : {}),
     };
   });
+}
+
+const MATERIALIZATION_CURSORS_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS treecrdt_materialization_cursors (
+  name TEXT PRIMARY KEY,
+  version INTEGER NOT NULL,
+  head_seq INTEGER NOT NULL
+) WITHOUT ROWID;
+`;
+
+/**
+ * Keeps `onMaterializedDurable` positions in the database they describe, so dropping the database
+ * drops them too.
+ */
+export function createTreecrdtSqliteMaterializationCursors(
+  runner: SqliteRunner,
+): MaterializationCursorStore {
+  return {
+    load: async (name) => {
+      await runner.exec(MATERIALIZATION_CURSORS_SCHEMA_SQL);
+      const text = await runner.getText(
+        'SELECT json_array(version, head_seq) FROM treecrdt_materialization_cursors WHERE name = ?1',
+        [name],
+      );
+      if (text === null) return null;
+      const [version, headSeq] = JSON.parse(text) as [number, number];
+      return { version, headSeq };
+    },
+    // A subscription loads before it saves, so the table exists.
+    save: async (name, { version, headSeq }) => {
+      await runner.run(
+        'INSERT OR REPLACE INTO treecrdt_materialization_cursors (name, version, head_seq) VALUES (?1, ?2, ?3)',
+        [name, version, headSeq],
+      );
+    },
+  };
 }
 
 /** Builds `tree.changedSince` over a raw adapter read, handling cursors and decoding. */

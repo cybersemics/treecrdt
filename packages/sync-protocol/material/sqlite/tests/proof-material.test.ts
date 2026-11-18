@@ -30,6 +30,9 @@ function createRunner(db: Database.Database): SqliteRunner {
     exec: async (sql) => {
       db.exec(sql);
     },
+    run: async (sql, params = []) => {
+      db.prepare(sql).run(toBindings(params));
+    },
     getText: async (sql, params = []) => {
       const row = db.prepare(sql).get(toBindings(params)) as Record<string, unknown> | undefined;
       if (!row) return null;

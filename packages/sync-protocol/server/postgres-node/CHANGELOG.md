@@ -1,5 +1,60 @@
 # @treecrdt/sync-server-postgres-node
 
+## 0.1.7
+
+### Patch Changes
+
+- Updated dependencies [3c714fe]
+  - @treecrdt/interface@0.6.0
+  - @treecrdt/sync-postgres@0.1.6
+  - @treecrdt/sync-protocol@0.2.3
+  - @treecrdt/sync-server-core@0.1.7
+
+## 0.1.6
+
+### Patch Changes
+
+- Updated dependencies [b2394a9]
+  - @treecrdt/interface@0.5.0
+  - @treecrdt/sync-postgres@0.1.5
+  - @treecrdt/sync-protocol@0.2.2
+  - @treecrdt/sync-server-core@0.1.6
+
+## 0.1.5
+
+### Patch Changes
+
+- bde0313: Add leveled sync-server logs. `TREECRDT_LOG_LEVEL` selects `debug`, `info`, `warn`, `error`, or `silent`, and defaults to `info` even when `NODE_ENV` is unset. JSON is the default format, and `TREECRDT_LOG_PRETTY=true` opts into pretty lines. Debug logs include each sync message the server sends or receives. A failed Postgres LISTEN connection exits the CLI or shuts down the library server by default. Clean WebSocket closes, including closes without a status code, log as disconnects.
+- Updated dependencies [bde0313]
+  - @treecrdt/sync-server-core@0.1.5
+
+## 0.1.4
+
+### Patch Changes
+
+- Updated dependencies [fc2c6e5]
+- Updated dependencies [a5d694f]
+  - @treecrdt/interface@0.4.0
+  - @treecrdt/sync-postgres@0.1.4
+  - @treecrdt/sync-protocol@0.2.1
+  - @treecrdt/sync-server-core@0.1.4
+
+## 0.1.3
+
+### Patch Changes
+
+- d582500: Remove capability-CWT authentication because the server does not enforce token grants or signed operation authorship end to end.
+- Updated dependencies [e1a6f4d]
+- Updated dependencies [e69c29b]
+- Updated dependencies [2594f3d]
+- Updated dependencies [4686794]
+- Updated dependencies [be09f09]
+- Updated dependencies [e829a41]
+  - @treecrdt/interface@0.3.0
+  - @treecrdt/sync-protocol@0.2.0
+  - @treecrdt/sync-server-core@0.1.3
+  - @treecrdt/sync-postgres@0.1.3
+
 ## 0.1.2
 
 ### Patch Changes

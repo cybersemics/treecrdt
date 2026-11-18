@@ -32,21 +32,35 @@ export function createDatabase(sqlite3: any, handle: number): Database {
   const column_text = async (stmt: number, index: number) => sqlite3.column_text(stmt, index);
   const finalize = async (stmt: number) => sqlite3.finalize(stmt);
 
-  /** Single-row query → first column as text, or null when SQLITE_DONE. */
-  const getText = async (sql: string, params: SqlCall['params'] = []): Promise<string | null> => {
+  /** Prepares `sql`, binds `params` from index 1, and finalizes the statement after `use`. */
+  const withStatement = async <T>(
+    sql: string,
+    params: SqlCall['params'],
+    use: (stmt: number) => Promise<T>,
+  ): Promise<T> => {
     const stmt = await prepare(sql);
     try {
       let idx = 1;
       for (const p of params) {
         await bind(stmt, idx++, p);
       }
-      const row = await step(stmt);
-      if (row !== SQLITE_ROW) return null;
-      return await column_text(stmt, 0);
+      return await use(stmt);
     } finally {
       await finalize(stmt);
     }
   };
+
+  /** Single-row query → first column as text, or null when SQLITE_DONE. */
+  const getText = (sql: string, params: SqlCall['params'] = []): Promise<string | null> =>
+    withStatement(sql, params, async (stmt) =>
+      (await step(stmt)) === SQLITE_ROW ? column_text(stmt, 0) : null,
+    );
+
+  /** Steps the statement until SQLITE_DONE, skipping any rows it returns. */
+  const run = (sql: string, params: SqlCall['params'] = []): Promise<void> =>
+    withStatement(sql, params, async (stmt) => {
+      while ((await step(stmt)) === SQLITE_ROW);
+    });
 
   return {
     prepare,
@@ -55,6 +69,7 @@ export function createDatabase(sqlite3: any, handle: number): Database {
     column_text,
     finalize,
     exec: async (sql: string) => sqlite3.exec(handle, sql),
+    run,
     getText,
     close: async () => sqlite3.close(handle),
   };

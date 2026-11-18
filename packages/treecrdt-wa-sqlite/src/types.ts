@@ -7,7 +7,7 @@ import { createMaterializationDispatcher } from '@treecrdt/interface/engine';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 
 /**
- * Open wa-sqlite handle: statement APIs + SqliteRunner (exec/getText).
+ * Open wa-sqlite handle: statement APIs + SqliteRunner (exec/run/getText).
  * Pass directly to createTreecrdtSqliteAdapter — no runner wrapper.
  */
 export type Database = {
@@ -23,14 +23,15 @@ export type StorageMode = 'memory' | 'opfs';
 export type ClientMode = 'direct' | 'worker';
 export type RuntimeMode = 'direct' | 'dedicated-worker' | 'shared-worker';
 
-export type TreecrdtClient = TreecrdtEngine & {
-  mode: ClientMode;
-  runtime: RuntimeMode;
-  storage: StorageMode;
-  runner: SqliteRunner;
-  tree: Required<Pick<TreecrdtEngineTree, 'changedSince'>>;
-  drop: () => Promise<void>;
-};
+export type TreecrdtClient = TreecrdtEngine &
+  Required<Pick<TreecrdtEngine, 'onMaterializedDurable'>> & {
+    mode: ClientMode;
+    runtime: RuntimeMode;
+    storage: StorageMode;
+    runner: SqliteRunner;
+    tree: Required<Pick<TreecrdtEngineTree, 'changedSince'>>;
+    drop: () => Promise<void>;
+  };
 
 export type ClientOptions = {
   /** Stable logical document identity used by CRDT operations and sync; cannot be detected. */

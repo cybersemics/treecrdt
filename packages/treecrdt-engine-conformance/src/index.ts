@@ -196,6 +196,14 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioTreeGetRootLazyNavigation,
     },
     {
+      name: 'tree: node(id) reads without an existence check',
+      run: scenarioTreeNodeHandle,
+    },
+    {
+      name: 'tree: a handle kept across a delete stops reading the node',
+      run: scenarioHandleKeptAcrossDelete,
+    },
+    {
       name: 'tree: changedSince reports each changed node once',
       run: scenarioChangedSinceReportsChangedNodes,
     },
@@ -214,6 +222,22 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
     {
       name: 'tree: changedSince matches state diffs across replicas',
       run: scenarioChangedSinceMatchesStateDiff,
+    },
+    {
+      name: 'onMaterializedDurable: resumes where it stopped after reopening',
+      run: scenarioDurableResumesAfterReopen,
+    },
+    {
+      name: 'onMaterializedDurable: delivers a failed change again',
+      run: scenarioDurableRedeliversAfterFailure,
+    },
+    {
+      name: 'onMaterializedDurable: a new version resets and receives every node',
+      run: scenarioDurableResetsForNewVersion,
+    },
+    {
+      name: 'onMaterializedDurable: reports a node moved during a paged catch-up',
+      run: scenarioDurableReportsNodeMovedWhilePaging,
     },
     {
       name: 'oprefs_all + ops.get: preserve order and reject missing refs',
@@ -258,6 +282,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
     {
       name: 'sync auth: excluded root is not synced to scoped peer',
       run: scenarioSyncAuthExcludedRootNotSynced,
+    },
+    {
+      name: 'sqlite runner: run binds parameters',
+      run: scenarioSqliteRunnerRunBindsParameters,
     },
     {
       name: 'auth: sqlite subtree evaluator allow/deny/unknown',
@@ -415,6 +443,7 @@ function engineRunnerOrNull(engine: TreecrdtEngine): SqliteRunner | null {
   const candidate = (engine as any)?.runner as Partial<SqliteRunner> | undefined;
   if (!candidate) return null;
   if (typeof candidate.exec !== 'function') return null;
+  if (typeof candidate.run !== 'function') return null;
   if (typeof candidate.getText !== 'function') return null;
   return candidate as SqliteRunner;
 }
@@ -873,7 +902,7 @@ async function scenarioMaterializationEventDefensiveRestore(
     'receiver preserves parent',
   );
   assertArrayEqual(
-    ((await (await b.tree.get(parent))?.children()) ?? []).map((node) => node.id),
+    (await b.tree.node(parent).children()).map((node) => node.id),
     [child],
     'receiver preserves unseen child',
   );
@@ -894,7 +923,7 @@ async function scenarioMaterializationEventDefensiveRestore(
     'restored parent should be visible',
   );
   assertArrayEqual(
-    ((await (await a.tree.get(parent))?.children()) ?? []).map((node) => node.id),
+    (await a.tree.node(parent).children()).map((node) => node.id),
     [child],
     'child should remain visible',
   );
@@ -1079,7 +1108,7 @@ async function scenarioMaterializedSmokeWithOpRefs(
     'tree.children(root)',
   );
   assertArrayEqual(
-    ((await (await engine.tree.get(n1))?.children()) ?? []).map((node) => node.id),
+    (await engine.tree.node(n1).children()).map((node) => node.id),
     [n2],
     'tree.children(n1)',
   );
@@ -1091,8 +1120,8 @@ async function scenarioMaterializedSmokeWithOpRefs(
   assertEqual(byId.get(n2)?.parent ?? null, n1, 'tree.dump n2 parent');
 
   assertEqual((await engine.tree.root.parent())?.id ?? null, null, 'tree.parent(root)');
-  assertEqual((await (await engine.tree.get(n1))?.parent())?.id ?? null, root, 'tree.parent(n1)');
-  assertEqual((await (await engine.tree.get(n2))?.parent())?.id ?? null, n1, 'tree.parent(n2)');
+  assertEqual((await engine.tree.node(n1).parent())?.id ?? null, root, 'tree.parent(n1)');
+  assertEqual((await engine.tree.node(n2).parent())?.id ?? null, n1, 'tree.parent(n2)');
 
   assertEqual((await engine.tree.get(root)) !== undefined, true, 'tree.exists(root)');
   assertEqual((await engine.tree.get(n1)) !== undefined, true, 'tree.exists(n1)');
@@ -1367,7 +1396,7 @@ async function scenarioChangedSinceMatchesStateDiff(
   const snapshot = async (engine: TreecrdtEngine) => {
     const out = new Map<string, string>();
     for (const row of await engine.tree.dump()) {
-      const payload = row.tombstone ? null : await (await engine.tree.get(row.node))?.payload();
+      const payload = row.tombstone ? null : await engine.tree.node(row.node).payload();
       out.set(row.node, describe(row.parent, row.orderKey, row.tombstone, payload));
     }
     return out;
@@ -1431,6 +1460,217 @@ async function scenarioChangedSinceMatchesStateDiff(
     cursor = read.headSeq;
     before = after;
   }
+}
+
+/** Changes delivered to a durable listener, in order, as `kind:node`. */
+function durableLog(events: MaterializationEvent[]): string[] {
+  return events.flatMap((event) => event.changes.map((change) => `${change.kind}:${change.node}`));
+}
+
+async function scenarioDurableResumesAfterReopen(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  if (!ctx.createPersistentEngine) return;
+  const replica = replicaFromLabel('r-durable');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const live = nodeIdFromInt(80);
+  const missed = nodeIdFromInt(81);
+
+  const e1 = await ctx.createPersistentEngine({ docId: ctx.docId, name: 'db' });
+  if (!e1.onMaterializedDurable) return ctx.skip('engine has no onMaterializedDurable');
+  const first: MaterializationEvent[] = [];
+  const s1 = await e1.onMaterializedDurable('index', (event) => void first.push(event));
+  first.length = 0;
+  await e1.local.insert(replica, root, live, { type: 'last' }, null);
+  await s1.settled();
+  assertArrayEqual(durableLog(first), [`insert:${live}`], 'a live event is delivered');
+  await s1.close();
+  await e1.local.insert(replica, root, missed, { type: 'last' }, encoder.encode('missed'));
+  await e1.close();
+
+  const e2 = await ctx.createPersistentEngine({ docId: ctx.docId, name: 'db' });
+  const second: MaterializationEvent[] = [];
+  await e2.onMaterializedDurable!('index', (event) => void second.push(event));
+  assertArrayEqual(
+    durableLog(second),
+    [`insert:${missed}`],
+    'reopening delivers only what the subscription missed',
+  );
+  const change = second[0]!.changes[0]!;
+  assertBytesEqual(
+    'payload' in change ? change.payload : null,
+    encoder.encode('missed'),
+    'a missed node is reported with its current payload',
+  );
+}
+
+async function scenarioDurableRedeliversAfterFailure(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engine.onMaterializedDurable) return ctx.skip('engine has no onMaterializedDurable');
+  const replica = replicaFromLabel('r-durable');
+  const root = nodeIdFromInt(0);
+  const node = nodeIdFromInt(83);
+  // A position of 0 reads every node, so start from a database that already has one.
+  await engine.local.insert(replica, root, nodeIdFromInt(85), { type: 'last' }, null);
+
+  const delivered: MaterializationEvent[] = [];
+  const errors: unknown[] = [];
+  let failing = false;
+  const subscription = await engine.onMaterializedDurable(
+    'index',
+    (event) => {
+      if (failing) throw new Error('listener failed');
+      delivered.push(event);
+    },
+    { onError: (error) => errors.push(error) },
+  );
+  delivered.length = 0;
+
+  failing = true;
+  await engine.local.insert(replica, root, node, { type: 'last' }, null);
+  const failure = await subscription.settled().then(
+    () => null,
+    (error) => error,
+  );
+  assert(failure, 'settled rejects while the listener fails');
+  assertEqual(errors.length, 1, 'the failed event reaches onError');
+
+  failing = false;
+  await subscription.settled();
+  assertArrayEqual(durableLog(delivered), [`insert:${node}`], 'the failed change is delivered');
+}
+
+async function scenarioDurableResetsForNewVersion(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engine.onMaterializedDurable) return ctx.skip('engine has no onMaterializedDurable');
+  const replica = replicaFromLabel('r-durable');
+  const node = nodeIdFromInt(84);
+  await engine.local.insert(replica, nodeIdFromInt(0), node, { type: 'last' }, null);
+
+  let resets = 0;
+  /** Subscribes, closes, and returns what the subscription received while opening. */
+  const open = async (version: number): Promise<string[]> => {
+    const events: MaterializationEvent[] = [];
+    const subscription = await engine.onMaterializedDurable!(
+      'index',
+      (event) => void events.push(event),
+      { version, reset: () => void (resets += 1) },
+    );
+    await subscription.close();
+    return durableLog(events);
+  };
+
+  assert((await open(1)).includes(`insert:${node}`), 'a first subscription receives every node');
+  assertEqual((await open(1)).length, 0, 'the same version keeps its position');
+  assertEqual(resets, 1, 'only the first subscription resets');
+  assert((await open(2)).includes(`insert:${node}`), 'a new version receives every node again');
+  assertEqual(resets, 2, 'a new version resets');
+}
+
+async function scenarioDurableReportsNodeMovedWhilePaging(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engine.onMaterializedDurable) return ctx.skip('engine has no onMaterializedDurable');
+  const replica = replicaFromLabel('r-durable');
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(90);
+  // Pages are read in node order, so the last node is still unread when the first page arrives.
+  const moved = nodeIdFromInt(95);
+  await engine.local.insert(replica, root, parent, { type: 'last' }, null);
+  for (let i = 91; i <= 95; i += 1) {
+    await engine.local.insert(replica, root, nodeIdFromInt(i), { type: 'last' }, null);
+  }
+
+  const events: MaterializationEvent[] = [];
+  let movedDuringRead = false;
+  await engine.onMaterializedDurable(
+    'index',
+    async (event) => {
+      events.push(event);
+      if (movedDuringRead) return;
+      movedDuringRead = true;
+      await engine.local.move(replica, moved, parent, { type: 'last' });
+    },
+    { limit: 2 },
+  );
+
+  const last = events
+    .flatMap((event) => event.changes)
+    .filter((change) => change.node === moved)
+    .pop();
+  assert(
+    last?.kind === 'insert' && last.parentAfter === parent,
+    'a node moved during a paged read is reported under its new parent',
+  );
+}
+
+async function scenarioTreeNodeHandle(ctx: TreecrdtEngineConformanceContext): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r-node');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(90);
+  const child = nodeIdFromInt(91);
+
+  assertEqual(engine.tree.node('0').id, engine.tree.root.id, 'node(root alias) is the root');
+  await engine.local.insert(replica, root, parent, { type: 'last' }, encoder.encode('parent'));
+  await engine.local.insert(replica, parent, child, { type: 'last' }, encoder.encode('child'));
+
+  const handle = engine.tree.node(parent);
+  assertEqual(handle.id, parent, 'node(id) canonical id');
+  assertBytesEqual(await handle.payload(), encoder.encode('parent'), 'node(id) payload');
+  assertEqual((await handle.parent())?.id, root, 'node(id) parent');
+  assertArrayEqual(
+    (await handle.children()).map((n) => n.id),
+    [child],
+    'node(id) children',
+  );
+
+  // node(id) skips get()'s existence check, so its reads must hide what the tree hides.
+  await engine.local.delete(replica, parent);
+  const hiddenHandles = {
+    'node(deleted)': engine.tree.node(parent),
+    'node(missing)': engine.tree.node(nodeIdFromInt(92)),
+  };
+  for (const [label, hidden] of Object.entries(hiddenHandles)) {
+    assertEqual(await hidden.payload(), null, `${label} has no payload`);
+    assertEqual(await hidden.parent(), undefined, `${label} has no parent`);
+    assertArrayEqual(
+      (await hidden.children()).map((n) => n.id),
+      [],
+      `${label} has no children`,
+    );
+  }
+}
+
+async function scenarioHandleKeptAcrossDelete(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r-held');
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(93);
+  const child = nodeIdFromInt(94);
+  await engine.local.insert(replica, root, parent, { type: 'last' }, new TextEncoder().encode('p'));
+  await engine.local.insert(replica, parent, child, { type: 'last' }, null);
+
+  const held = await engine.tree.get(parent);
+  assert(held, 'get(parent)');
+  await engine.local.delete(replica, parent);
+
+  // Only get() used to check visibility, so this handle kept reading the deleted node.
+  assertEqual(await held.payload(), null, 'a held handle reads no payload after the delete');
+  assertArrayEqual(
+    (await held.children()).map((n) => n.id),
+    [],
+    'a held handle lists no children after the delete',
+  );
 }
 
 async function scenarioTreeGetRootLazyNavigation(
@@ -1826,7 +2066,7 @@ async function scenarioDefensiveDeleteReactiveInsert(
     'parent restored after subtree insert',
   );
   assertArrayEqual(
-    ((await (await engine.tree.get(parent))?.children()) ?? []).map((node) => node.id),
+    (await engine.tree.node(parent).children()).map((node) => node.id),
     [child],
     'child visible under restored parent',
   );
@@ -1886,7 +2126,7 @@ async function scenarioDefensiveDeleteOutOfOrderChildInsert(
     'parent restored after out-of-order child insert',
   );
   assertArrayEqual(
-    ((await (await engine.tree.get(parent))?.children()) ?? []).map((node) => node.id),
+    (await engine.tree.node(parent).children()).map((node) => node.id),
     [child],
     'child visible under restored parent',
   );
@@ -1942,7 +2182,7 @@ async function scenarioPersistencePayloadReopen(
     'children after reopen (payload)',
   );
 
-  const payload = (await (await e2.tree.get(n1))?.payload()) ?? null;
+  const payload = await e2.tree.node(n1).payload();
   assert(payload !== null, 'tree.getPayload should return payload for node with payload');
   assertEqual(
     new TextDecoder().decode(payload),
@@ -2152,7 +2392,7 @@ async function scenarioSyncAuthSignedOps(ctx: TreecrdtEngineConformanceContext):
     // A deletes the parent without seeing B's concurrent child insertion.
     await b.local.insert(bPk, parent, child, { type: 'last' }, null, { authSession: sessionB });
     assertArrayEqual(
-      ((await (await a.tree.get(parent))?.children()) ?? []).map((node) => node.id),
+      (await a.tree.node(parent).children()).map((node) => node.id),
       [],
       'deleter has not seen the child',
     );
@@ -2192,7 +2432,7 @@ async function scenarioSyncAuthSignedOps(ctx: TreecrdtEngineConformanceContext):
         `${name} restores parent`,
       );
       assertArrayEqual(
-        ((await (await engine.tree.get(parent))?.children()) ?? []).map((node) => node.id),
+        (await engine.tree.node(parent).children()).map((node) => node.id),
         [child],
         `${name} preserves unseen child`,
       );
@@ -2280,6 +2520,26 @@ async function scenarioSyncAuthScopedTokenRejectsAllFilter(
   } finally {
     detach();
   }
+}
+
+async function scenarioSqliteRunnerRunBindsParameters(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const runner = engineRunnerOrNull(ctx.engine);
+  if (!runner) return ctx.skip('engine has no SQLite runner');
+
+  await runner.exec('CREATE TABLE run_params (i INTEGER, t TEXT, b BLOB, n)');
+  await runner.run('INSERT INTO run_params (i, t, b, n) VALUES (?1, ?2, ?3, ?4)', [
+    7,
+    'text',
+    new Uint8Array([1, 2, 255]),
+    null,
+  ]);
+  assertEqual(
+    await runner.getText('SELECT json_array(i, t, hex(b), typeof(n)) FROM run_params'),
+    '[7,"text","0102FF","null"]',
+    'run binds each parameter',
+  );
 }
 
 async function scenarioAuthSqliteSubtreeEvaluator(
@@ -2650,7 +2910,7 @@ async function scenarioSyncAuthRestartRelayReServesSignedOps(
     'receiver sees subtree root after relay restart',
   );
   assertArrayEqual(
-    ((await (await c.tree.get(subtreeRoot))?.children()) ?? []).map((node) => node.id),
+    (await c.tree.node(subtreeRoot).children()).map((node) => node.id),
     [child],
     'receiver sees child under subtree after relay restart',
   );

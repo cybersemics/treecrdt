@@ -55,6 +55,7 @@ export interface TreecrdtSessionTree {
  */
 export interface TreecrdtSession {
   sqlExec: (sql: string) => Promise<void>;
+  sqlRun: (sql: string, params?: SqlParam[]) => Promise<void>;
   sqlGetText: (sql: string, params?: SqlParam[]) => Promise<string | null>;
   readonly operations: TreecrdtSessionOperations;
   readonly tree: TreecrdtSessionTree;
@@ -192,6 +193,7 @@ const createTreecrdtSession = (openDb: SessionOpenFn): TreecrdtSessionOwner => {
       run(async () => {
         await ensureDb().exec(sql);
       }),
+    sqlRun: (sql, params = []) => run(async () => ensureDb().run(sql, params)),
     sqlGetText: (sql, params = []) => run(async () => ensureDb().getText(sql, params)),
     operations,
     tree,

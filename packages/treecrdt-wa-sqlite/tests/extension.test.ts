@@ -6,6 +6,7 @@ const schema = 'CREATE TABLE example (id INTEGER PRIMARY KEY)';
 const runner = () => ({
   getText: vi.fn(async () => schema),
   exec: vi.fn(async (_sql: string) => {}),
+  run: vi.fn(async () => {}),
 });
 
 test('registers each handle and initializes its schema in a transaction', async () => {
