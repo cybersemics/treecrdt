@@ -1412,7 +1412,8 @@ fn registration_only_entrypoint_defers_schema_and_matches_native_initialization(
 }
 
 fn setup_conn() -> Connection {
-    let ext_path = find_extension().expect("extension dylib path");
+    let ext_path = find_extension()
+        .expect("run cargo build -p treecrdt-sqlite-ext --lib --features ext-sqlite first");
     let conn = Connection::open_in_memory().unwrap();
     unsafe {
         conn.load_extension_enable().unwrap();
