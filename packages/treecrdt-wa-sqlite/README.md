@@ -112,6 +112,7 @@ await subscription.close();
 
 - The call resolves once the listener has caught up. With no usable position for `version`, `reset` runs first and every node is delivered.
 - Events arrive in order, one at a time and at least once. The listener may be async: the position moves only after it resolves, and a rejected call is delivered again with the next event or `settled()`.
+- `idle()` resolves once the deliveries queued so far have finished, whether or not they succeeded. Unlike `settled()`, it never starts a catch-up and never rejects, so waiting for a listener that keeps failing does not retry it.
 - After a gap, a change reports a node's current state instead of how it got there: a live node as `insert` (a root as `payload`), a removed one as `delete`. Apply each change as "make it so".
 - The position is stored in the client's database and saved after a catch-up, every `saveIntervalMs` (default 2000) while events flow, and on `close()`. `client.close()` closes open subscriptions first.
 
