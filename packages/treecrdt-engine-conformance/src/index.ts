@@ -932,32 +932,63 @@ async function scenarioMaterializationEventDefensiveRestore(
 async function scenarioLocalWriteReportsRestoredParent(
   ctx: TreecrdtEngineConformanceContext,
 ): Promise<void> {
-  const engine = ctx.engine;
+  const { engine } = ctx;
   const replica = replicaFromLabel('r-local-restore');
+  const encoder = new TextEncoder();
   const root = nodeIdFromInt(0);
-  const parent = nodeIdFromInt(80);
-  const child = nodeIdFromInt(81);
-  await engine.local.insert(replica, root, parent, { type: 'last' }, null);
-  await engine.local.insert(replica, parent, child, { type: 'last' }, null);
-  await engine.local.delete(replica, parent);
+  // Restored by an insert under it, a move into it and a payload on its child, in that order.
+  const parents = [nodeIdFromInt(80), nodeIdFromInt(81), nodeIdFromInt(82)];
+  const child = nodeIdFromInt(83);
+  const moved = nodeIdFromInt(84);
+  for (const parent of parents) {
+    await engine.local.insert(replica, root, parent, { type: 'last' }, encoder.encode(parent));
+  }
+  await engine.local.insert(replica, parents[2]!, child, { type: 'last' }, null);
+  await engine.local.insert(replica, root, moved, { type: 'last' }, null);
+  for (const parent of parents) await engine.local.delete(replica, parent);
   const cursor = engine.tree.changedSince ? (await readAllChangedSince(engine, 0)).headSeq : 0;
+  const durable: MaterializationEvent[] = [];
+  const subscription = await engine.onMaterializedDurable?.(
+    'index',
+    (event) => void durable.push(event),
+  );
+  durable.length = 0;
 
-  // The delete didn't know about this write, so it restores the parent, as it does on peers.
+  // The deletes didn't know about these writes, so each restores its parent, as it does on peers.
   const events = await captureMaterializationEvents(engine, async () => {
+    await engine.local.insert(replica, parents[0]!, nodeIdFromInt(85), { type: 'last' }, null);
+    await engine.local.move(replica, moved, parents[1]!, { type: 'last' });
     await engine.local.payload(replica, child, Uint8Array.of(1));
   });
-  assert(
-    events.some((event) =>
-      event.changes.some((change) => change.kind === 'restore' && change.node === parent),
-    ),
-    'the event reports the restored parent',
-  );
+  await subscription?.settled();
+
+  const delivered: [string, MaterializationEvent[]][] = [['onMaterialized', events]];
+  if (subscription) delivered.push(['onMaterializedDurable', durable]);
+  for (const [label, received] of delivered) {
+    for (const parent of parents) {
+      const changes = received.flatMap((event) => event.changes).filter((c) => c.node === parent);
+      assertArrayEqual(
+        changes.map((change) => change.kind),
+        ['restore'],
+        `${label} reports the restored parent`,
+      );
+      const change = changes[0]!;
+      assertEqual('parentAfter' in change ? change.parentAfter : null, root, `${label} parent`);
+      assertBytesEqual(
+        'payload' in change ? change.payload : null,
+        encoder.encode(parent),
+        `${label} payload`,
+      );
+    }
+  }
   if (engine.tree.changedSince) {
     const { nodes } = await readAllChangedSince(engine, cursor);
-    assert(
-      nodes.some((n) => n.node === parent && !n.tombstone),
-      'changedSince lists the restored parent',
-    );
+    for (const parent of parents) {
+      assert(
+        nodes.some((n) => n.node === parent && !n.tombstone),
+        'changedSince lists the restored parent',
+      );
+    }
   }
 }
 
