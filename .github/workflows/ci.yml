@@ -113,7 +113,10 @@ jobs:
         run: cargo test -p treecrdt-core --features serde --test serde_version_vector
 
       - name: Run SQLite extension roundtrip tests
-        run: cargo test -p treecrdt-sqlite-ext --test extension_roundtrip --features ext-sqlite
+        # Since Cargo 1.100 only `cargo build` puts the extension where the tests load it.
+        run: |
+          cargo build -p treecrdt-sqlite-ext --lib --features ext-sqlite
+          cargo test -p treecrdt-sqlite-ext --test extension_roundtrip --features ext-sqlite
 
       - name: Detect Playwright version
         id: pw-version
@@ -190,7 +193,9 @@ jobs:
           sudo apt-get install -y libclang-22-dev
 
       - name: Test SQLite extension with Clang 22
-        run: cargo test -p treecrdt-sqlite-ext --test extension_roundtrip --features ext-sqlite --locked
+        run: |
+          cargo build -p treecrdt-sqlite-ext --lib --features ext-sqlite --locked
+          cargo test -p treecrdt-sqlite-ext --test extension_roundtrip --features ext-sqlite --locked
 
   postgres-backend-tests:
     runs-on: ubuntu-latest
