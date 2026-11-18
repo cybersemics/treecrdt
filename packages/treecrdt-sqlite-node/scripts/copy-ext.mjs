@@ -4,10 +4,10 @@ import { dirnameFromImportMeta, repoRootFromImportMeta } from "../../../scripts/
 
 const scriptDir = dirnameFromImportMeta(import.meta.url);
 const repoRoot = repoRootFromImportMeta(import.meta.url, 3);
-const targetRelease = path.join(repoRoot, "target", "release", "deps");
+const targetRelease = path.join(repoRoot, "target", "release");
 
 if (!fs.existsSync(targetRelease)) {
-  console.error("No target/release/deps directory. Run build:ext:native first.");
+  console.error("No target/release directory. Run build:ext:native first.");
   process.exit(1);
 }
 
