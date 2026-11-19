@@ -1,5 +1,11 @@
 # @treecrdt/interface
 
+## 0.7.0
+
+### Minor Changes
+
+- 6b5d8df: Add `idle()` to the subscription that `onMaterializedDurable` returns. It resolves once the deliveries queued before the call have finished, whether or not they succeeded. Unlike `settled()`, it never starts a catch-up and never rejects, so a caller can wait for a listener that keeps failing without retrying it.
+
 ## 0.6.0
 
 ### Minor Changes
