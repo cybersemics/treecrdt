@@ -78,6 +78,23 @@ fn insert(replica: &ReplicaId, counter: u64, lamport: Lamport) -> Operation {
 }
 
 #[test]
+fn ignored_operations_initialize_nodes_before_and_after_replay() {
+    let replica = ReplicaId::new(b"remote");
+    let (mut tree, _) = counting_tree(&replica);
+    tree.apply_remote_batch([
+        Operation::insert(&replica, 1, 1, NodeId(1), NodeId(1), vec![1]),
+        Operation::delete(&replica, 2, 2, NodeId::TRASH, None),
+    ])
+    .unwrap();
+    assert!(tree.is_known(NodeId(1)).unwrap());
+    assert!(tree.is_known(NodeId::TRASH).unwrap());
+
+    tree.replay_from_storage().unwrap();
+    assert!(tree.is_known(NodeId(1)).unwrap());
+    assert!(tree.is_known(NodeId::TRASH).unwrap());
+}
+
+#[test]
 fn empty_duplicate_and_newer_batches_do_not_scan_history() {
     let replica = ReplicaId::new(b"remote");
     let (mut tree, trace) = counting_tree(&replica);
