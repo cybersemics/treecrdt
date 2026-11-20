@@ -1,5 +1,11 @@
 # @treecrdt/wa-sqlite
 
+## 1.4.1
+
+### Patch Changes
+
+- 49294a7: Report a parent restored by a local write. A payload on a deleted node's child, an insert under it or a move into it restores the node; `onMaterialized` now includes that restore, as it does on peers applying the same op.
+
 ## 1.4.0
 
 ### Minor Changes
