@@ -445,15 +445,15 @@ fn payload_from_op(op: &Operation) -> Option<Option<Vec<u8>>> {
     }
 }
 
-fn rewind_payload_op_in_place<S: FrontierRewindStorage, P: ExactPayloadStore>(
+fn rewind_payload_in_place<S: FrontierRewindStorage, P: ExactPayloadStore>(
     payloads: &mut P,
     storage: &S,
-    op: &Operation,
+    node: NodeId,
+    frontier: &MaterializationFrontierRef<'_>,
 ) -> Result<()> {
-    let node = op.kind.node();
-    // Payload rewind needs the previous winning payload-bearing op, not just the current bytes.
-    // If no predecessor exists, direct rewind must clear the payload row entirely.
-    let previous = storage.latest_payload_before(node, &frontier_from_op(op).as_borrowed())?;
+    // Payload rewind needs the winning payload-bearing op before the frontier, not just the
+    // current bytes. If none exists, direct rewind must clear the payload row entirely.
+    let previous = storage.latest_payload_before(node, frontier)?;
 
     if let Some(previous) = previous {
         let payload = payload_from_op(&previous)
@@ -856,10 +856,10 @@ where
         if cmp_frontiers(&op_frontier, &head.at) != Ordering::Greater
             && !inserted_op_ids.contains(&op.meta.id)
         {
-            // Payloads are last-writer-wins, so a payload op rewinds to the latest earlier payload
-            // op. Undoing an insert or move would also mean removing it from `last_change`, which
-            // defensive deletion reads, and knowing whether a cycle check rejected it. The stores
-            // record neither.
+            // Payloads are last-writer-wins, so a payload op rewinds to the latest payload op
+            // before the frontier. Undoing an insert or move would also mean removing it from
+            // `last_change`, which defensive deletion reads, and knowing whether a cycle check
+            // rejected it. The stores record neither.
             requires_full_replay |= !matches!(op.kind, crate::ops::OperationKind::Payload { .. });
             existing_suffix_ops.push(op.clone());
         }
@@ -895,8 +895,12 @@ where
     }
 
     index.truncate_from(truncate_from)?;
-    for op in existing_suffix_ops.iter().rev() {
-        rewind_payload_op_in_place(&mut payloads, storage, op)?;
+    // Rewind each payload to its writer before the frontier. The writer before a materialized op
+    // can be an inserted op, which the replay below must not see before its turn.
+    let rewound_nodes: HashSet<NodeId> =
+        existing_suffix_ops.iter().map(|op| op.kind.node()).collect();
+    for node in rewound_nodes {
+        rewind_payload_in_place(&mut payloads, storage, node, frontier)?;
     }
 
     // After rewinding, the backend stores now represent the prefix immediately before the
@@ -1277,10 +1281,14 @@ where
     }
 
     let refreshed_meta = load_catch_up_meta()?;
-    let catch_up_result = if !had_pending_frontier {
-        try_direct_rewind(&refreshed_meta, &inserted_op_ids)?.unwrap_or(catch_up(&refreshed_meta)?)
+    let direct_rewind = if had_pending_frontier {
+        None
     } else {
-        catch_up(&refreshed_meta)?
+        try_direct_rewind(&refreshed_meta, &inserted_op_ids)?
+    };
+    let catch_up_result = match direct_rewind {
+        Some(result) => result,
+        None => catch_up(&refreshed_meta)?,
     };
 
     let head = catch_up_result

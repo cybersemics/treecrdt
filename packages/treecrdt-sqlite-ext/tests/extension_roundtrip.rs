@@ -652,6 +652,13 @@ fn remote_append_out_of_order_move_with_later_payload_catches_up_immediately() {
 }
 
 #[test]
+fn remote_append_out_of_order_move_indexes_payload_from_before_the_move() {
+    materialization_conformance::out_of_order_move_indexes_payload_from_before_the_move(
+        &setup_conformance_harness(),
+    );
+}
+
+#[test]
 fn remote_append_out_of_order_insert_and_move_before_head_catches_up_immediately() {
     let harness = setup_conformance_harness();
     materialization_conformance::out_of_order_insert_and_move_before_head_catches_up_immediately(

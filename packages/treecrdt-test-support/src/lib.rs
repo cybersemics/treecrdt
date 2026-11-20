@@ -225,6 +225,39 @@ pub fn out_of_order_move_with_later_payload_catches_up_immediately<
     assert_eq!(harness.payload(child), Some(vec![9]));
 }
 
+pub fn out_of_order_move_indexes_payload_from_before_the_move<
+    H: MaterializationConformanceHarness,
+>(
+    harness: &H,
+) {
+    let replica = ReplicaId::new(b"late-move-payload");
+    let p1 = node(1);
+    let p2 = node(2);
+    let child = node(3);
+    harness.append_ops(&[
+        Operation::insert(&replica, 1, 1, NodeId::ROOT, p1, order_key_from_position(0)),
+        Operation::insert(&replica, 2, 2, NodeId::ROOT, p2, order_key_from_position(1)),
+        Operation::insert(&replica, 3, 3, p1, child, order_key_from_position(0)),
+        Operation::set_payload(&replica, 4, 4, child, vec![4]),
+        Operation::set_payload(&replica, 7, 7, child, vec![7]),
+    ]);
+
+    // A move indexes the node's payload writer under the new parent. That is payload 4, not the
+    // late payload 6 that sorts after the move.
+    harness.append_ops(&[
+        Operation::move_node(&replica, 5, 5, child, p2, order_key_from_position(0)),
+        Operation::set_payload(&replica, 6, 6, child, vec![6]),
+    ]);
+
+    assert_replay_cleared(harness);
+    assert_eq!(harness.head_seq(), 7);
+    assert_eq!(harness.visible_children(p2), vec![child]);
+    assert_eq!(harness.payload(child), Some(vec![7]));
+    let mut indexed = harness.op_ref_counters_for_parent(p2);
+    indexed.sort();
+    assert_eq!(indexed, vec![4, 5, 6, 7]);
+}
+
 pub fn out_of_order_insert_and_move_before_head_catches_up_immediately<
     H: MaterializationConformanceHarness,
 >(

@@ -227,6 +227,14 @@ fn postgres_backend_out_of_order_move_with_later_payload_catches_up_immediately(
 }
 
 #[test]
+fn postgres_backend_out_of_order_move_indexes_payload_from_before_the_move() {
+    let Some(harness) = setup_conformance_harness() else {
+        return;
+    };
+    materialization_conformance::out_of_order_move_indexes_payload_from_before_the_move(&harness);
+}
+
+#[test]
 fn postgres_backend_out_of_order_insert_and_move_before_head_catches_up_immediately() {
     let Some(harness) = setup_conformance_harness() else {
         return;
