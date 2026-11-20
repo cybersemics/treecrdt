@@ -438,6 +438,30 @@ export type TreecrdtChangedSincePage = {
   next: TreecrdtChangedSinceCursor | null;
 };
 
+export type TreecrdtReadOptions = {
+  /** Also read each child's payload. */
+  childPayloads?: boolean;
+};
+
+/** A visible node as `read` returns it. */
+export type TreecrdtReadNode = {
+  /** Live parent; null for ROOT and for a node whose parent is not visible. */
+  parent: string | null;
+  /** Position among the parent's live children; 0 without a parent. */
+  index: number;
+  /** Null when the node has no payload. */
+  payload: Uint8Array | null;
+  /** Live children in order. A child carries its payload only when `childPayloads` is set. */
+  children: { id: string; payload?: Uint8Array | null }[];
+};
+
+export type TreecrdtReadResult = {
+  /** Head of the state the read saw, as `changedSince` reports it. */
+  headSeq: number;
+  /** Keyed by each id as given. Null when the node is not visible. */
+  nodes: Record<string, TreecrdtReadNode | null>;
+};
+
 export type TreecrdtEngineTree = {
   /** Resolves ROOT aliases to `root`; undefined when any other node is absent. */
   get: (node: string) => Promise<TreecrdtNode | undefined>;
@@ -470,6 +494,14 @@ export type TreecrdtEngineTree = {
     since: number | TreecrdtChangedSinceCursor,
     opts?: TreecrdtChangedSinceOptions,
   ) => Promise<TreecrdtChangedSincePage>;
+  /**
+   * Reads many nodes in one query, so all of them come from the same state: each node's live
+   * parent, its position among its siblings, its payload and its live children in order. Each
+   * node reads as `node(id)`'s reads would. Use it where a caller would otherwise read node by node.
+   *
+   * Optional: implemented by the SQLite-backed engines.
+   */
+  read?: (ids: readonly string[], opts?: TreecrdtReadOptions) => Promise<TreecrdtReadResult>;
 };
 
 /**

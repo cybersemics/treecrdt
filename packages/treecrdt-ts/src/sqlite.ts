@@ -4,6 +4,7 @@ import type {
   SerializeReplica,
   TreecrdtAdapter,
   TreecrdtChangedSinceQuery,
+  TreecrdtReadRows,
 } from './adapter.js';
 import { addMaterializationWriteId, emptyMaterializationOutcome } from './engine.js';
 import type {
@@ -14,12 +15,14 @@ import type {
   MaterializationSource,
   TreecrdtChangedNode,
   TreecrdtEngineTree,
+  TreecrdtReadNode,
 } from './engine.js';
 import {
   decodeNodeId,
   decodeReplicaId,
   hexToBytes,
   nodeIdToBytes16,
+  normalizeNodeId,
   ROOT_NODE_ID_HEX,
   replicaIdToBytes,
 } from './ids.js';
@@ -347,6 +350,7 @@ export function createTreecrdtSqliteAdapter(
       treecrdtTreeChildren(runner, parent, offset, limit, emitOutcome),
     treeDump: () => treecrdtTreeDump(runner, emitOutcome),
     treeChangedSince: (query) => treecrdtTreeChangedSince(runner, query, emitOutcome),
+    treeRead: (nodes, childPayloads) => treecrdtTreeRead(runner, nodes, childPayloads, emitOutcome),
     treeNodeCount: () => treecrdtTreeNodeCount(runner, emitOutcome),
     treeParent: (node) => treecrdtTreeParent(runner, node, emitOutcome),
     treeExists: (node) => treecrdtTreeExists(runner, node, emitOutcome),
@@ -552,6 +556,53 @@ async function treecrdtTreeChangedSince(
     [headSeq, query.since, query.afterNode, limit, payloads],
   );
   return { headSeq, rows };
+}
+
+/**
+ * Read the visible requested nodes, and the live children of each one and of each one's parent,
+ * in one statement, so all of them come from the same state. Each list is read in sibling order
+ * from the `(parent, tombstone, order_key, node)` index; a node's position is its place in its
+ * parent's list. That scans each parent's children once, however many of them are requested, where
+ * a window function would sort them and a count per node would scan them once per node.
+ */
+async function treecrdtTreeRead(
+  runner: SqliteRunner,
+  nodes: string[],
+  childPayloads: boolean,
+  emitOutcome?: (outcome: MaterializationOutcome) => void,
+): Promise<TreecrdtReadRows> {
+  await treecrdtEnsureMaterialized(runner, emitOutcome);
+  return sqliteGetJson<TreecrdtReadRows>(
+    runner,
+    "WITH req(node) AS (SELECT DISTINCT unhex(value) FROM json_each(?1)), \
+     visible(node, parent) AS (\
+       SELECT req.node, p.node FROM req \
+       LEFT JOIN tree_nodes n ON n.node = req.node \
+       LEFT JOIN tree_nodes p ON p.node = n.parent AND p.tombstone = 0 \
+       WHERE n.tombstone = 0 OR req.node = X'00000000000000000000000000000000'\
+     ), \
+     listed(node, payloads) AS (\
+       SELECT node, MAX(payloads) FROM (\
+         SELECT node, ?2 AS payloads FROM visible \
+         UNION ALL SELECT parent, 0 FROM visible WHERE parent IS NOT NULL\
+       ) GROUP BY node\
+     ) \
+     SELECT json_object(\
+       'headSeq', COALESCE((SELECT head_seq FROM tree_meta WHERE id = 1), 0), \
+       'nodes', (SELECT json_group_array(json_array(\
+           lower(hex(v.node)), \
+           lower(hex(v.parent)), \
+           (SELECT lower(hex(payload)) FROM tree_payload WHERE node = v.node))) \
+         FROM visible v), \
+       'children', (SELECT json_group_object(lower(hex(l.node)), (\
+           SELECT json_group_array(json_array(child, payload)) FROM (\
+             SELECT lower(hex(c.node)) AS child, \
+               CASE WHEN l.payloads THEN (SELECT lower(hex(payload)) FROM tree_payload WHERE node = c.node) END AS payload \
+             FROM tree_nodes c WHERE c.parent = l.node AND c.tombstone = 0 \
+             ORDER BY c.order_key, c.node))) \
+         FROM listed l))",
+    [JSON.stringify(nodes), childPayloads ? 1 : 0],
+  );
 }
 
 /**
@@ -994,6 +1045,41 @@ export function createTreecrdtSqliteChangedSince(
     const next =
       last && nodes.length === limit ? { since: from, until: headSeq, afterNode: last.node } : null;
     return { headSeq, nodes, next };
+  };
+}
+
+/** Builds `tree.read` over a raw adapter read, normalizing ids, decoding rows and finding positions. */
+export function createTreecrdtSqliteRead(
+  read: (nodes: string[], childPayloads: boolean) => Promise<TreecrdtReadRows>,
+): NonNullable<TreecrdtEngineTree['read']> {
+  return async (ids, opts = {}) => {
+    const childPayloads = opts.childPayloads === true;
+    const canonical = ids.map(normalizeNodeId);
+    const rows = await read([...new Set(canonical)], childPayloads);
+    // Same as treePayload: an empty stored payload reads as null.
+    const bytes = (hex: string | null) => (hex === null || hex === '' ? null : hexToBytes(hex));
+    const positions = new Map<string, Map<string, number>>();
+    const nodes = new Map<string, TreecrdtReadNode>();
+    for (const [node, parentHex, payload] of rows.nodes) {
+      const parent = parentHex || null;
+      let position = parent === null ? undefined : positions.get(parent);
+      if (parent !== null && !position) {
+        position = new Map(rows.children[parent]!.map(([child], i) => [child, i]));
+        positions.set(parent, position);
+      }
+      nodes.set(node, {
+        parent,
+        index: position?.get(node) ?? 0,
+        payload: bytes(payload),
+        children: rows.children[node]!.map(([id, payload]) =>
+          childPayloads ? { id, payload: bytes(payload) } : { id },
+        ),
+      });
+    }
+    return {
+      headSeq: rows.headSeq,
+      nodes: Object.fromEntries(ids.map((id, i) => [id, nodes.get(canonical[i]!) ?? null])),
+    };
   };
 }
 

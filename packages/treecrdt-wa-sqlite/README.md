@@ -92,6 +92,23 @@ the same way until the old build's tabs close their clients or go away.
 
 Callers only see `TreecrdtClient` (`ops` / `tree` / `local` / `onMaterialized` / `onMaterializedDurable` / `close` / `drop`).
 
+### Reading many nodes at once
+
+`tree.read(ids)` reads many nodes in one worker call, all from the same state. Use it where you would otherwise read node by node through `tree.node(id)`:
+
+```ts
+const { headSeq, nodes } = await client.tree.read([a, b], { childPayloads: true });
+const node = nodes[a]; // null when `a` is deleted or unknown
+if (node) {
+  node.parent; // live parent id, or null
+  node.index; // position among the parent's live children
+  node.payload; // Uint8Array | null
+  node.children; // [{ id, payload }] in order; each payload only with childPayloads
+}
+```
+
+Each node reads as its own `tree.node(id)` reads would, keyed by the id as given. `headSeq` is the head of the state the read saw, as `changedSince` reports it.
+
 ### Keeping derived data in step
 
 `onMaterializedDurable(name, listener)` is `onMaterialized` that remembers how far the listener got. Use it for anything derived from the tree that has to survive restarts, such as an index table:

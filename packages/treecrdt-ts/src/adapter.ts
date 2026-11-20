@@ -16,6 +16,18 @@ export type TreecrdtChangedSinceQuery = {
   payloads: boolean;
 };
 
+/** A `read` in raw adapter form, with hex byte fields. */
+export type TreecrdtReadRows = {
+  headSeq: number;
+  /** `[node, parent, payload]` per visible requested node; `''` or null for no parent or payload. */
+  nodes: [string, string | null, string | null][];
+  /**
+   * `[child, payload]` live children in order, keyed by each visible requested node and by each
+   * one's parent. A child's payload is null unless requested.
+   */
+  children: Record<string, [string, string | null][]>;
+};
+
 export interface TreecrdtAdapter {
   /**
    * Set the document id used for v0 sync (`op_ref` derivation).
@@ -69,6 +81,10 @@ export interface TreecrdtAdapter {
   treeChangedSince?(
     query: TreecrdtChangedSinceQuery,
   ): Promise<{ headSeq: number; rows: unknown[] }>;
+  /**
+   * Read nodes (canonical hex ids) and the children lists `read` needs, in one query.
+   */
+  treeRead?(nodes: string[], childPayloads: boolean): Promise<TreecrdtReadRows>;
   /**
    * Count non-tombstoned nodes in the materialized tree (excluding ROOT).
    */

@@ -3,6 +3,7 @@ import type { Operation, ReplicaId } from '@treecrdt/interface';
 import {
   createTreecrdtSqliteChangedSince,
   createTreecrdtSqliteMaterializationCursors,
+  createTreecrdtSqliteRead,
   createTreecrdtSqliteWriter,
   decodeSqliteNodeIds,
   decodeSqliteOpRefs,
@@ -251,6 +252,9 @@ export async function createClientFromBackend(runtime: RuntimeConnection): Promi
       dump: () => guard(async () => decodeSqliteTreeRows(await session.tree.dump())),
       nodeCount: () => guard(async () => Number(await session.tree.nodeCount())),
       changedSince,
+      read: createTreecrdtSqliteRead((nodes, childPayloads) =>
+        guard(() => session.tree.read(nodes, childPayloads)),
+      ),
     },
     meta: {
       headLamport: () => guard(async () => Number(await session.operations.headLamport())),

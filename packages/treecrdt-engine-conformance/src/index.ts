@@ -204,6 +204,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioHandleKeptAcrossDelete,
     },
     {
+      name: 'tree: read matches per-node reads',
+      run: scenarioTreeReadMatchesNodeReads,
+    },
+    {
       name: 'tree: changedSince reports each changed node once',
       run: scenarioChangedSinceReportsChangedNodes,
     },
@@ -1184,6 +1188,85 @@ async function scenarioMaterializedSmokeWithOpRefs(
     ['move'],
     'opsByOpRefs(n1) kinds',
   );
+}
+
+async function scenarioTreeReadMatchesNodeReads(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  if (!engine.tree.read) return ctx.skip('engine has no tree.read');
+  const replica = replicaFromLabel('r-read');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const [a, b, c, d, e, f, g, gone] = [80, 81, 82, 83, 84, 85, 86, 87].map(nodeIdFromInt);
+  const missing = nodeIdFromInt(89);
+
+  await engine.local.payload(replica, root, encoder.encode('root'));
+  await engine.local.insert(replica, root, a, { type: 'last' }, encoder.encode('a'));
+  await engine.local.insert(replica, root, b, { type: 'first' }, encoder.encode('b'));
+  await engine.local.insert(replica, a, c, { type: 'last' }, encoder.encode('c'));
+  await engine.local.insert(replica, a, d, { type: 'first' }, null);
+  await engine.local.insert(replica, a, e, { type: 'after', after: d }, encoder.encode('e'));
+  await engine.local.insert(replica, a, gone, { type: 'last' }, encoder.encode('gone'));
+  await engine.local.insert(replica, b, f, { type: 'last' }, encoder.encode('f'));
+  await engine.local.insert(replica, f, g, { type: 'last' }, encoder.encode('g'));
+  await engine.local.move(replica, c, a, { type: 'first' });
+  await engine.local.payload(replica, e, new Uint8Array());
+  await engine.local.delete(replica, gone);
+  // Leaves f and g under a deleted parent.
+  await engine.local.delete(replica, b);
+
+  const ids = [root, a, b, c, d, e, f, g, gone, missing];
+  const { headSeq, nodes } = await engine.tree.read(ids, { childPayloads: true });
+  if (engine.tree.changedSince) {
+    const head = (await engine.tree.changedSince(0, { limit: 1 })).headSeq;
+    assertEqual(headSeq, head, 'read reports the head changedSince reports');
+  }
+  /** Serializes a read with its bytes as hex, so reads compare by value. */
+  const json = (node: unknown) =>
+    JSON.stringify(node, function (this: Record<string, unknown>, key, value) {
+      const raw = this[key];
+      return raw instanceof Uint8Array ? bytesToHex(raw) : value;
+    });
+  for (const id of ids) {
+    const handle = engine.tree.node(id);
+    const parent = await handle.parent();
+    const siblings = parent ? (await parent.children()).map((sibling) => sibling.id) : [];
+    const children = await handle.children();
+    const want =
+      id === root || (await engine.tree.get(id))
+        ? {
+            parent: parent?.id ?? null,
+            index: parent ? siblings.indexOf(id) : 0,
+            payload: await handle.payload(),
+            children: await Promise.all(
+              children.map(async (child) => ({ id: child.id, payload: await child.payload() })),
+            ),
+          }
+        : null;
+    assertEqual(json(nodes[id] ?? null), json(want), `read(${id}) matches node(${id})'s reads`);
+  }
+
+  // The same node in decimal.
+  const alias = String(parseInt(a, 16));
+  const plain = await engine.tree.read([a, alias, a]);
+  assertArrayEqual(
+    Object.keys(plain.nodes).sort(),
+    [a, alias].sort(),
+    'read keys each node by the id as given',
+  );
+  assertArrayEqual(
+    plain.nodes[alias]!.children.map((child) => child.id),
+    [c, d, e],
+    'children are listed in sibling order',
+  );
+  assert(
+    plain.nodes[a]!.children.every((child) => !('payload' in child)),
+    'children carry payloads only when requested',
+  );
+  const empty = await engine.tree.read([]);
+  assertEqual(Object.keys(empty.nodes).length, 0, 'an empty read lists no nodes');
+  assertEqual(empty.headSeq, headSeq, 'an empty read still reports the head');
 }
 
 /** Reads every page of a `changedSince` read; all pages must share the first page's head. */

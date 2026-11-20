@@ -4,6 +4,7 @@ import {
   createTreecrdtSqliteAdapter,
   createTreecrdtSqliteChangedSince,
   createTreecrdtSqliteMaterializationCursors,
+  createTreecrdtSqliteRead,
   createTreecrdtSqliteWriter,
   decodeSqliteNodeIds,
   decodeSqliteOpRefs,
@@ -142,7 +143,7 @@ export function createTreecrdtClient(
     Required<Pick<TreecrdtEngine, 'onMaterializedDurable'>> & {
       runner: SqliteRunner;
       auth: TreecrdtSqliteAuthApi;
-      tree: Required<Pick<TreecrdtEngineTree, 'changedSince'>>;
+      tree: Required<Pick<TreecrdtEngineTree, 'changedSince' | 'read'>>;
     }
 > {
   const runner = createRunner(db);
@@ -269,6 +270,9 @@ export function createTreecrdtClient(
       dump: treeDumpImpl,
       nodeCount: treeNodeCountImpl,
       changedSince,
+      read: createTreecrdtSqliteRead((nodes, childPayloads) =>
+        adapter.treeRead!(nodes, childPayloads),
+      ),
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
     auth: createTreecrdtSqliteAuthApi({ runner, docId }),
