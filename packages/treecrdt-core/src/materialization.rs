@@ -142,25 +142,6 @@ pub trait FrontierRewindStorage: Storage {
         Ok(())
     }
 
-    fn latest_structural_before(
-        &self,
-        node: NodeId,
-        before: &MaterializationFrontierRef<'_>,
-    ) -> Result<Option<Operation>> {
-        let mut ops = self.load_since(0)?;
-        ops.sort_by(cmp_ops);
-        Ok(ops.into_iter().rfind(|op| {
-            let frontier = frontier_from_op(op);
-            cmp_frontiers(&frontier, before) == Ordering::Less
-                && matches!(
-                    op.kind,
-                    crate::ops::OperationKind::Insert { node: n, .. }
-                        | crate::ops::OperationKind::Move { node: n, .. }
-                        if n == node
-                )
-        }))
-    }
-
     fn latest_payload_before(
         &self,
         node: NodeId,
@@ -456,49 +437,12 @@ fn op_requires_full_replay(op: &Operation) -> bool {
     )
 }
 
-fn op_sets_payload(op: &Operation) -> bool {
-    match &op.kind {
-        crate::ops::OperationKind::Insert { payload, .. } => payload.is_some(),
-        crate::ops::OperationKind::Payload { .. } => true,
-        _ => false,
-    }
-}
-
 fn payload_from_op(op: &Operation) -> Option<Option<Vec<u8>>> {
     match &op.kind {
         crate::ops::OperationKind::Insert { payload, .. } => payload.clone().map(Some),
         crate::ops::OperationKind::Payload { payload, .. } => Some(payload.clone()),
         _ => None,
     }
-}
-
-fn rewind_structure_op_in_place<S: FrontierRewindStorage, N: NodeStore>(
-    nodes: &mut N,
-    storage: &S,
-    op: &Operation,
-) -> Result<()> {
-    let node = op.kind.node();
-    // Direct rewind is deliberately local: ask storage for the previous structural winner for this
-    // node, clear the currently materialized attachment, then restore that predecessor if one
-    // exists. Anything more complicated (delete/tombstone/revival) stays on the conservative
-    // replay-from-frontier path.
-    let previous = storage.latest_structural_before(node, &frontier_from_op(op).as_borrowed())?;
-    nodes.ensure_node(node)?;
-    nodes.detach(node)?;
-
-    match previous.as_ref().map(|prev| &prev.kind) {
-        Some(crate::ops::OperationKind::Insert {
-            parent, order_key, ..
-        }) => nodes.attach(node, *parent, order_key.clone())?,
-        Some(crate::ops::OperationKind::Move {
-            new_parent,
-            order_key,
-            ..
-        }) => nodes.attach(node, *new_parent, order_key.clone())?,
-        Some(_) | None => {}
-    }
-
-    Ok(())
 }
 
 fn rewind_payload_op_in_place<S: FrontierRewindStorage, P: ExactPayloadStore>(
@@ -521,43 +465,6 @@ fn rewind_payload_op_in_place<S: FrontierRewindStorage, P: ExactPayloadStore>(
         )?;
     } else {
         payloads.clear_payload(node)?;
-    }
-
-    Ok(())
-}
-
-fn rewind_existing_suffix_in_place<S, N, P>(
-    nodes: &mut N,
-    payloads: &mut P,
-    storage: &S,
-    existing_suffix_ops: &[Operation],
-) -> Result<()>
-where
-    S: FrontierRewindStorage,
-    N: NodeStore,
-    P: ExactPayloadStore,
-{
-    for op in existing_suffix_ops.iter().rev() {
-        match &op.kind {
-            crate::ops::OperationKind::Insert { .. } => {
-                if op_sets_payload(op) {
-                    rewind_payload_op_in_place(payloads, storage, op)?;
-                }
-                rewind_structure_op_in_place(nodes, storage, op)?;
-            }
-            crate::ops::OperationKind::Move { .. } => {
-                rewind_structure_op_in_place(nodes, storage, op)?
-            }
-            crate::ops::OperationKind::Payload { .. } => {
-                rewind_payload_op_in_place(payloads, storage, op)?
-            }
-            crate::ops::OperationKind::Delete { .. }
-            | crate::ops::OperationKind::Tombstone { .. } => {
-                return Err(Error::Storage(
-                    "delete/tombstone ops are not supported by direct rewind".into(),
-                ));
-            }
-        }
     }
 
     Ok(())
@@ -901,8 +808,9 @@ fn correct_replayed_moves(
 /// Try a direct rewind/replay catch-up for append-time out-of-order suffixes.
 ///
 /// This rewinds the already-materialized suffix directly on the backend stores, truncates suffix
-/// oprefs, and then replays the full invalidated suffix in canonical order. It deliberately bails
-/// out for delete/tombstone suffixes and for broader recovery cases.
+/// oprefs, and then replays the full invalidated suffix in canonical order. It returns `None`, for
+/// the caller to run [`catch_up_materialized_state`] instead, when the materialized suffix holds an
+/// insert or move, when the suffix holds a delete/tombstone, and for broader recovery cases.
 pub fn try_direct_rewind_catch_up_materialized_state<S, C, N, P, I, M, FlushNodes, FlushIndex>(
     storage: &S,
     inserted_op_ids: &HashSet<OperationId>,
@@ -948,6 +856,11 @@ where
         if cmp_frontiers(&op_frontier, &head.at) != Ordering::Greater
             && !inserted_op_ids.contains(&op.meta.id)
         {
+            // Payloads are last-writer-wins, so a payload op rewinds to the latest earlier payload
+            // op. Undoing an insert or move would also mean removing it from `last_change`, which
+            // defensive deletion reads, and knowing whether a cycle check rejected it. The stores
+            // record neither.
+            requires_full_replay |= !matches!(op.kind, crate::ops::OperationKind::Payload { .. });
             existing_suffix_ops.push(op.clone());
         }
         requires_full_replay |= op_requires_full_replay(&op);
@@ -967,7 +880,7 @@ where
     let PersistedRemoteStores {
         replica_id,
         clock,
-        mut nodes,
+        nodes,
         mut payloads,
         mut index,
     } = stores;
@@ -982,7 +895,9 @@ where
     }
 
     index.truncate_from(truncate_from)?;
-    rewind_existing_suffix_in_place(&mut nodes, &mut payloads, storage, &existing_suffix_ops)?;
+    for op in existing_suffix_ops.iter().rev() {
+        rewind_payload_op_in_place(&mut payloads, storage, op)?;
+    }
 
     // After rewinding, the backend stores now represent the prefix immediately before the
     // invalidated suffix. Replaying `full_suffix_ops` forward rebuilds only the corrected suffix.

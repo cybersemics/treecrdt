@@ -276,6 +276,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioDefensiveDeleteOutOfOrderChildInsert,
     },
     {
+      name: 'defensive delete: a late move that rejects a reviving move hides the node again',
+      run: scenarioDefensiveDeleteLateMoveRejectsRevivingMove,
+    },
+    {
       name: 'sync auth: signed ops and defensive deletes converge (COSE+CWT)',
       run: scenarioSyncAuthSignedOps,
     },
@@ -2199,6 +2203,82 @@ async function scenarioDefensiveDeleteOutOfOrderChildInsert(
     'child visible under restored parent',
   );
   assertEqual(await engine.tree.nodeCount(), 2, 'nodeCount after restore');
+}
+
+async function scenarioDefensiveDeleteLateMoveRejectsRevivingMove(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const ordered = ctx.engine;
+  const late = await ctx.createEngine({ docId: ctx.docId, name: 'peer-b' });
+  const rA = replicaFromLabel('rA');
+  const root = nodeIdFromInt(0);
+  const g = nodeIdFromInt(1);
+  const d = nodeIdFromInt(2);
+  const t = nodeIdFromInt(3);
+  const n = nodeIdFromInt(4);
+  const key = orderKeyFromPosition(0);
+
+  // ROOT -> g -> d -> t and ROOT -> n, then a delete of d that has seen d's subtree.
+  const base = [
+    makeInsertOp({ replica: rA, counter: 1, lamport: 1, parent: root, node: g, orderKey: key }),
+    makeInsertOp({ replica: rA, counter: 2, lamport: 2, parent: g, node: d, orderKey: key }),
+    makeInsertOp({ replica: rA, counter: 3, lamport: 3, parent: d, node: t, orderKey: key }),
+    makeInsertOp({ replica: rA, counter: 4, lamport: 4, parent: root, node: n, orderKey: key }),
+    makeDeleteOp({
+      replica: rA,
+      counter: 5,
+      lamport: 5,
+      node: d,
+      knownState: await versionVectorBytes(rA, 4),
+    }),
+  ];
+  // Moving g under n first turns moving n under t into a cycle, so that move must not revive d.
+  const moveGUnderN = makeMoveOp({
+    replica: replicaFromLabel('rB'),
+    counter: 1,
+    lamport: 6,
+    node: g,
+    newParent: n,
+    orderKey: key,
+  });
+  const moveNUnderT = makeMoveOp({
+    replica: replicaFromLabel('rC'),
+    counter: 1,
+    lamport: 7,
+    node: n,
+    newParent: t,
+    orderKey: key,
+  });
+
+  await ordered.ops.appendMany(base);
+  await ordered.ops.append(moveGUnderN);
+  await ordered.ops.append(moveNUnderT);
+
+  await late.ops.appendMany(base);
+  await late.ops.append(moveNUnderT);
+  assertArrayEqual(
+    (await late.tree.node(g).children()).map((node) => node.id),
+    [d],
+    'moving n under t revives d',
+  );
+  const events = await captureMaterializationEvents(late, () => late.ops.append(moveGUnderN));
+
+  const rows = async (engine: TreecrdtEngine) =>
+    (await engine.tree.dump()).map((row) =>
+      [row.node, row.parent, row.orderKey && bytesToHex(row.orderKey), row.tombstone].join(':'),
+    );
+  assertArrayEqual(
+    (await ordered.tree.node(g).children()).map((node) => node.id),
+    [],
+    'd stays deleted in canonical order',
+  );
+  assertArrayEqual(await rows(late), await rows(ordered), 'late replica matches canonical order');
+  assert(
+    events.some((event) =>
+      event.changes.some((change) => change.kind === 'delete' && change.node === d),
+    ),
+    'the late move reports d deleted again',
+  );
 }
 
 async function scenarioPersistenceMaterializedTreeReopen(
