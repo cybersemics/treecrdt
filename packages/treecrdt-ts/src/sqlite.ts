@@ -563,7 +563,8 @@ async function treecrdtTreeChangedSince(
  * in one statement, so all of them come from the same state. Each list is read in sibling order
  * from the `(parent, tombstone, order_key, node)` index; a node's position is its place in its
  * parent's list. That scans each parent's children once, however many of them are requested, where
- * a window function would sort them and a count per node would scan them once per node.
+ * a window function would sort them and a count per node would scan them once per node. Ids are
+ * lowercased to match canonical node ids, as `hex` is uppercase; payloads decode in either case.
  */
 async function treecrdtTreeRead(
   runner: SqliteRunner,
@@ -592,12 +593,12 @@ async function treecrdtTreeRead(
        'nodes', (SELECT json_group_array(json_array(\
            lower(hex(v.node)), \
            lower(hex(v.parent)), \
-           (SELECT lower(hex(payload)) FROM tree_payload WHERE node = v.node))) \
+           (SELECT hex(payload) FROM tree_payload WHERE node = v.node))) \
          FROM visible v), \
        'children', (SELECT json_group_object(lower(hex(l.node)), (\
            SELECT json_group_array(json_array(child, payload)) FROM (\
              SELECT lower(hex(c.node)) AS child, \
-               CASE WHEN l.payloads THEN (SELECT lower(hex(payload)) FROM tree_payload WHERE node = c.node) END AS payload \
+               CASE WHEN l.payloads THEN (SELECT hex(payload) FROM tree_payload WHERE node = c.node) END AS payload \
              FROM tree_nodes c WHERE c.parent = l.node AND c.tombstone = 0 \
              ORDER BY c.order_key, c.node))) \
          FROM listed l))",
