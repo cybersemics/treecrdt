@@ -1053,7 +1053,7 @@ export function createTreecrdtSqliteRead(
   read: (nodes: string[], childPayloads: boolean) => Promise<TreecrdtReadRows>,
 ): NonNullable<TreecrdtEngineTree['read']> {
   return async (ids, opts = {}) => {
-    const childPayloads = opts.childPayloads === true;
+    const childPayloads = opts.children?.payloads === true;
     const canonical = ids.map(normalizeNodeId);
     const rows = await read([...new Set(canonical)], childPayloads);
     // Same as treePayload: an empty stored payload reads as null.
@@ -1068,6 +1068,7 @@ export function createTreecrdtSqliteRead(
         positions.set(parent, position);
       }
       nodes.set(node, {
+        id: node,
         parent,
         index: position?.get(node) ?? 0,
         payload: bytes(payload),

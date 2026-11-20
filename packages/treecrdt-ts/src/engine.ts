@@ -439,19 +439,23 @@ export type TreecrdtChangedSincePage = {
 };
 
 export type TreecrdtReadOptions = {
-  /** Also read each child's payload. */
-  childPayloads?: boolean;
+  children?: {
+    /** Also read each child's payload. */
+    payloads?: boolean;
+  };
 };
 
-/** A visible node as `read` returns it. */
+/** A visible node as `read` returns it: what a `TreecrdtNode` handle's methods would read, as values. */
 export type TreecrdtReadNode = {
+  /** Canonical 16-byte NodeId encoded as 32 lowercase hex characters. */
+  id: string;
   /** Live parent; null for ROOT and for a node whose parent is not visible. */
   parent: string | null;
   /** Position among the parent's live children; 0 without a parent. */
   index: number;
   /** Null when the node has no payload. */
   payload: Uint8Array | null;
-  /** Live children in order. A child carries its payload only when `childPayloads` is set. */
+  /** Live children in order. A child carries its payload only with `children: { payloads: true }`. */
   children: { id: string; payload?: Uint8Array | null }[];
 };
 

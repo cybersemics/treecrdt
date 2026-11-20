@@ -1217,7 +1217,7 @@ async function scenarioTreeReadMatchesNodeReads(
   await engine.local.delete(replica, b);
 
   const ids = [root, a, b, c, d, e, f, g, gone, missing];
-  const { headSeq, nodes } = await engine.tree.read(ids, { childPayloads: true });
+  const { headSeq, nodes } = await engine.tree.read(ids, { children: { payloads: true } });
   if (engine.tree.changedSince) {
     const head = (await engine.tree.changedSince(0, { limit: 1 })).headSeq;
     assertEqual(headSeq, head, 'read reports the head changedSince reports');
@@ -1236,6 +1236,7 @@ async function scenarioTreeReadMatchesNodeReads(
     const want =
       id === root || (await engine.tree.get(id))
         ? {
+            id: handle.id,
             parent: parent?.id ?? null,
             index: parent ? siblings.indexOf(id) : 0,
             payload: await handle.payload(),
@@ -1255,6 +1256,7 @@ async function scenarioTreeReadMatchesNodeReads(
     [a, alias].sort(),
     'read keys each node by the id as given',
   );
+  assertEqual(plain.nodes[alias]!.id, a, 'a node read by an alias carries its canonical id');
   assertArrayEqual(
     plain.nodes[alias]!.children.map((child) => child.id),
     [c, d, e],

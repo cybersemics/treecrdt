@@ -97,17 +97,18 @@ Callers only see `TreecrdtClient` (`ops` / `tree` / `local` / `onMaterialized` /
 `tree.read(ids)` reads many nodes in one worker call, all from the same state. Use it where you would otherwise read node by node through `tree.node(id)`:
 
 ```ts
-const { headSeq, nodes } = await client.tree.read([a, b], { childPayloads: true });
+const { headSeq, nodes } = await client.tree.read([a, b], { children: { payloads: true } });
 const node = nodes[a]; // null when `a` is deleted or unknown
 if (node) {
+  node.id; // canonical id
   node.parent; // live parent id, or null
   node.index; // position among the parent's live children
   node.payload; // Uint8Array | null
-  node.children; // [{ id, payload }] in order; each payload only with childPayloads
+  node.children; // [{ id, payload }] in order; each payload only with children.payloads
 }
 ```
 
-Each node reads as its own `tree.node(id)` reads would, keyed by the id as given. `headSeq` is the head of the state the read saw, as `changedSince` reports it.
+A loaded node holds, as values, what a `tree.node(id)` handle's methods would read, with ids in place of handles. Unlike a handle it does not change afterwards: `headSeq` is the head of the state the read saw, as `changedSince` reports it. Nodes are keyed by the ids as given.
 
 ### Keeping derived data in step
 
