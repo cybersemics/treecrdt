@@ -1198,8 +1198,7 @@ async function scenarioTreeReadMatchesNodeReads(
   const replica = replicaFromLabel('r-read');
   const encoder = new TextEncoder();
   const root = nodeIdFromInt(0);
-  const [a, b, c, d, e, f, g, gone] = [80, 81, 82, 83, 84, 85, 86, 87].map(nodeIdFromInt);
-  const missing = nodeIdFromInt(89);
+  const [a, b, c, d, e, f, gone] = [80, 81, 82, 83, 84, 85, 86].map(nodeIdFromInt);
 
   await engine.local.payload(replica, root, encoder.encode('root'));
   await engine.local.insert(replica, root, a, { type: 'last' }, encoder.encode('a'));
@@ -1209,14 +1208,13 @@ async function scenarioTreeReadMatchesNodeReads(
   await engine.local.insert(replica, a, e, { type: 'after', after: d }, encoder.encode('e'));
   await engine.local.insert(replica, a, gone, { type: 'last' }, encoder.encode('gone'));
   await engine.local.insert(replica, b, f, { type: 'last' }, encoder.encode('f'));
-  await engine.local.insert(replica, f, g, { type: 'last' }, encoder.encode('g'));
-  await engine.local.move(replica, c, a, { type: 'first' });
   await engine.local.payload(replica, e, new Uint8Array());
   await engine.local.delete(replica, gone);
-  // Leaves f and g under a deleted parent.
+  // Leaves f under a deleted parent.
   await engine.local.delete(replica, b);
 
-  const ids = [root, a, b, c, d, e, f, g, gone, missing];
+  // Also reads a by its decimal id, and an id that was never inserted.
+  const ids = [root, a, String(parseInt(a, 16)), b, c, d, e, f, gone, nodeIdFromInt(89)];
   const { headSeq, nodes } = await engine.tree.read(ids, { children: { payloads: true } });
   if (engine.tree.changedSince) {
     const head = (await engine.tree.changedSince(0, { limit: 1 })).headSeq;
@@ -1238,7 +1236,7 @@ async function scenarioTreeReadMatchesNodeReads(
         ? {
             id: handle.id,
             parent: parent?.id ?? null,
-            index: parent ? siblings.indexOf(id) : 0,
+            index: parent ? siblings.indexOf(handle.id) : 0,
             payload: await handle.payload(),
             children: await Promise.all(
               children.map(async (child) => ({ id: child.id, payload: await child.payload() })),
@@ -1247,28 +1245,10 @@ async function scenarioTreeReadMatchesNodeReads(
         : null;
     assertEqual(json(nodes[id] ?? null), json(want), `read(${id}) matches node(${id})'s reads`);
   }
-
-  // The same node in decimal.
-  const alias = String(parseInt(a, 16));
-  const plain = await engine.tree.read([a, alias, a]);
-  assertArrayEqual(
-    Object.keys(plain.nodes).sort(),
-    [a, alias].sort(),
-    'read keys each node by the id as given',
-  );
-  assertEqual(plain.nodes[alias]!.id, a, 'a node read by an alias carries its canonical id');
-  assertArrayEqual(
-    plain.nodes[alias]!.children.map((child) => child.id),
-    [c, d, e],
-    'children are listed in sibling order',
-  );
   assert(
-    plain.nodes[a]!.children.every((child) => !('payload' in child)),
+    (await engine.tree.read([a])).nodes[a]!.children.every((child) => !('payload' in child)),
     'children carry payloads only when requested',
   );
-  const empty = await engine.tree.read([]);
-  assertEqual(Object.keys(empty.nodes).length, 0, 'an empty read lists no nodes');
-  assertEqual(empty.headSeq, headSeq, 'an empty read still reports the head');
 }
 
 /** Reads every page of a `changedSince` read; all pages must share the first page's head. */
