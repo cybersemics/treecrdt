@@ -1,18 +1,23 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::rc::Rc;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::thread;
+use std::time::Duration;
 use treecrdt_core::NodeStore;
 use treecrdt_core::{
     apply_incremental_ops_with_delta, apply_persisted_remote_ops_with_delta,
     catch_up_materialized_state, materialize_persisted_remote_ops_with_delta,
-    try_shortcut_out_of_order_payload_noops, Lamport, LamportClock, LocalFinalizePlan,
-    LocalPlacement, MaterializationChange, MaterializationCursor, MaterializationHead,
-    MaterializationKey, MaterializationOutcome, MaterializationState, MemoryNodeStore,
-    MemoryPayloadStore, MemoryStorage, NodeId, NoopParentOpIndex, Operation, OperationId,
-    ParentOpIndex, PersistedRemoteStores, ReplicaId, Storage, TreeCrdt, TruncatingParentOpIndex,
-    VersionVector,
+    orchestrate_persisted_remote_append, try_direct_rewind_catch_up_materialized_state,
+    try_shortcut_out_of_order_payload_noops, CatchUpResult, ExactPayloadStore,
+    IncrementalApplyResult, Lamport, LamportClock, LocalFinalizePlan, LocalPlacement,
+    MaterializationChange, MaterializationCursor, MaterializationHead, MaterializationKey,
+    MaterializationOutcome, MaterializationState, MemoryNodeStore, MemoryPayloadStore,
+    MemoryStorage, NodeId, NoopParentOpIndex, Operation, OperationId, ParentOpIndex, PayloadStore,
+    PersistedRemoteStores, ReplicaId, Storage, TreeCrdt, TruncatingParentOpIndex, VersionVector,
 };
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct RecordingIndex {
     records: Vec<(NodeId, OperationId, u64)>,
 }
@@ -885,4 +890,404 @@ fn catch_up_materialized_state_reports_rows_restored_by_replay_patch() {
         result.outcome.affected_nodes(),
         vec![NodeId::ROOT, parent, child],
     );
+}
+
+/// Payload writes go straight through, as in the SQL payload stores; core has no payload flush.
+struct SharedPayloads<'a>(&'a RefCell<MemoryPayloadStore>);
+
+impl PayloadStore for SharedPayloads<'_> {
+    fn reset(&mut self) -> treecrdt_core::Result<()> {
+        self.0.borrow_mut().reset()
+    }
+
+    fn payload(&self, node: NodeId) -> treecrdt_core::Result<Option<Vec<u8>>> {
+        self.0.borrow().payload(node)
+    }
+
+    fn last_writer(&self, node: NodeId) -> treecrdt_core::Result<Option<(Lamport, OperationId)>> {
+        self.0.borrow().last_writer(node)
+    }
+
+    fn set_payload(
+        &mut self,
+        node: NodeId,
+        payload: Option<Vec<u8>>,
+        writer: (Lamport, OperationId),
+    ) -> treecrdt_core::Result<()> {
+        self.0.borrow_mut().set_payload(node, payload, writer)
+    }
+}
+
+impl ExactPayloadStore for SharedPayloads<'_> {
+    fn clear_payload(&mut self, node: NodeId) -> treecrdt_core::Result<()> {
+        self.0.borrow_mut().clear_payload(node)
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct MaterializedRow {
+    node: NodeId,
+    parent: Option<NodeId>,
+    order_key: Option<Vec<u8>>,
+    tombstone: bool,
+    last_change: VersionVector,
+    deleted_at: Option<VersionVector>,
+    payload: Option<Vec<u8>>,
+    payload_writer: Option<(Lamport, OperationId)>,
+}
+
+/// In-memory adapter: an op log plus materialized rows, appended through the same orchestration
+/// as the SQLite and Postgres adapters.
+struct MemoryBackend {
+    log: RefCell<MemoryStorage>,
+    nodes: RefCell<MemoryNodeStore>,
+    payloads: RefCell<MemoryPayloadStore>,
+    index: RefCell<RecordingIndex>,
+    meta: RefCell<MaterializationState>,
+}
+
+impl MemoryBackend {
+    fn new() -> Self {
+        Self {
+            log: RefCell::default(),
+            nodes: RefCell::default(),
+            payloads: RefCell::default(),
+            index: RefCell::default(),
+            meta: RefCell::new(MaterializationState {
+                head: None,
+                replay_from: None,
+            }),
+        }
+    }
+
+    fn replayed(ops: &[Operation]) -> Self {
+        let backend = Self::new();
+        backend.append(ops);
+        backend
+    }
+
+    fn append(&self, ops: &[Operation]) {
+        let inserted: Vec<_> = ops
+            .iter()
+            .filter(|op| self.log.borrow_mut().apply((*op).clone()).unwrap())
+            .cloned()
+            .collect();
+        let stores = || PersistedRemoteStores {
+            replica_id: ReplicaId::new(b"memory-backend"),
+            clock: LamportClock::default(),
+            nodes: self.nodes.borrow().clone(),
+            payloads: SharedPayloads(&self.payloads),
+            index: self.index.borrow().clone(),
+        };
+        let flush_nodes = |nodes: &mut MemoryNodeStore| {
+            *self.nodes.borrow_mut() = nodes.clone();
+            Ok(())
+        };
+        let flush_index = |index: &mut RecordingIndex| {
+            *self.index.borrow_mut() = index.clone();
+            Ok(())
+        };
+        let log_copy = || {
+            let mut copy = MemoryStorage::default();
+            for op in self.log.borrow().load_since(0).unwrap() {
+                copy.apply(op).unwrap();
+            }
+            copy
+        };
+        let meta = self.meta.borrow().clone();
+        orchestrate_persisted_remote_append(
+            &meta,
+            inserted,
+            |node| self.payloads.borrow().last_writer(node),
+            |meta, ops| {
+                materialize_persisted_remote_ops_with_delta(
+                    stores(),
+                    &meta,
+                    ops,
+                    |_, _| Ok(()),
+                    flush_nodes,
+                    flush_index,
+                )
+            },
+            |head| {
+                *self.meta.borrow_mut() = MaterializationState {
+                    head: Some(head.clone()),
+                    replay_from: None,
+                };
+                Ok(())
+            },
+            |frontier| {
+                self.meta.borrow_mut().replay_from = Some(frontier.clone());
+                Ok(())
+            },
+            || Ok(self.meta.borrow().clone()),
+            |meta, inserted_op_ids| {
+                try_direct_rewind_catch_up_materialized_state(
+                    &*self.log.borrow(),
+                    inserted_op_ids,
+                    stores(),
+                    &meta,
+                    flush_nodes,
+                    flush_index,
+                )
+            },
+            |meta| {
+                catch_up_materialized_state(log_copy(), stores(), &meta, flush_nodes, flush_index)
+            },
+            |message| treecrdt_core::Error::Storage(message.into()),
+        )
+        .unwrap();
+    }
+
+    fn rows(&self) -> Vec<MaterializedRow> {
+        let nodes = self.nodes.borrow();
+        let payloads = self.payloads.borrow();
+        let mut ids = nodes.all_nodes().unwrap();
+        ids.sort();
+        ids.into_iter()
+            .map(|node| MaterializedRow {
+                node,
+                parent: nodes.parent(node).unwrap(),
+                order_key: nodes.order_key(node).unwrap(),
+                tombstone: nodes.tombstone(node).unwrap(),
+                last_change: nodes.last_change(node).unwrap(),
+                deleted_at: nodes.deleted_at(node).unwrap(),
+                payload: payloads.payload(node).unwrap(),
+                payload_writer: payloads.last_writer(node).unwrap(),
+            })
+            .collect()
+    }
+
+    fn assert_matches_replay_of(&self, ops: &[Operation]) {
+        let canonical = Self::replayed(ops);
+        assert_eq!(self.rows(), canonical.rows());
+        assert_eq!(*self.meta.borrow(), *canonical.meta.borrow());
+    }
+}
+
+/// A native loop blocks the test thread, so run append scenarios on a worker with a deadline.
+fn finishes_within_deadline(scenario: impl FnOnce() + Send + 'static) {
+    const DEADLINE: Duration = Duration::from_secs(30);
+    let (done, finished) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        scenario();
+        let _ = done.send(());
+    });
+    assert!(
+        !matches!(
+            finished.recv_timeout(DEADLINE),
+            Err(RecvTimeoutError::Timeout)
+        ),
+        "append did not finish within {DEADLINE:?}"
+    );
+    if let Err(panic) = worker.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+fn assert_late_append_matches_replay(history: Vec<Operation>, late: Operation) {
+    finishes_within_deadline(move || {
+        let backend = MemoryBackend::replayed(&history);
+        backend.append(std::slice::from_ref(&late));
+        backend.assert_matches_replay_of(&[history, vec![late]].concat());
+    });
+}
+
+#[test]
+fn late_append_after_rejected_self_move_matches_replay() {
+    let local = ReplicaId::new(b"b");
+    let remote = ReplicaId::new(b"a");
+    let (node, child, late_node) = (NodeId(1), NodeId(2), NodeId(3));
+    let history = vec![
+        Operation::insert(&local, 1, 1, NodeId::ROOT, node, vec![0x10]),
+        // Rejected: a node cannot be its own parent.
+        Operation::move_node(&local, 2, 2, node, node, vec![0x10]),
+        Operation::insert(&local, 3, 3, node, child, vec![0x10]),
+        Operation::move_node(&local, 4, 4, node, NodeId::ROOT, vec![0x20]),
+    ];
+    // Sorts before the child insert, so the later ops on `node` and `child` replay after it.
+    let late = Operation::insert(&remote, 1, 3, NodeId::ROOT, late_node, vec![0x30]);
+    assert_late_append_matches_replay(history, late);
+}
+
+#[test]
+fn late_append_after_cycle_rejected_move_matches_replay() {
+    let local = ReplicaId::new(b"b");
+    let concurrent = ReplicaId::new(b"c");
+    let remote = ReplicaId::new(b"a");
+    let (a, b, late_node) = (NodeId(1), NodeId(2), NodeId(3));
+    let history = vec![
+        Operation::insert(&local, 1, 1, NodeId::ROOT, a, vec![0x10]),
+        Operation::insert(&local, 2, 2, NodeId::ROOT, b, vec![0x20]),
+        Operation::move_node(&local, 3, 3, a, b, vec![0x10]),
+        // Sorts after A -> B, so B -> A would close a cycle and is rejected.
+        Operation::move_node(&concurrent, 1, 3, b, a, vec![0x10]),
+        Operation::move_node(&local, 4, 4, b, NodeId::ROOT, vec![0x30]),
+    ];
+    let late = Operation::insert(&remote, 1, 4, a, late_node, vec![0x10]);
+    assert_late_append_matches_replay(history, late);
+}
+
+#[test]
+fn late_append_after_rejected_move_whose_cycle_was_undone_matches_replay() {
+    let local = ReplicaId::new(b"b");
+    let remote = ReplicaId::new(b"a");
+    let (a, b, c) = (NodeId(1), NodeId(2), NodeId(3));
+    let history = vec![
+        Operation::insert(&local, 1, 1, NodeId::ROOT, a, vec![0x10]),
+        Operation::insert(&local, 2, 2, a, b, vec![0x10]),
+        Operation::insert(&local, 3, 3, NodeId::ROOT, c, vec![0x20]),
+        // Rejected: B is A's child.
+        Operation::move_node(&local, 4, 4, a, b, vec![0x10]),
+        // Once B is back under the root, the rejected move no longer looks like a cycle.
+        Operation::move_node(&local, 5, 5, b, NodeId::ROOT, vec![0x30]),
+        Operation::move_node(&local, 7, 7, a, c, vec![0x10]),
+    ];
+    // Places C under A, which turns the later A -> C move into a rejected cycle.
+    let late = Operation::move_node(&remote, 1, 6, c, a, vec![0x10]);
+    assert_late_append_matches_replay(history, late);
+}
+
+#[test]
+fn late_append_through_an_intermediate_parent_matches_replay() {
+    let local = ReplicaId::new(b"b");
+    let remote = ReplicaId::new(b"a");
+    let (p, q, t, x) = (NodeId(1), NodeId(2), NodeId(3), NodeId(4));
+    let history = vec![
+        Operation::insert(&local, 1, 1, NodeId::ROOT, p, vec![0x10]),
+        Operation::insert(&local, 2, 2, NodeId::ROOT, q, vec![0x20]),
+        Operation::insert(&local, 3, 3, NodeId::ROOT, t, vec![0x30]),
+        Operation::insert(&local, 4, 4, p, x, vec![0x10]),
+        Operation::move_node(&local, 6, 6, x, t, vec![0x10]),
+    ];
+    // Replays as X: P -> Q -> T, which coalesces to P -> T but still changes Q's row.
+    let late = Operation::move_node(&remote, 1, 5, x, q, vec![0x10]);
+    assert_late_append_matches_replay(history, late);
+}
+
+#[test]
+fn orchestrated_append_skips_catch_up_after_direct_rewind() {
+    let replica = ReplicaId::new(b"lazy");
+    let late = Operation::insert(&replica, 1, 1, NodeId::ROOT, NodeId(1), vec![0x10]);
+    let head = |seq| MaterializationHead {
+        at: MaterializationKey {
+            lamport: 2,
+            replica: replica.as_bytes().to_vec(),
+            counter: 2,
+        },
+        seq,
+    };
+    let rewound = CatchUpResult {
+        head: Some(head(2)),
+        outcome: MaterializationOutcome::empty(2),
+    };
+
+    let result = orchestrate_persisted_remote_append(
+        &MaterializationState {
+            head: Some(head(1)),
+            replay_from: None,
+        },
+        vec![late.clone()],
+        |_| Ok(None),
+        |_, _| -> Result<IncrementalApplyResult, &str> { Err("late op cannot apply in order") },
+        |_| Ok(()),
+        |_| Ok(()),
+        || {
+            Ok(MaterializationState {
+                head: Some(head(1)),
+                replay_from: Some(MaterializationKey {
+                    lamport: late.meta.lamport,
+                    replica: replica.as_bytes().to_vec(),
+                    counter: late.meta.id.counter,
+                }),
+            })
+        },
+        |_, inserted_op_ids: &HashSet<OperationId>| {
+            assert!(inserted_op_ids.contains(&late.meta.id));
+            Ok(Some(rewound.clone()))
+        },
+        |_| Err("catch-up must not run after a successful direct rewind"),
+        |message| message,
+    )
+    .unwrap();
+
+    assert_eq!(result.outcome, rewound.outcome);
+}
+
+struct XorShift(u64);
+
+impl XorShift {
+    fn below(&mut self, n: usize) -> usize {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 % n as u64) as usize
+    }
+
+    fn pick<T: Copy>(&mut self, items: &[T]) -> T {
+        items[self.below(items.len())]
+    }
+}
+
+/// Replicas edit concurrently, including self-moves and cycle-closing moves, and sync in shuffled
+/// batches. After every sync, the receiving backend must match a canonical replay of its ops.
+#[test]
+fn random_out_of_order_appends_match_replay() {
+    finishes_within_deadline(|| {
+        for seed in 1..=64 {
+            random_sync_walk(seed, 40);
+        }
+    });
+}
+
+fn random_sync_walk(seed: u64, steps: usize) {
+    let mut rng = XorShift(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    let replicas = [b"a", b"b", b"c"].map(ReplicaId::new);
+    let mut engines = replicas.clone().map(|replica| {
+        TreeCrdt::new(replica, MemoryStorage::default(), LamportClock::default()).unwrap()
+    });
+    let backends = replicas.clone().map(|_| MemoryBackend::new());
+    let mut logs: [Vec<Operation>; 3] = Default::default();
+    let mut next_node = 1;
+
+    for _ in 0..steps {
+        let at = rng.below(replicas.len());
+        let live: Vec<_> = engines[at].nodes().unwrap().into_iter().map(|(node, _)| node).collect();
+        let parents: Vec<_> = std::iter::once(NodeId::ROOT).chain(live.iter().copied()).collect();
+        let byte = rng.below(4) as u8;
+        let engine = &mut engines[at];
+        let op = match rng.below(9) {
+            0 | 1 => {
+                next_node += 1;
+                let payload = (byte > 1).then(|| vec![byte]);
+                let parent = rng.pick(&parents);
+                engine.local_insert(parent, NodeId(next_node), LocalPlacement::Last, payload)
+            }
+            2 | 3 => {
+                let to = (at + 1 + rng.below(replicas.len() - 1)) % replicas.len();
+                let known: HashSet<_> = logs[to].iter().map(|op| op.meta.id.clone()).collect();
+                let mut missing: Vec<_> =
+                    logs[at].iter().filter(|op| !known.contains(&op.meta.id)).cloned().collect();
+                for i in (1..missing.len()).rev() {
+                    missing.swap(i, rng.below(i + 1));
+                }
+                let split = rng.below(missing.len() + 1);
+                for batch in [&missing[..split], &missing[split..]] {
+                    engines[to].apply_remote_batch(batch.to_vec()).unwrap();
+                    backends[to].append(batch);
+                    logs[to].extend_from_slice(batch);
+                    backends[to].assert_matches_replay_of(&logs[to]);
+                }
+                continue;
+            }
+            _ if live.is_empty() => continue,
+            // The new parent may be the node itself or one of its descendants.
+            4 | 5 => engine.local_move(rng.pick(&live), rng.pick(&parents), LocalPlacement::First),
+            6 | 7 => engine.local_payload(rng.pick(&live), (byte > 0).then(|| vec![byte])),
+            _ => engine.local_delete(rng.pick(&live)),
+        };
+        let (op, _) = op.unwrap();
+        backends[at].append(std::slice::from_ref(&op));
+        logs[at].push(op);
+    }
 }

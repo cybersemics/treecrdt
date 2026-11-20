@@ -258,6 +258,22 @@ fn postgres_replayed_delete_is_reported_once() {
 }
 
 #[test]
+fn postgres_backend_late_op_after_rejected_self_move_keeps_accepted_parent() {
+    let Some(harness) = setup_conformance_harness() else {
+        return;
+    };
+    materialization_conformance::late_op_after_rejected_self_move_keeps_accepted_parent(&harness);
+}
+
+#[test]
+fn postgres_backend_late_op_after_cycle_rejected_move_keeps_accepted_parent() {
+    let Some(harness) = setup_conformance_harness() else {
+        return;
+    };
+    materialization_conformance::late_op_after_cycle_rejected_move_keeps_accepted_parent(&harness);
+}
+
+#[test]
 fn postgres_backend_replay_from_start_frontier_catches_up_immediately() {
     let Some(harness) = setup_conformance_harness() else {
         return;
