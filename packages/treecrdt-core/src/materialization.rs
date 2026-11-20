@@ -1,7 +1,9 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use crate::affected::coalesce_materialization_changes;
+use crate::affected::{
+    coalesce_materialization_changes, materialization_change_from_tombstone_delta, TombstoneDelta,
+};
 use crate::ops::{cmp_op_key, cmp_ops, Operation};
 use crate::traits::{
     Clock, ExactNodeStore, ExactPayloadStore, LamportClock, MemoryNodeStore, MemoryPayloadStore,
@@ -286,6 +288,8 @@ struct RebuiltMaterialization {
     index: RecordingIndex,
     head: Option<Operation>,
     seq: u64,
+    /// See [`ReplayRun::op_nodes`].
+    op_nodes: Vec<NodeId>,
 }
 
 enum ReplayChangeScope<'a> {
@@ -309,12 +313,16 @@ struct ReplayRun {
     seq: u64,
     prefix_seq: u64,
     outcome: MaterializationOutcome,
+    /// The node of each op in scope, including ops that change nothing visible, such as a delete
+    /// of a node that is already hidden.
+    op_nodes: Vec<NodeId>,
 }
 
 struct ReplayAccumulator<'a> {
     seq: u64,
     head: Option<Operation>,
     changes: Vec<MaterializationChange>,
+    op_nodes: Vec<NodeId>,
     prefix_seq: Option<u64>,
     change_scope: ReplayChangeScope<'a>,
 }
@@ -325,6 +333,7 @@ impl<'a> ReplayAccumulator<'a> {
             seq,
             head: None,
             changes: Vec::new(),
+            op_nodes: Vec::new(),
             prefix_seq: None,
             change_scope,
         }
@@ -344,10 +353,11 @@ impl<'a> ReplayAccumulator<'a> {
         collect: bool,
         changes: Vec<MaterializationChange>,
     ) {
-        self.head = Some(op);
         if collect {
+            self.op_nodes.push(op.kind.node());
             self.changes.extend(changes);
         }
+        self.head = Some(op);
     }
 
     fn apply_remote(
@@ -388,6 +398,7 @@ impl<'a> ReplayAccumulator<'a> {
             seq: self.seq,
             prefix_seq: self.prefix_seq.unwrap_or(self.seq),
             outcome: MaterializationOutcome::from_changes(self.seq, self.changes),
+            op_nodes: self.op_nodes,
         }
     }
 }
@@ -854,6 +865,7 @@ fn replay_frontier_in_memory<S: Storage>(
             index,
             head: run.head,
             seq: run.seq,
+            op_nodes: run.op_nodes,
         },
         prefix_seq,
         outcome,
@@ -1025,6 +1037,8 @@ where
     index.truncate_from(truncate_from)?;
 
     let mut patch_changes = Vec::new();
+    // Affected nodes whose visibility changed, which changes it for their descendants too.
+    let mut flipped = Vec::new();
 
     for node in affected_nodes {
         let existed_before = nodes.exists(*node)?;
@@ -1052,6 +1066,9 @@ where
         nodes.set_tombstone(*node, final_tombstone)?;
 
         if let Some(previous_tombstone) = previous_tombstone {
+            if previous_tombstone != final_tombstone {
+                flipped.push(*node);
+            }
             match (previous_tombstone, final_tombstone) {
                 (true, false) => patch_changes.push(MaterializationChange::Restore {
                     node: *node,
@@ -1081,6 +1098,33 @@ where
             payloads.set_payload(*node, rebuilt.crdt.payload(*node)?, writer)?;
         } else {
             payloads.clear_payload(*node)?;
+        }
+    }
+
+    // A descendant that isn't affected keeps its row, but its visibility follows its ancestors'.
+    let affected: HashSet<NodeId> = affected_nodes.iter().copied().collect();
+    while let Some(parent) = flipped.pop() {
+        for node in rebuilt.crdt.node_store().children(parent)? {
+            if affected.contains(&node) {
+                continue;
+            }
+            let previous = nodes.tombstone(node)?;
+            let tombstoned = rebuilt.crdt.node_store().tombstone(node)?;
+            if previous == tombstoned {
+                continue;
+            }
+            nodes.set_tombstone(node, tombstoned)?;
+            patch_changes.extend(materialization_change_from_tombstone_delta(
+                TombstoneDelta {
+                    node,
+                    parent: Some(parent),
+                    previous,
+                    tombstoned,
+                    payload_after: rebuilt.crdt.payload(node)?,
+                },
+                None,
+            ));
+            flipped.push(node);
         }
     }
 
@@ -1142,6 +1186,8 @@ where
     let (mut rebuilt, prefix_seq, mut replay_outcome) =
         replay_frontier_in_memory(&storage, frontier, &replica_id)?;
     let mut affected_nodes = replay_outcome.affected_nodes();
+    // An op can change a row without a visible change, such as a delete of a hidden node.
+    affected_nodes.extend(rebuilt.op_nodes.iter().filter(|node| **node != NodeId::TRASH));
     let mut seen_nodes: HashSet<NodeId> = affected_nodes.iter().copied().collect();
     let mut idx = 0usize;
     while idx < affected_nodes.len() {

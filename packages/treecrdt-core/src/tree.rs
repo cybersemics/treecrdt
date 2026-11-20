@@ -257,11 +257,8 @@ where
             plan: LocalFinalizePlan {
                 parent_hints: parent_hints_from(old_parent),
                 extra_index_records: Vec::new(),
-                changes: vec![MaterializationChange::Delete {
-                    node,
-                    parent_before: old_parent.filter(|parent| *parent != NodeId::TRASH),
-                    source: None,
-                }],
+                // Reported on commit, from the tombstone change, unless the node was already hidden.
+                changes: Vec::new(),
             },
         })
     }
@@ -308,16 +305,11 @@ where
     ) -> Result<(Operation, LocalFinalizePlan)> {
         let PreparedLocalOp { op, mut plan } = prepared;
         let (op, tombstone_changed) = self.commit_local(op)?;
-        // A local write can restore or hide the node and its ancestors, as a remote apply of the
-        // same op would. The plan already reports a local delete of its own node.
-        let deleted = match &op.kind {
-            OperationKind::Delete { node, .. } => Some(*node),
-            _ => None,
-        };
+        // A local write can restore or hide nodes, as a remote apply of the same op would. This is
+        // also where a delete is reported, so deleting a node that is already hidden reports nothing.
         plan.changes.extend(
             tombstone_changed
                 .into_iter()
-                .filter(|delta| Some(delta.node) != deleted)
                 .filter_map(|delta| materialization_change_from_tombstone_delta(delta, None)),
         );
         Ok((op, plan))
@@ -568,55 +560,90 @@ where
         Ok(self.finalize_local_with_outcome(op, index, head_seq, plan)?.head_seq)
     }
 
-    /// Refresh tombstone cache for nodes on the upward closure of `starts`.
+    /// Refresh the tombstone cache for nodes on the upward closure of `starts`, and for the
+    /// descendants of any node whose cached value changes.
+    ///
+    /// The cache hides a node that is tombstoned or has a tombstoned ancestor, so a delete hides
+    /// the subtree and a restore shows again what wasn't deleted on its own. Ancestors are
+    /// refreshed before their descendants.
     ///
     /// Returns every node whose cached tombstone value actually changed.
     fn refresh_tombstones_upward_with_delta<I>(&mut self, starts: I) -> Result<Vec<TombstoneDelta>>
     where
         I: IntoIterator<Item = NodeId>,
     {
-        let mut stack: Vec<NodeId> = starts.into_iter().collect();
         let mut visited: HashSet<NodeId> = HashSet::new();
-        let mut changed: Vec<TombstoneDelta> = Vec::new();
-
-        while let Some(node) = stack.pop() {
-            if node == NodeId::ROOT || node == NodeId::TRASH {
-                continue;
-            }
-            if !visited.insert(node) {
-                continue;
-            }
-            let Some((parent, has_deleted_at)) = self.nodes.parent_and_has_deleted_at(node)? else {
-                continue;
-            };
-
-            if has_deleted_at {
-                let previous = self.nodes.tombstone(node)?;
-                let tombstoned = self.is_tombstoned(node)?;
-                if previous != tombstoned {
-                    self.nodes.set_tombstone(node, tombstoned)?;
-                    changed.push(TombstoneDelta {
-                        node,
-                        parent,
-                        previous,
-                        tombstoned,
-                        payload_after: if tombstoned {
-                            None
-                        } else {
-                            self.payloads.payload(node)?
-                        },
-                    });
+        let mut top_down: Vec<NodeId> = Vec::new();
+        for start in starts {
+            // Only `start`, whose parent may have changed, and the ancestors with a `deleted_at`,
+            // whose subtree changed, can change on their own. Any other ancestor follows its
+            // parent, and is refreshed with it.
+            let mut chain = Vec::new();
+            let mut current = Some(start);
+            while let Some(node) = current {
+                if node == NodeId::ROOT || node == NodeId::TRASH || !visited.insert(node) {
+                    break;
                 }
+                let Some((parent, has_deleted_at)) = self.nodes.parent_and_has_deleted_at(node)?
+                else {
+                    break;
+                };
+                if node == start || has_deleted_at {
+                    chain.push(node);
+                }
+                current = parent;
             }
+            top_down.extend(chain.into_iter().rev());
+        }
 
-            if let Some(parent) = parent {
-                stack.push(parent);
-            }
+        let mut changed: Vec<TombstoneDelta> = Vec::new();
+        for node in top_down {
+            self.refresh_tombstone_subtree(node, &mut changed)?;
         }
 
         changed.sort_by_key(|delta| delta.node);
         changed.dedup_by(|left, right| left.node == right.node);
         Ok(changed)
+    }
+
+    /// Refresh the tombstone cache for `node` from its parent's cached value and its own
+    /// tombstone, and continue into the children of every node whose value changes.
+    fn refresh_tombstone_subtree(
+        &mut self,
+        node: NodeId,
+        changed: &mut Vec<TombstoneDelta>,
+    ) -> Result<()> {
+        let parent = self.nodes.parent(node)?;
+        let parent_hidden = match parent {
+            Some(parent) if parent != NodeId::ROOT && parent != NodeId::TRASH => {
+                self.nodes.tombstone(parent)?
+            }
+            _ => false,
+        };
+        let mut pending = vec![(node, parent, parent_hidden)];
+        while let Some((node, parent, parent_hidden)) = pending.pop() {
+            let tombstoned = parent_hidden || self.is_tombstoned(node)?;
+            let previous = self.nodes.tombstone(node)?;
+            if previous == tombstoned {
+                continue;
+            }
+            self.nodes.set_tombstone(node, tombstoned)?;
+            changed.push(TombstoneDelta {
+                node,
+                parent,
+                previous,
+                tombstoned,
+                payload_after: if tombstoned {
+                    None
+                } else {
+                    self.payloads.payload(node)?
+                },
+            });
+            for child in self.nodes.children(node)? {
+                pending.push((child, Some(node), tombstoned));
+            }
+        }
+        Ok(())
     }
 
     pub fn operations_since(&self, lamport: Lamport) -> Result<Vec<Operation>> {
