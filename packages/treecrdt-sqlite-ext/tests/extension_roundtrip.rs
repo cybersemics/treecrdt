@@ -661,12 +661,9 @@ fn remote_append_out_of_order_insert_and_move_before_head_catches_up_immediately
 
 #[test]
 fn remote_replayed_conflicting_moves_report_final_parents() {
-    for full_replay in [false, true] {
-        materialization_conformance::replayed_conflicting_moves_report_final_parents(
-            &setup_conformance_harness(),
-            full_replay,
-        );
-    }
+    materialization_conformance::replayed_conflicting_moves_report_final_parents(
+        &setup_conformance_harness(),
+    );
 }
 
 #[test]
