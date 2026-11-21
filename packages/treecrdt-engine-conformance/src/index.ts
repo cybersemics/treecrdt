@@ -280,6 +280,14 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioDefensiveDeleteOutOfOrderChildInsert,
     },
     {
+      name: 'defensive delete: a delete hides the subtree until the node is restored',
+      run: scenarioDefensiveDeleteHidesSubtree,
+    },
+    {
+      name: 'defensive delete: a late delete of a hidden node outlasts its parent restore',
+      run: scenarioDefensiveDeleteLateDeleteOfHiddenNode,
+    },
+    {
       name: 'sync auth: signed ops and defensive deletes converge (COSE+CWT)',
       run: scenarioSyncAuthSignedOps,
     },
@@ -2214,6 +2222,8 @@ async function scenarioDefensiveDeleteOutOfOrderChildInsert(
   const root = nodeIdFromInt(0);
   const parent = nodeIdFromInt(1);
   const child = nodeIdFromInt(2);
+  // Not on the path to the late insert, so only the restore of its parent shows it again.
+  const sibling = nodeIdFromInt(3);
 
   await engine.ops.append(
     makeInsertOp({
@@ -2226,12 +2236,22 @@ async function scenarioDefensiveDeleteOutOfOrderChildInsert(
     }),
   );
   await engine.ops.append(
-    makeDeleteOp({
+    makeInsertOp({
       replica: rA,
       counter: 2,
-      lamport: 3,
+      lamport: 2,
+      parent,
+      node: sibling,
+      orderKey: orderKeyFromPosition(0),
+    }),
+  );
+  await engine.ops.append(
+    makeDeleteOp({
+      replica: rA,
+      counter: 3,
+      lamport: 4,
       node: parent,
-      knownState: await versionVectorBytes(rA, 1),
+      knownState: await versionVectorBytes(rA, 2),
     }),
   );
 
@@ -2240,16 +2260,17 @@ async function scenarioDefensiveDeleteOutOfOrderChildInsert(
     [],
     'parent hidden after delete',
   );
+  assertEqual(await engine.tree.get(sibling), undefined, 'sibling hidden after delete');
 
-  // Later we receive an earlier op (lamport=2) from another replica.
+  // Later we receive an earlier op (lamport=3) from another replica.
   await engine.ops.append(
     makeInsertOp({
       replica: rB,
       counter: 1,
-      lamport: 2,
+      lamport: 3,
       parent,
       node: child,
-      orderKey: orderKeyFromPosition(0),
+      orderKey: orderKeyFromPosition(1),
     }),
   );
 
@@ -2260,10 +2281,202 @@ async function scenarioDefensiveDeleteOutOfOrderChildInsert(
   );
   assertArrayEqual(
     (await engine.tree.node(parent).children()).map((node) => node.id),
-    [child],
-    'child visible under restored parent',
+    [sibling, child],
+    'children visible under restored parent',
   );
-  assertEqual(await engine.tree.nodeCount(), 2, 'nodeCount after restore');
+  assertEqual(await engine.tree.nodeCount(), 3, 'nodeCount after restore');
+}
+
+async function scenarioDefensiveDeleteLateDeleteOfHiddenNode(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const rA = replicaFromLabel('rA');
+  const rB = replicaFromLabel('rB');
+  const rC = replicaFromLabel('rC');
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(1);
+  const child = nodeIdFromInt(2);
+  const other = nodeIdFromInt(3);
+
+  // rA deletes parent while rB deletes child, which is then already hidden here.
+  await engine.ops.appendMany([
+    makeInsertOp({
+      replica: rA,
+      counter: 1,
+      lamport: 1,
+      parent: root,
+      node: parent,
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeInsertOp({
+      replica: rA,
+      counter: 2,
+      lamport: 2,
+      parent,
+      node: child,
+      orderKey: orderKeyFromPosition(0),
+    }),
+    makeDeleteOp({
+      replica: rA,
+      counter: 3,
+      lamport: 3,
+      node: parent,
+      knownState: await versionVectorBytes(rA, 2),
+    }),
+    makeInsertOp({
+      replica: rC,
+      counter: 1,
+      lamport: 5,
+      parent: root,
+      node: other,
+      orderKey: orderKeyFromPosition(1),
+    }),
+  ]);
+  // rB's delete arrives after a later op, so it is applied by a catch-up.
+  await engine.ops.append(
+    makeDeleteOp({
+      replica: rB,
+      counter: 1,
+      lamport: 4,
+      node: child,
+      knownState: await versionVectorBytes(rA, 2),
+    }),
+  );
+  // Inserting parent again restores it, but child stays deleted on its own.
+  await engine.ops.append(
+    makeInsertOp({
+      replica: rA,
+      counter: 4,
+      lamport: 6,
+      parent: root,
+      node: parent,
+      orderKey: orderKeyFromPosition(0),
+    }),
+  );
+
+  assertArrayEqual(
+    (await engine.tree.root.children()).map((node) => node.id),
+    [parent, other],
+    'parent restored',
+  );
+  assertArrayEqual(
+    (await engine.tree.node(parent).children()).map((node) => node.id),
+    [],
+    'child stays deleted',
+  );
+}
+
+async function scenarioDefensiveDeleteHidesSubtree(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const a = ctx.engine;
+  const b = await ctx.createEngine({ docId: ctx.docId, name: 'peer-b' });
+  const replica = replicaFromLabel('r-subtree');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const [parent, child, grandchild, deleted, deletedChild] = [60, 61, 62, 63, 64].map(
+    nodeIdFromInt,
+  ) as [string, string, string, string, string];
+  // The nodes under `parent`, each with the node it is inserted under.
+  const subtree: [string, string][] = [
+    [child, parent],
+    [grandchild, child],
+    [deleted, parent],
+    [deletedChild, deleted],
+  ];
+  await a.local.insert(replica, root, parent, { type: 'last' }, encoder.encode(parent));
+  for (const [node, under] of subtree) {
+    await a.local.insert(replica, under, node, { type: 'last' }, encoder.encode(node));
+  }
+  // Deleted on its own, so restoring `parent` doesn't bring it back.
+  await a.local.delete(replica, deleted);
+  await b.ops.appendMany(await a.ops.all());
+  const nodeCount = await a.tree.nodeCount();
+  const cursor = a.tree.changedSince ? (await readAllChangedSince(a, 0)).headSeq : 0;
+
+  /** Checks that every read on `engine` shows exactly the `shown` nodes of the subtree. */
+  const expectShown = async (engine: TreecrdtEngine, shown: string[], label: string) => {
+    for (const [node, under] of subtree) {
+      const visible = shown.includes(node);
+      const handle = engine.tree.node(node);
+      assertEqual((await engine.tree.get(node)) !== undefined, visible, `${label}: get`);
+      assertBytesEqual(
+        await handle.payload(),
+        visible ? encoder.encode(node) : null,
+        `${label}: payload`,
+      );
+      assertEqual((await handle.parent())?.id, visible ? under : undefined, `${label}: parent`);
+    }
+    assertArrayEqual(
+      (await engine.tree.node(child).children()).map((node) => node.id),
+      shown.includes(grandchild) ? [grandchild] : [],
+      `${label}: children`,
+    );
+  };
+  /** The kinds of the changes `events` report for `node`. */
+  const kinds = (events: MaterializationEvent[], node: string) =>
+    events
+      .flatMap((event) => event.changes)
+      .filter((change) => change.node === node)
+      .map((change) => change.kind);
+
+  // Deleting a node that is already hidden changes nothing, so it reports nothing, as on peers.
+  const hiddenDeleteEvents = await captureMaterializationEvents(a, async () => {
+    await a.local.delete(replica, deletedChild);
+  });
+  assertArrayEqual(kinds(hiddenDeleteEvents, deletedChild), [], 'a delete of a hidden node');
+
+  const deleteEvents = await captureMaterializationEvents(a, async () => {
+    await a.local.delete(replica, parent);
+  });
+  await expectShown(a, [], 'after the delete');
+  assertEqual(await a.tree.nodeCount(), nodeCount - 3, 'nodeCount after the delete');
+  const peerDeleteEvents = await captureMaterializationEvents(b, async () => {
+    await b.ops.appendMany(await a.ops.all());
+  });
+  await expectShown(b, [], 'peer after the delete');
+  for (const [label, events] of [
+    ['delete', deleteEvents],
+    ['peer delete', peerDeleteEvents],
+  ] as const) {
+    for (const node of [child, grandchild]) {
+      assertArrayEqual(kinds(events, node), ['delete'], `${label} reports the hidden node`);
+    }
+    assertArrayEqual(kinds(events, deletedChild), [], `${label} skips an already hidden node`);
+  }
+  if (a.tree.changedSince) {
+    const { nodes } = await readAllChangedSince(a, cursor);
+    for (const node of [child, grandchild]) {
+      assert(
+        nodes.some((n) => n.node === node && n.tombstone),
+        'changedSince lists the hidden node as deleted',
+      );
+    }
+  }
+
+  // A delete is undone by inserting the node again.
+  const restoreEvents = await captureMaterializationEvents(a, async () => {
+    await a.local.insert(replica, root, parent, { type: 'last' }, encoder.encode(parent));
+  });
+  await expectShown(a, [child, grandchild], 'after the restore');
+  await b.ops.appendMany(await a.ops.all());
+  await expectShown(b, [child, grandchild], 'peer after the restore');
+  for (const node of [child, grandchild]) {
+    const changes = restoreEvents.flatMap((event) => event.changes).filter((c) => c.node === node);
+    assertArrayEqual(
+      changes.map((change) => change.kind),
+      ['restore'],
+      'restore reports the node shown again',
+    );
+    const change = changes[0]!;
+    assertBytesEqual(
+      'payload' in change ? change.payload : null,
+      encoder.encode(node),
+      'restore payload',
+    );
+  }
+  assertArrayEqual(kinds(restoreEvents, deleted), [], 'a node deleted on its own stays deleted');
 }
 
 async function scenarioPersistenceMaterializedTreeReopen(

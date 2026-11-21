@@ -64,6 +64,7 @@ When a delete operation is applied (locally or remotely):
    - The node is now considered "tombstoned"
    - The node is **NOT** removed from the tree structure
    - Tombstoned nodes are hidden from queries but preserved internally
+   - So are their descendants. When the node is restored, they come back with it, except those deleted on their own
 
 3. **Multiple Deletes**: If multiple delete operations target the same node, their version vectors are merged
    - The node remains tombstoned only if **ALL** deletes combined were aware
