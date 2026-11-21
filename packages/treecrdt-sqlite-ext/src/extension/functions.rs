@@ -295,10 +295,11 @@ fn register_functions(db: *mut sqlite3, pz_err_msg: *mut *mut c_char) -> c_int {
 
     let rc_local_insert = {
         let name = CString::new("treecrdt_local_insert").expect("static name");
+        // -1 allows 6 or 7 args (optional authorized token)
         sqlite_create_function_v2(
             db,
             name.as_ptr(),
-            6,
+            -1,
             SQLITE_UTF8 as c_int,
             null_mut(),
             Some(treecrdt_local_insert),
@@ -309,10 +310,11 @@ fn register_functions(db: *mut sqlite3, pz_err_msg: *mut *mut c_char) -> c_int {
     };
     let rc_local_move = {
         let name = CString::new("treecrdt_local_move").expect("static name");
+        // -1 allows 5 or 6 args (optional authorized token)
         sqlite_create_function_v2(
             db,
             name.as_ptr(),
-            5,
+            -1,
             SQLITE_UTF8 as c_int,
             null_mut(),
             Some(treecrdt_local_move),
@@ -323,10 +325,11 @@ fn register_functions(db: *mut sqlite3, pz_err_msg: *mut *mut c_char) -> c_int {
     };
     let rc_local_delete = {
         let name = CString::new("treecrdt_local_delete").expect("static name");
+        // -1 allows 2 or 3 args (optional authorized token)
         sqlite_create_function_v2(
             db,
             name.as_ptr(),
-            2,
+            -1,
             SQLITE_UTF8 as c_int,
             null_mut(),
             Some(treecrdt_local_delete),
@@ -337,10 +340,11 @@ fn register_functions(db: *mut sqlite3, pz_err_msg: *mut *mut c_char) -> c_int {
     };
     let rc_local_payload = {
         let name = CString::new("treecrdt_local_payload").expect("static name");
+        // -1 allows 3 or 4 args (optional authorized token)
         sqlite_create_function_v2(
             db,
             name.as_ptr(),
-            3,
+            -1,
             SQLITE_UTF8 as c_int,
             null_mut(),
             Some(treecrdt_local_payload),

@@ -9,8 +9,9 @@ use treecrdt_core::{MaterializationOutcome, NodeId, Operation, ReplicaId, Versio
 use treecrdt_postgres::{
     append_ops, append_ops_with_materialization_outcome, ensure_materialized, ensure_schema,
     get_ops_by_op_refs, list_op_refs_all, list_op_refs_children, local_delete, local_insert,
-    local_move, local_payload, max_lamport, prepare_local_insert_tx, replica_max_counter,
-    reset_doc_for_tests, tree_children, tree_payload,
+    local_move, local_payload, max_lamport, prepare_local_delete_tx, prepare_local_insert_tx,
+    prepare_local_move_tx, prepare_local_payload_tx, replica_max_counter, reset_doc_for_tests,
+    tree_children, tree_payload, LocalOpCommit, PreparedLocalOpTx,
 };
 use treecrdt_test_support::{
     self as materialization_conformance, node, order_key_from_position,
@@ -764,4 +765,85 @@ fn postgres_backend_prepared_local_tx_rolls_back_until_committed() {
         tree_payload(&client, &doc_id, node_committed).unwrap(),
         Some(vec![7])
     );
+}
+
+fn unwritten(commit: LocalOpCommit) -> (Operation, String) {
+    match commit {
+        LocalOpCommit::Unwritten { op, token } => (op, token),
+        LocalOpCommit::Written(result) => unreachable!("op was written: {:?}", result.op),
+    }
+}
+
+fn written(commit: LocalOpCommit) -> Operation {
+    match commit {
+        LocalOpCommit::Written(result) => result.op,
+        LocalOpCommit::Unwritten { op, .. } => unreachable!("op was not written: {op:?}"),
+    }
+}
+
+#[test]
+fn postgres_backend_commit_if_unchanged_writes_only_the_minted_op() {
+    let Some(client) = connect() else {
+        return;
+    };
+    ensure_schema_once(&client);
+
+    let doc_id = format!("test-{}", Uuid::new_v4());
+    {
+        let mut c = client.borrow_mut();
+        reset_doc_for_tests(&mut c, &doc_id).unwrap();
+    }
+
+    let replica = ReplicaId::new(b"loc-token");
+    let root = NodeId::ROOT;
+    let child = node(1201);
+    let forms: [Box<dyn Fn() -> PreparedLocalOpTx>; 4] = [
+        Box::new(|| {
+            prepare_local_insert_tx(&client, &doc_id, &replica, root, child, "last", None, None)
+                .unwrap()
+        }),
+        Box::new(|| {
+            prepare_local_payload_tx(&client, &doc_id, &replica, child, Some(vec![1])).unwrap()
+        }),
+        Box::new(|| {
+            prepare_local_move_tx(&client, &doc_id, &replica, child, root, "first", None).unwrap()
+        }),
+        Box::new(|| prepare_local_delete_tx(&client, &doc_id, &replica, child).unwrap()),
+    ];
+    for prepare in &forms {
+        // No token only mints; passing back the minted op's token writes that op.
+        let (minted, token) = unwritten(prepare().commit_if_unchanged(None).unwrap());
+        assert_eq!(
+            written(prepare().commit_if_unchanged(Some(&token)).unwrap()),
+            minted
+        );
+    }
+    assert_eq!(op_count(&client, &doc_id), 4);
+
+    // Any op applied after minting makes the token stale, even a late one that leaves the op as is.
+    let parent = node(1202);
+    local_insert(&client, &doc_id, &replica, root, parent, "last", None, None).unwrap();
+    let sibling = node(1203);
+    let insert_sibling = || {
+        prepare_local_insert_tx(
+            &client, &doc_id, &replica, root, sibling, "last", None, None,
+        )
+        .unwrap()
+    };
+    let (minted, token) = unwritten(insert_sibling().commit_if_unchanged(None).unwrap());
+    let late = Operation::insert(
+        &ReplicaId::new(b"late"),
+        1,
+        1,
+        parent,
+        node(1204),
+        order_key_from_position(0),
+    );
+    append_ops(&client, &doc_id, &[late]).unwrap();
+    let (stale, stale_token) =
+        unwritten(insert_sibling().commit_if_unchanged(Some(&token)).unwrap());
+    assert_eq!(stale, minted);
+    assert_ne!(stale_token, token);
+    written(insert_sibling().commit_if_unchanged(Some(&stale_token)).unwrap());
+    assert_eq!(op_count(&client, &doc_id), 7);
 }

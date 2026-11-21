@@ -1250,17 +1250,17 @@ pub(crate) fn row_to_op_at(row: &Row, base: usize) -> Result<Operation> {
     Ok(Operation { meta, kind })
 }
 
-struct OpDbFields {
-    kind: &'static str,
-    parent: Option<Vec<u8>>,
-    node: Vec<u8>,
-    new_parent: Option<Vec<u8>>,
-    order_key: Option<Vec<u8>>,
-    payload: Option<Vec<u8>>,
-    known_state: Option<Vec<u8>>,
+pub(crate) struct OpDbFields {
+    pub(crate) kind: &'static str,
+    pub(crate) parent: Option<Vec<u8>>,
+    pub(crate) node: Vec<u8>,
+    pub(crate) new_parent: Option<Vec<u8>>,
+    pub(crate) order_key: Option<Vec<u8>>,
+    pub(crate) payload: Option<Vec<u8>>,
+    pub(crate) known_state: Option<Vec<u8>>,
 }
 
-fn op_kind_to_db(op: &Operation) -> Result<OpDbFields> {
+pub(crate) fn op_kind_to_db(op: &Operation) -> Result<OpDbFields> {
     let known_state = match op.meta.known_state.as_ref() {
         None => None,
         Some(vv) => Some(vv.encode()?),

@@ -9,9 +9,9 @@ use treecrdt_core::{
 };
 
 use crate::store::{
-    ensure_materialized_in_tx, load_tree_meta_for_update, set_tree_meta_replay_frontier,
-    update_tree_meta_head, PgCtx, PgNodeStore, PgOpStorage, PgParentOpIndex, PgPayloadStore,
-    TreeMeta,
+    ensure_materialized_in_tx, load_tree_meta_for_update, op_kind_to_db,
+    set_tree_meta_replay_frontier, update_tree_meta_head, PgCtx, PgNodeStore, PgOpStorage,
+    PgParentOpIndex, PgPayloadStore, TreeMeta,
 };
 
 type LocalCrdt = TreeCrdt<PgOpStorage, LamportClock, PgNodeStore, PgPayloadStore>;
@@ -35,6 +35,18 @@ impl std::ops::Deref for LocalOpResult {
     fn deref(&self) -> &Self::Target {
         &self.op
     }
+}
+
+/// Result of [`PreparedLocalOpTx::commit_if_unchanged`].
+#[derive(Clone, Debug)]
+pub enum LocalOpCommit {
+    /// The op had the given token and is written.
+    Written(LocalOpResult),
+    /// Nothing was written. A later commit given `token` writes this op if it is still unchanged.
+    Unwritten {
+        op: Operation,
+        token: String,
+    },
 }
 
 fn begin_tx(client: &Rc<RefCell<Client>>) -> Result<()> {
@@ -178,6 +190,54 @@ impl PreparedLocalOpTx {
         self.prepared.take();
         rollback_tx(&session.ctx.client)
     }
+
+    /// Writes the op only if it has `token`: it is the op minted with that token, and no op was
+    /// applied since. Otherwise writes nothing (materialization catch-up aside) and returns the op
+    /// with its token. Either way the transaction ends, so callers can authorize the op between
+    /// commits without holding a transaction.
+    pub fn commit_if_unchanged(mut self, token: Option<&str>) -> Result<LocalOpCommit> {
+        let session = self.session.as_ref().expect("prepared local op already closed");
+        let minted = local_op_token(session.meta.state().head_seq(), self.op())?;
+        if token == Some(minted.as_str()) {
+            return self.commit().map(LocalOpCommit::Written);
+        }
+
+        let session = self.session.take().expect("prepared local op already closed");
+        let prepared = self.prepared.take().expect("prepared local op already closed");
+        if let Err(e) = commit_tx(&session.ctx.client) {
+            let _ = rollback_tx(&session.ctx.client);
+            return Err(e);
+        }
+        Ok(LocalOpCommit::Unwritten {
+            op: prepared.op,
+            token: minted,
+        })
+    }
+}
+
+/// Identifies a minted op and the materialized tree it was minted from, so tokens match only for
+/// the same op with no op applied in between.
+fn local_op_token(head_seq: u64, op: &Operation) -> Result<String> {
+    let row = op_kind_to_db(op)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&head_seq.to_be_bytes());
+    hasher.update(&op.meta.lamport.to_be_bytes());
+    hasher.update(&op.meta.id.counter.to_be_bytes());
+    for field in [
+        Some(op.meta.id.replica.as_bytes()),
+        Some(row.kind.as_bytes()),
+        row.parent.as_deref(),
+        Some(row.node.as_slice()),
+        row.new_parent.as_deref(),
+        row.order_key.as_deref(),
+        row.payload.as_deref(),
+        row.known_state.as_deref(),
+    ] {
+        // Prefix each field with its length plus one (0 if absent) so the input is unambiguous.
+        hasher.update(&field.map_or(0, |bytes| bytes.len() as u64 + 1).to_be_bytes());
+        hasher.update(field.unwrap_or_default());
+    }
+    Ok(hasher.finalize().to_hex().to_string())
 }
 
 impl Drop for PreparedLocalOpTx {

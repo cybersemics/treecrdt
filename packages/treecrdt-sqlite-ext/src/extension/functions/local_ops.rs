@@ -31,7 +31,11 @@ struct JsonOp {
 #[serde(rename_all = "camelCase")]
 struct JsonLocalOpResult {
     op: JsonOp,
-    outcome: JsonMaterializationOutcome,
+    /// `None` when the op was minted but not written.
+    outcome: Option<JsonMaterializationOutcome>,
+    /// Set when the op was not written: see `run_local_core_op`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token: Option<String>,
 }
 
 type LocalCrdt = TreeCrdt<SqliteOpStorage, LamportClock, SqliteNodeStore, SqlitePayloadStore>;
@@ -54,6 +58,20 @@ impl LocalOpSession {
             null_mut(),
         );
         rc
+    }
+
+    fn release(self) -> Result<(), c_int> {
+        let rc = sqlite_exec(
+            self.db,
+            self.commit_sql.as_ptr(),
+            None,
+            null_mut(),
+            null_mut(),
+        );
+        if rc != SQLITE_OK as c_int {
+            return Err(self.rollback(rc));
+        }
+        Ok(())
     }
 }
 
@@ -261,47 +279,47 @@ fn finish_local_core_op(
 
     let op = match json_op_from_operation(op) {
         Ok(v) => v,
-        Err(rc) => {
-            sqlite_exec(
-                session.db,
-                session.rollback_sql.as_ptr(),
-                None,
-                null_mut(),
-                null_mut(),
-            );
-            return Err(rc);
-        }
+        Err(rc) => return Err(session.rollback(rc)),
     };
-
-    let commit_rc = sqlite_exec(
-        session.db,
-        session.commit_sql.as_ptr(),
-        None,
-        null_mut(),
-        null_mut(),
-    );
-    if commit_rc != SQLITE_OK as c_int {
-        sqlite_exec(
-            session.db,
-            session.rollback_sql.as_ptr(),
-            None,
-            null_mut(),
-            null_mut(),
-        );
-        return Err(commit_rc);
-    }
+    session.release()?;
 
     Ok(JsonLocalOpResult {
         op,
-        outcome: json_outcome_from_core(&outcome),
+        outcome: Some(json_outcome_from_core(&outcome)),
+        token: None,
     })
 }
 
+/// Reads the optional last argument, which selects the authorized form of a local op function:
+/// the `token` of an earlier call, or NULL. `None` selects the plain form.
+fn read_authorized_token(args: &[*mut sqlite3_value], index: usize) -> Option<Option<String>> {
+    let &value = args.get(index)?;
+    if unsafe { sqlite_value_type(value) } == SQLITE_NULL as c_int {
+        return Some(None);
+    }
+    Some(Some(read_text(value)))
+}
+
+/// Identifies a minted op and the materialized tree it was minted from, so tokens match only for
+/// the same op with no op applied in between.
+fn local_op_token(db: *mut sqlite3, op: &JsonOp) -> Result<String, c_int> {
+    let head_seq = load_tree_meta(db)?.state().head_seq();
+    let op_json = serde_json::to_vec(op).map_err(|_| SQLITE_ERROR as c_int)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&head_seq.to_be_bytes());
+    hasher.update(&op_json);
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+/// The plain form (`authorized` is `None`) writes the minted op. The authorized form writes it
+/// only if its token equals `authorized`; otherwise it writes nothing (materialization catch-up
+/// aside) and returns the op with its token instead of an outcome, for the caller to authorize.
 fn run_local_core_op<F>(
     db: *mut sqlite3,
     doc_id: Vec<u8>,
     replica: Vec<u8>,
     savepoint_name: &str,
+    authorized: Option<Option<String>>,
     build: F,
 ) -> Result<JsonLocalOpResult, c_int>
 where
@@ -312,6 +330,24 @@ where
         Ok(v) => v,
         Err(err) => return Err(session.rollback(sqlite_err_from_core(err))),
     };
+    if let Some(authorized) = authorized {
+        let op = match json_op_from_operation(prepared.op.clone()) {
+            Ok(v) => v,
+            Err(rc) => return Err(session.rollback(rc)),
+        };
+        let token = match local_op_token(db, &op) {
+            Ok(v) => v,
+            Err(rc) => return Err(session.rollback(rc)),
+        };
+        if authorized.as_deref() != Some(token.as_str()) {
+            session.release()?;
+            return Ok(JsonLocalOpResult {
+                op,
+                outcome: None,
+                token: Some(token),
+            });
+        }
+    }
     let (op, plan) = match session.crdt.commit_prepared_local(prepared) {
         Ok(v) => v,
         Err(err) => return Err(session.rollback(sqlite_err_from_core(err))),
@@ -329,10 +365,10 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
         return;
     }
 
-    if argc != 6 {
+    if argc != 6 && argc != 7 {
         sqlite_result_error(
             ctx,
-            b"treecrdt_local_insert expects 6 args (replica,parent,node,placement,after,payload)\0"
+            b"treecrdt_local_insert expects 6 or 7 args (replica,parent,node,placement,after,payload[,authorized])\0"
                 .as_ptr() as *const c_char,
         );
         return;
@@ -382,6 +418,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
         }
     };
     let payload = read_blob(args[5]);
+    let authorized = read_authorized_token(args, 6);
 
     let db = sqlite_context_db_handle(ctx);
     let doc_id = match load_doc_id(db) {
@@ -410,9 +447,14 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
             return;
         }
     };
-    let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_insert", |crdt| {
-        crdt.prepare_local_insert(parent_id, node_id, placement, payload.clone())
-    }) {
+    let out = match run_local_core_op(
+        db,
+        doc_id,
+        replica,
+        "treecrdt_local_insert",
+        authorized,
+        |crdt| crdt.prepare_local_insert(parent_id, node_id, placement, payload.clone()),
+    ) {
         Ok(v) => v,
         Err(rc) => {
             sqlite_result_error_code(ctx, rc);
@@ -433,10 +475,10 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
         return;
     }
 
-    if argc != 5 {
+    if argc != 5 && argc != 6 {
         sqlite_result_error(
             ctx,
-            b"treecrdt_local_move expects 5 args (replica,node,new_parent,placement,after)\0"
+            b"treecrdt_local_move expects 5 or 6 args (replica,node,new_parent,placement,after[,authorized])\0"
                 .as_ptr() as *const c_char,
         );
         return;
@@ -485,6 +527,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
             return;
         }
     };
+    let authorized = read_authorized_token(args, 5);
 
     let db = sqlite_context_db_handle(ctx);
     let doc_id = match load_doc_id(db) {
@@ -513,9 +556,14 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
             return;
         }
     };
-    let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_move", |crdt| {
-        crdt.prepare_local_move(node_id, new_parent_id, placement)
-    }) {
+    let out = match run_local_core_op(
+        db,
+        doc_id,
+        replica,
+        "treecrdt_local_move",
+        authorized,
+        |crdt| crdt.prepare_local_move(node_id, new_parent_id, placement),
+    ) {
         Ok(v) => v,
         Err(rc) => {
             sqlite_result_error_code(ctx, rc);
@@ -535,10 +583,11 @@ pub(super) unsafe extern "C" fn treecrdt_local_delete(
         return;
     }
 
-    if argc != 2 {
+    if argc != 2 && argc != 3 {
         sqlite_result_error(
             ctx,
-            b"treecrdt_local_delete expects 2 args (replica,node)\0".as_ptr() as *const c_char,
+            b"treecrdt_local_delete expects 2 or 3 args (replica,node[,authorized])\0".as_ptr()
+                as *const c_char,
         );
         return;
     }
@@ -564,6 +613,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_delete(
             return;
         }
     };
+    let authorized = read_authorized_token(args, 2);
 
     let db = sqlite_context_db_handle(ctx);
     let doc_id = match load_doc_id(db) {
@@ -583,9 +633,14 @@ pub(super) unsafe extern "C" fn treecrdt_local_delete(
     };
 
     let node_id = NodeId(u128::from_be_bytes(node));
-    let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_delete", |crdt| {
-        crdt.prepare_local_delete(node_id)
-    }) {
+    let out = match run_local_core_op(
+        db,
+        doc_id,
+        replica,
+        "treecrdt_local_delete",
+        authorized,
+        |crdt| crdt.prepare_local_delete(node_id),
+    ) {
         Ok(v) => v,
         Err(rc) => {
             sqlite_result_error_code(ctx, rc);
@@ -605,11 +660,11 @@ pub(super) unsafe extern "C" fn treecrdt_local_payload(
         return;
     }
 
-    if argc != 3 {
+    if argc != 3 && argc != 4 {
         sqlite_result_error(
             ctx,
-            b"treecrdt_local_payload expects 3 args (replica,node,payload)\0".as_ptr()
-                as *const c_char,
+            b"treecrdt_local_payload expects 3 or 4 args (replica,node,payload[,authorized])\0"
+                .as_ptr() as *const c_char,
         );
         return;
     }
@@ -636,6 +691,7 @@ pub(super) unsafe extern "C" fn treecrdt_local_payload(
         }
     };
     let payload = read_blob(args[2]);
+    let authorized = read_authorized_token(args, 3);
 
     let db = sqlite_context_db_handle(ctx);
     let doc_id = match load_doc_id(db) {
@@ -655,9 +711,14 @@ pub(super) unsafe extern "C" fn treecrdt_local_payload(
     };
 
     let node_id = NodeId(u128::from_be_bytes(node));
-    let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_payload", |crdt| {
-        crdt.prepare_local_payload(node_id, payload.clone())
-    }) {
+    let out = match run_local_core_op(
+        db,
+        doc_id,
+        replica,
+        "treecrdt_local_payload",
+        authorized,
+        |crdt| crdt.prepare_local_payload(node_id, payload.clone()),
+    ) {
         Ok(v) => v,
         Err(rc) => {
             sqlite_result_error_code(ctx, rc);
