@@ -1,5 +1,16 @@
 # @treecrdt/wa-sqlite
 
+## 1.5.0
+
+### Minor Changes
+
+- 33168cb: Add `tree.read(ids, { children: { payloads } })` to the SQLite-backed engines. It reads many nodes in one query, so all of them come from the same state, and returns `{ headSeq, nodes }`: each node's canonical id, its live parent, its position among its siblings, its payload and its live children in order, keyed by each id as given, or null when the node is not visible. With `children: { payloads: true }`, each child carries its payload. Use it where an application would otherwise read node by node: reading 2,000 siblings and their children takes one worker call instead of five per node.
+
+### Patch Changes
+
+- Updated dependencies [33168cb]
+  - @treecrdt/interface@0.8.0
+
 ## 1.4.1
 
 ### Patch Changes
