@@ -29,7 +29,7 @@ export type TreecrdtClient = TreecrdtEngine &
     runtime: RuntimeMode;
     storage: StorageMode;
     runner: SqliteRunner;
-    tree: Required<Pick<TreecrdtEngineTree, 'changedSince'>>;
+    tree: Required<Pick<TreecrdtEngineTree, 'changedSince' | 'read'>>;
     drop: () => Promise<void>;
   };
 
