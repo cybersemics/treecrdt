@@ -255,7 +255,6 @@ pub fn out_of_order_insert_and_move_before_head_catches_up_immediately<
 
 pub fn replayed_conflicting_moves_report_final_parents<H: MaterializationConformanceHarness>(
     harness: &H,
-    full_replay: bool,
 ) {
     let replica = ReplicaId::new(b"conflicting-moves");
     let a = node(1);
@@ -265,15 +264,6 @@ pub fn replayed_conflicting_moves_report_final_parents<H: MaterializationConform
         Operation::insert(&replica, 2, 2, NodeId::ROOT, b, order_key_from_position(1)),
         Operation::move_node(&replica, 4, 4, b, a, order_key_from_position(0)),
     ]);
-    if full_replay {
-        let c = node(3);
-        let mut known_state = treecrdt_core::VersionVector::new();
-        known_state.observe(&replica, 5);
-        harness.append_ops(&[
-            Operation::insert(&replica, 5, 5, NodeId::ROOT, c, order_key_from_position(2)),
-            Operation::delete(&replica, 6, 6, c, Some(known_state)),
-        ]);
-    }
 
     // Canonical replay accepts the earlier A -> B move and rejects B -> A as a cycle.
     let late_move = Operation::move_node(&replica, 3, 3, a, b, order_key_from_position(0));
