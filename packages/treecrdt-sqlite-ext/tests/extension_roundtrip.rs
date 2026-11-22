@@ -675,6 +675,18 @@ fn remote_replayed_delete_is_reported_once() {
 }
 
 #[test]
+fn remote_late_op_after_rejected_self_move_keeps_accepted_parent() {
+    let harness = setup_conformance_harness();
+    materialization_conformance::late_op_after_rejected_self_move_keeps_accepted_parent(&harness);
+}
+
+#[test]
+fn remote_late_op_after_cycle_rejected_move_keeps_accepted_parent() {
+    let harness = setup_conformance_harness();
+    materialization_conformance::late_op_after_cycle_rejected_move_keeps_accepted_parent(&harness);
+}
+
+#[test]
 fn remote_append_replay_from_start_frontier_catches_up_immediately() {
     let harness = setup_conformance_harness();
     materialization_conformance::replay_from_start_frontier_catches_up_immediately(&harness);

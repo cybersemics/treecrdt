@@ -1059,38 +1059,6 @@ impl FrontierRewindStorage for PgOpStorage {
         Ok(())
     }
 
-    fn latest_structural_before(
-        &self,
-        node: NodeId,
-        before: &treecrdt_core::MaterializationFrontierRef<'_>,
-    ) -> Result<Option<Operation>> {
-        let mut c = self.ctx.client.borrow_mut();
-        let stmt = self.ctx.stmt(
-            &mut c,
-            "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
-             FROM treecrdt_ops \
-             WHERE doc_id = $1 \
-               AND node = $2 \
-               AND kind IN ('insert', 'move') \
-               AND (lamport < $3 OR (lamport = $3 AND (replica < $4 OR (replica = $4 AND counter < $5)))) \
-             ORDER BY lamport DESC, replica DESC, counter DESC \
-             LIMIT 1",
-        )?;
-        let rows = c
-            .query(
-                &stmt,
-                &[
-                    &self.ctx.doc_id,
-                    &node_to_bytes(node).to_vec(),
-                    &(before.lamport as i64),
-                    &before.replica,
-                    &(before.counter as i64),
-                ],
-            )
-            .map_err(storage_debug)?;
-        rows.first().cloned().map(row_to_op).transpose()
-    }
-
     fn latest_payload_before(
         &self,
         node: NodeId,
