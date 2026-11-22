@@ -101,7 +101,8 @@ pub trait NodeStore {
     fn detach(&mut self, node: NodeId) -> Result<()>;
     fn attach(&mut self, node: NodeId, parent: NodeId, order_key: Vec<u8>) -> Result<()>;
 
-    /// Cached tombstone flag for fast queries (derived from `deleted_at` and subtree awareness).
+    /// Cached tombstone flag for fast queries: set when the node or one of its ancestors is
+    /// tombstoned (derived from `deleted_at` and subtree awareness).
     ///
     /// Adapters should treat this as derived state: core helpers can refresh it, and callers may
     /// rely on it for efficient `children()` queries without recomputing awareness recursively.
