@@ -321,6 +321,106 @@ fn apply_incremental_ops_with_delta_returns_affected_union() {
 }
 
 #[test]
+fn apply_incremental_ops_with_delta_reports_the_stored_payload() {
+    let a = ReplicaId::new(b"a");
+    let b = ReplicaId::new(b"b");
+    let node = NodeId(1);
+    let insert = |counter: u64, lamport: Lamport, payload: &str| {
+        Operation::insert_with_payload(&a, counter, lamport, NodeId::ROOT, node, vec![1], payload)
+    };
+    let edit = |counter: u64, lamport: Lamport, payload: &str| {
+        Operation::set_payload(&a, counter, lamport, node, payload)
+    };
+    let delete = |replica: &ReplicaId, counter: u64, lamport: Lamport, seen_from_a: u64| {
+        let mut known_state = VersionVector::new();
+        for seen in 1..=seen_from_a {
+            known_state.observe(&a, seen);
+        }
+        Operation::delete(replica, counter, lamport, node, Some(known_state))
+    };
+    // Materializes `history`, then `batch` at once.
+    let materialize = |history: Vec<Operation>, batch: Vec<Operation>| {
+        let mut crdt = TreeCrdt::new(
+            ReplicaId::new(b"local"),
+            MemoryStorage::default(),
+            LamportClock::default(),
+        )
+        .unwrap();
+        let mut cursor = Cursor::default();
+        if !history.is_empty() {
+            let head = apply_incremental_ops_with_delta(
+                &mut crdt,
+                &mut NoopParentOpIndex,
+                &cursor,
+                history,
+            )
+            .unwrap()
+            .head
+            .unwrap();
+            cursor = Cursor {
+                head_lamport: head.at.lamport,
+                head_replica: head.at.replica.to_vec(),
+                head_counter: head.at.counter,
+                head_seq: head.seq,
+                ..Cursor::default()
+            };
+        }
+        let outcome =
+            apply_incremental_ops_with_delta(&mut crdt, &mut NoopParentOpIndex, &cursor, batch)
+                .unwrap()
+                .outcome;
+        (crdt, outcome)
+    };
+
+    // B deletes the node knowing only A's insert, so A's later edit revives it.
+    let cases = [
+        (
+            "delete and reviving edit",
+            vec![insert(1, 1, "v1")],
+            vec![edit(2, 3, "v2"), delete(&b, 1, 2, 1)],
+            "v2",
+        ),
+        (
+            "first sync of that history",
+            vec![],
+            vec![insert(1, 1, "v1"), delete(&b, 1, 2, 1), edit(2, 3, "v2")],
+            "v2",
+        ),
+        (
+            "edit, delete and re-insert",
+            vec![insert(1, 1, "v1")],
+            vec![edit(2, 2, "v2"), delete(&a, 3, 3, 2), insert(4, 4, "v1")],
+            "v1",
+        ),
+    ];
+    for (label, history, batch, expected) in cases {
+        let (crdt, outcome) = materialize(history, batch);
+        assert_eq!(
+            crdt.payload(node).unwrap(),
+            Some(expected.into()),
+            "{label}"
+        );
+        let reported = outcome.changes.iter().rev().find_map(|change| match change {
+            MaterializationChange::Insert { payload, .. }
+            | MaterializationChange::Restore { payload, .. }
+            | MaterializationChange::Payload { payload, .. }
+                if change.node() == node =>
+            {
+                Some(payload.clone())
+            }
+            _ => None,
+        });
+        assert_eq!(reported, Some(Some(expected.into())), "{label}");
+    }
+
+    // A child insert revives the node without writing its payload, so the node is not reported.
+    let child = Operation::insert(&a, 2, 3, node, NodeId(2), vec![1]);
+    let (crdt, outcome) = materialize(vec![insert(1, 1, "v1")], vec![delete(&b, 1, 2, 1), child]);
+    assert!(!crdt.is_tombstoned(node).unwrap());
+    assert!(outcome.changes.iter().all(|change| change.node() != node));
+}
+
+#[test]
 fn apply_persisted_remote_ops_materializes_only_inserted_entries() {
     let cursor = Cursor::default();
     let replica = ReplicaId::new(b"remote");
