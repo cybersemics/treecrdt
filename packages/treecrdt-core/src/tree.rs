@@ -506,12 +506,13 @@ where
             materialization_change_from_tombstone_delta(delta, source.clone())
         }));
 
+        // Left raw for the caller to coalesce with the rest of its batch.
         Ok(ApplyDelta {
             snapshot: NodeSnapshotExport {
                 parent: snapshot.parent,
                 order_key: snapshot.order_key,
             },
-            changes: coalesce_materialization_changes(changes),
+            changes,
         })
     }
 

@@ -97,28 +97,88 @@ pub(crate) fn materialization_change_from_tombstone_delta(
     }
 }
 
-#[derive(Clone, Debug)]
 struct StructuralChange {
     first_parent: Option<NodeId>,
     final_parent: NodeId,
     inserted: bool,
-    payload_after: Option<Vec<u8>>,
     source: Option<MaterializationSource>,
 }
 
-#[derive(Clone, Debug)]
-struct TombstoneChange {
-    first_is_restore: bool,
+struct VisibilityChange {
+    visible_before: bool,
+    visible_after: bool,
     last_parent: Option<NodeId>,
-    payload_after: Option<Vec<u8>>,
-    count: usize,
     source: Option<MaterializationSource>,
 }
 
-#[derive(Clone, Debug)]
-struct PayloadChange {
-    payload_after: Option<Vec<u8>>,
-    source: Option<MaterializationSource>,
+/// One node's changes, folded in the order they were made.
+#[derive(Default)]
+struct NodeChanges {
+    structure: Option<StructuralChange>,
+    visibility: Option<VisibilityChange>,
+    /// The payload carried by the latest change that carried one: what the node stored after it.
+    /// An insert without a payload leaves the stored payload as it was.
+    payload: Option<Option<Vec<u8>>>,
+    /// Whether an insert or payload change wrote the payload. A restore carries the stored payload
+    /// without writing it.
+    payload_written: bool,
+    /// The source of the latest write.
+    payload_source: Option<MaterializationSource>,
+}
+
+impl NodeChanges {
+    fn restructure(
+        &mut self,
+        parent_before: Option<NodeId>,
+        parent_after: NodeId,
+        inserted: bool,
+        source: Option<MaterializationSource>,
+    ) {
+        match &mut self.structure {
+            Some(existing) => {
+                existing.final_parent = parent_after;
+                existing.inserted |= inserted;
+                existing.source = latest_source(existing.source.take(), source);
+            }
+            None => {
+                self.structure = Some(StructuralChange {
+                    first_parent: parent_before,
+                    final_parent: parent_after,
+                    inserted,
+                    source,
+                })
+            }
+        }
+    }
+
+    fn set_visible(
+        &mut self,
+        visible: bool,
+        parent: Option<NodeId>,
+        source: Option<MaterializationSource>,
+    ) {
+        match &mut self.visibility {
+            Some(existing) => {
+                existing.visible_after = visible;
+                existing.last_parent = parent;
+                existing.source = latest_source(existing.source.take(), source);
+            }
+            None => {
+                self.visibility = Some(VisibilityChange {
+                    visible_before: !visible,
+                    visible_after: visible,
+                    last_parent: parent,
+                    source,
+                })
+            }
+        }
+    }
+
+    fn write_payload(&mut self, payload: Option<Vec<u8>>, source: Option<MaterializationSource>) {
+        self.payload = Some(payload);
+        self.payload_written = true;
+        self.payload_source = source;
+    }
 }
 
 fn source_key(source: &MaterializationSource) -> (u64, &[u8], u64) {
@@ -146,197 +206,113 @@ fn latest_source(
     }
 }
 
+/// Collapse changes, given in the order they were made, into each node's net visible change.
+///
+/// A change that carries a payload carries what the node stores after the last change. Coalesce a
+/// batch's raw changes at once: coalescing each op's changes first turns a payload write and the
+/// restore it causes into one restore, which an earlier delete in the batch then cancels, hiding
+/// the write.
 pub(crate) fn coalesce_materialization_changes(
     changes: Vec<MaterializationChange>,
 ) -> Vec<MaterializationChange> {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
 
-    let mut structural: BTreeMap<NodeId, StructuralChange> = BTreeMap::new();
-    let mut tombstone: BTreeMap<NodeId, TombstoneChange> = BTreeMap::new();
-    let mut payload: BTreeMap<NodeId, PayloadChange> = BTreeMap::new();
-
+    let mut nodes: BTreeMap<NodeId, NodeChanges> = BTreeMap::new();
     for change in changes {
+        let folded = nodes.entry(change.node()).or_default();
         match change {
             MaterializationChange::Insert {
-                node,
                 parent_after,
                 payload,
                 source,
+                ..
             } => {
-                structural
-                    .entry(node)
-                    .and_modify(|existing| {
-                        existing.final_parent = parent_after;
-                        existing.inserted = true;
-                        existing.payload_after = payload.clone();
-                        existing.source = latest_source(existing.source.clone(), source.clone());
-                    })
-                    .or_insert(StructuralChange {
-                        first_parent: None,
-                        final_parent: parent_after,
-                        inserted: true,
-                        payload_after: payload,
-                        source,
-                    });
+                if payload.is_some() {
+                    folded.write_payload(payload, source.clone());
+                }
+                folded.restructure(None, parent_after, true, source);
             }
             MaterializationChange::Move {
-                node,
                 parent_before,
                 parent_after,
                 source,
-            } => {
-                structural
-                    .entry(node)
-                    .and_modify(|existing| {
-                        existing.final_parent = parent_after;
-                        existing.source = latest_source(existing.source.clone(), source.clone());
-                    })
-                    .or_insert(StructuralChange {
-                        first_parent: parent_before,
-                        final_parent: parent_after,
-                        inserted: false,
-                        payload_after: None,
-                        source,
-                    });
-            }
+                ..
+            } => folded.restructure(parent_before, parent_after, false, source),
             MaterializationChange::Delete {
-                node,
                 parent_before,
                 source,
-            } => {
-                tombstone
-                    .entry(node)
-                    .and_modify(|existing| {
-                        existing.last_parent = parent_before;
-                        existing.count += 1;
-                        existing.source = latest_source(existing.source.clone(), source.clone());
-                    })
-                    .or_insert(TombstoneChange {
-                        first_is_restore: false,
-                        last_parent: parent_before,
-                        payload_after: None,
-                        count: 1,
-                        source,
-                    });
-            }
+                ..
+            } => folded.set_visible(false, parent_before, source),
             MaterializationChange::Restore {
-                node,
                 parent_after,
                 payload,
                 source,
+                ..
             } => {
-                tombstone
-                    .entry(node)
-                    .and_modify(|existing| {
-                        existing.last_parent = parent_after;
-                        existing.payload_after = payload.clone();
-                        existing.count += 1;
-                        existing.source = latest_source(existing.source.clone(), source.clone());
-                    })
-                    .or_insert(TombstoneChange {
-                        first_is_restore: true,
-                        last_parent: parent_after,
-                        payload_after: payload,
-                        count: 1,
-                        source,
-                    });
+                folded.payload = Some(payload);
+                folded.set_visible(true, parent_after, source);
             }
             MaterializationChange::Payload {
-                node,
-                payload: payload_after,
-                source,
-            } => {
-                payload
-                    .entry(node)
-                    .and_modify(|existing| {
-                        existing.payload_after = payload_after.clone();
-                        existing.source = latest_source(existing.source.clone(), source.clone());
-                    })
-                    .or_insert(PayloadChange {
-                        payload_after,
-                        source,
-                    });
-            }
+                payload, source, ..
+            } => folded.write_payload(payload, source),
         }
     }
 
-    let deleted_nodes: BTreeSet<NodeId> = tombstone
-        .iter()
-        .filter_map(|(node, change)| {
-            if change.count % 2 == 1 && !change.first_is_restore {
-                Some(*node)
+    let mut structural = Vec::new();
+    let mut visibility = Vec::new();
+    let mut payloads = Vec::new();
+    for (node, folded) in nodes {
+        let payload = folded.payload.flatten();
+        let payload_source = folded.payload_source;
+        let mut payload_reported = false;
+        if let Some(change) = folded.structure {
+            if change.inserted {
+                payload_reported = true;
+                structural.push(MaterializationChange::Insert {
+                    node,
+                    parent_after: change.final_parent,
+                    payload: payload.clone(),
+                    source: latest_source(change.source, payload_source.clone()),
+                });
             } else {
-                None
+                structural.push(MaterializationChange::Move {
+                    node,
+                    parent_before: change.first_parent,
+                    parent_after: change.final_parent,
+                    source: change.source,
+                });
             }
-        })
-        .collect();
-
-    let mut coalesced = Vec::new();
-    for (node, change) in structural {
-        if change.inserted {
-            let payload_change = payload.remove(&node);
-            let payload_after = payload_change
-                .as_ref()
-                .map(|change| change.payload_after.clone())
-                .unwrap_or(change.payload_after);
-            let source = latest_source(
-                change.source,
-                payload_change.and_then(|change| change.source),
-            );
-            coalesced.push(MaterializationChange::Insert {
+        }
+        let visible_after = folded.visibility.as_ref().is_none_or(|change| change.visible_after);
+        if let Some(change) = folded.visibility {
+            if change.visible_before != change.visible_after {
+                if change.visible_after {
+                    payload_reported = true;
+                    visibility.push(MaterializationChange::Restore {
+                        node,
+                        parent_after: change.last_parent,
+                        payload: payload.clone(),
+                        source: latest_source(change.source, payload_source.clone()),
+                    });
+                } else {
+                    visibility.push(MaterializationChange::Delete {
+                        node,
+                        parent_before: change.last_parent,
+                        source: change.source,
+                    });
+                }
+            }
+        }
+        if folded.payload_written && visible_after && !payload_reported {
+            payloads.push(MaterializationChange::Payload {
                 node,
-                parent_after: change.final_parent,
-                payload: payload_after,
-                source,
-            });
-        } else {
-            coalesced.push(MaterializationChange::Move {
-                node,
-                parent_before: change.first_parent,
-                parent_after: change.final_parent,
-                source: change.source,
+                payload,
+                source: payload_source,
             });
         }
     }
 
-    for (node, change) in tombstone {
-        if change.count % 2 == 0 {
-            continue;
-        }
-        if change.first_is_restore {
-            let payload_change = payload.remove(&node);
-            let payload_after = payload_change
-                .as_ref()
-                .map(|change| change.payload_after.clone())
-                .unwrap_or(change.payload_after);
-            let source = latest_source(
-                change.source,
-                payload_change.and_then(|change| change.source),
-            );
-            coalesced.push(MaterializationChange::Restore {
-                node,
-                parent_after: change.last_parent,
-                payload: payload_after,
-                source,
-            });
-        } else {
-            coalesced.push(MaterializationChange::Delete {
-                node,
-                parent_before: change.last_parent,
-                source: change.source,
-            });
-        }
-    }
-
-    for (node, payload_change) in payload {
-        if !deleted_nodes.contains(&node) {
-            coalesced.push(MaterializationChange::Payload {
-                node,
-                payload: payload_change.payload_after,
-                source: payload_change.source,
-            });
-        }
-    }
-
-    coalesced
+    structural.extend(visibility);
+    structural.extend(payloads);
+    structural
 }

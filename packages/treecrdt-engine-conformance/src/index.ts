@@ -176,6 +176,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioMaterializationEventDefensiveRestore,
     },
     {
+      name: 'materialization events: a batch reports the stored payload',
+      run: scenarioMaterializationEventReportsStoredPayload,
+    },
+    {
       name: 'local ops: a write under a deleted parent reports its restore',
       run: scenarioLocalWriteReportsRestoredParent,
     },
@@ -934,6 +938,96 @@ async function scenarioMaterializationEventDefensiveRestore(
     (await a.tree.node(parent).children()).map((node) => node.id),
     [child],
     'child should remain visible',
+  );
+}
+
+async function scenarioMaterializationEventReportsStoredPayload(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const rA = replicaFromLabel('rA');
+  const rB = replicaFromLabel('rB');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const node = nodeIdFromInt(90);
+  const insert = (replica: ReplicaId, counter: number, lamport: number, payload: string) =>
+    makeInsertOp({
+      replica,
+      counter,
+      lamport,
+      parent: root,
+      node,
+      orderKey: orderKeyFromPosition(0),
+      payload: encoder.encode(payload),
+    });
+  const edit = (counter: number, lamport: number, payload: string) =>
+    makePayloadOp({ replica: rA, counter, lamport, node, payload: encoder.encode(payload) });
+  // B deletes the node knowing only A's insert, so A's later edit revives it.
+  const concurrentDelete = makeDeleteOp({
+    replica: rB,
+    counter: 1,
+    lamport: 2,
+    node,
+    knownState: await versionVectorBytes(rA, 1),
+  });
+  const ownDelete = makeDeleteOp({
+    replica: rA,
+    counter: 3,
+    lamport: 3,
+    node,
+    knownState: await versionVectorBytes(rA, 2),
+  });
+
+  /** Appends `batch` in one call to a new engine holding `history`. */
+  const expectStoredPayloadReported = async (
+    label: string,
+    history: Operation[],
+    batch: Operation[],
+    expected: string,
+  ) => {
+    const engine = await ctx.createEngine({ docId: ctx.docId, name: label });
+    if (history.length > 0) await engine.ops.appendMany(history);
+    const since = engine.tree.changedSince ? (await readAllChangedSince(engine, 0)).headSeq : 0;
+    const events = await captureMaterializationEvents(engine, () => engine.ops.appendMany(batch));
+    const stored = await engine.tree.node(node).payload();
+    assertBytesEqual(stored, encoder.encode(expected), `${label}: stored payload`);
+    const reported = events
+      .flatMap((event) => event.changes)
+      .filter((change) => change.node === node && 'payload' in change)
+      .pop();
+    assert(reported && 'payload' in reported, `${label}: a change reports the node's payload`);
+    assertBytesEqual(reported.payload, stored, `${label}: reported payload`);
+    if (!engine.tree.changedSince) return;
+    const { nodes } = await readAllChangedSince(engine, since, { payloads: true });
+    const changed = nodes.find((n) => n.node === node);
+    assert(changed, `${label}: changedSince lists the node`);
+    assertBytesEqual(changed.payload ?? null, stored, `${label}: changedSince payload`);
+  };
+
+  await expectStoredPayloadReported(
+    'delete and reviving edit',
+    [insert(rA, 1, 1, 'v1')],
+    [edit(2, 3, 'v2'), concurrentDelete],
+    'v2',
+  );
+  await expectStoredPayloadReported(
+    'first sync of that history',
+    [],
+    [insert(rA, 1, 1, 'v1'), concurrentDelete, edit(2, 3, 'v2')],
+    'v2',
+  );
+  // Undoing a delete inserts the node again with its earlier payload.
+  await expectStoredPayloadReported(
+    'edit, delete and re-insert',
+    [insert(rA, 1, 1, 'v1')],
+    [edit(2, 2, 'v2'), ownDelete, insert(rA, 4, 4, 'v1')],
+    'v1',
+  );
+  // An older insert of the same id and its edit arrive late, so the engine replays them.
+  await expectStoredPayloadReported(
+    'concurrent inserts of one id',
+    [insert(rB, 1, 5, 'v3')],
+    [insert(rA, 1, 1, 'v1'), edit(2, 2, 'v2')],
+    'v3',
   );
 }
 
