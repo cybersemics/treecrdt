@@ -698,7 +698,18 @@ async function treecrdtReplicaMaxCounter(
 export type TreecrdtSqlitePlacement =
   | { type: 'first' }
   | { type: 'last' }
-  | { type: 'after'; after: string };
+  | { type: 'after'; after: string }
+  /**
+   * A new key strictly between two order keys (null: an open end), which need not be the keys of
+   * siblings. The key ends with the node id, so no two nodes placed this way share one.
+   */
+  | { type: 'between'; left: Uint8Array | null; right: Uint8Array | null }
+  /**
+   * `key`, then the node id and a final 1 digit, so devices that derive `key` the same way place a
+   * node alike, nodes placed at one `key` go in node-id order, and no two nodes share a key. `key`
+   * must be non-empty whole big-endian u16 digits.
+   */
+  | { type: 'at'; key: Uint8Array };
 
 export type TreecrdtSqliteWriter = {
   insert: (
@@ -720,6 +731,18 @@ export type TreecrdtSqliteWriter = {
     opts?: LocalWriteOptions,
   ) => Promise<Operation>;
 };
+
+/**
+ * The bound args of placement 'between'. wa-sqlite binds an empty Uint8Array as NULL, so an empty
+ * right bound, which no key is below, would read as an open end there: reject it on every engine.
+ * An empty left bound is an open end anyway.
+ */
+function betweenBounds({ left, right }: { left: Uint8Array | null; right: Uint8Array | null }) {
+  if (right?.length === 0) {
+    throw new Error("placement 'between': no key is below an empty right bound");
+  }
+  return [left, right];
+}
 
 export function createTreecrdtSqliteWriter(
   runner: SqliteRunner,
@@ -779,18 +802,31 @@ export function createTreecrdtSqliteWriter(
   ) => {
     const afterNode = placement.type === 'after' ? nodeIdToBytes16(placement.after) : null;
     const payload = o.payload ?? null;
-    return getLocalOp(
-      'SELECT treecrdt_local_insert(?1,?2,?3,?4,?5,?6)',
-      [
-        replicaBytes,
-        nodeIdToBytes16(parent),
-        nodeIdToBytes16(node),
-        placement.type,
-        afterNode,
-        payload,
-      ],
-      o,
-    );
+    const params = [
+      replicaBytes,
+      nodeIdToBytes16(parent),
+      nodeIdToBytes16(node),
+      placement.type,
+      afterNode,
+      payload,
+    ];
+    // Placements by sibling keep the 6-arg call, which extensions without 'at' and 'between' also
+    // accept.
+    if (placement.type === 'at') {
+      return getLocalOp(
+        'SELECT treecrdt_local_insert(?1,?2,?3,?4,?5,?6,?7)',
+        [...params, placement.key],
+        o,
+      );
+    }
+    if (placement.type === 'between') {
+      return getLocalOp(
+        'SELECT treecrdt_local_insert(?1,?2,?3,?4,?5,?6,?7,?8)',
+        [...params, ...betweenBounds(placement)],
+        o,
+      );
+    }
+    return getLocalOp('SELECT treecrdt_local_insert(?1,?2,?3,?4,?5,?6)', params, o);
   };
 
   const move = async (
@@ -800,11 +836,30 @@ export function createTreecrdtSqliteWriter(
     writeOpts?: LocalWriteOptions,
   ) => {
     const afterNode = placement.type === 'after' ? nodeIdToBytes16(placement.after) : null;
-    return getLocalOp(
-      'SELECT treecrdt_local_move(?1,?2,?3,?4,?5)',
-      [replicaBytes, nodeIdToBytes16(node), nodeIdToBytes16(newParent), placement.type, afterNode],
-      writeOpts,
-    );
+    const params = [
+      replicaBytes,
+      nodeIdToBytes16(node),
+      nodeIdToBytes16(newParent),
+      placement.type,
+      afterNode,
+    ];
+    // Placements by sibling keep the 5-arg call, which extensions without 'at' and 'between' also
+    // accept.
+    if (placement.type === 'at') {
+      return getLocalOp(
+        'SELECT treecrdt_local_move(?1,?2,?3,?4,?5,?6)',
+        [...params, placement.key],
+        writeOpts,
+      );
+    }
+    if (placement.type === 'between') {
+      return getLocalOp(
+        'SELECT treecrdt_local_move(?1,?2,?3,?4,?5,?6,?7)',
+        [...params, ...betweenBounds(placement)],
+        writeOpts,
+      );
+    }
+    return getLocalOp('SELECT treecrdt_local_move(?1,?2,?3,?4,?5)', params, writeOpts);
   };
 
   const del = async (node: string, writeOpts?: LocalWriteOptions) => {

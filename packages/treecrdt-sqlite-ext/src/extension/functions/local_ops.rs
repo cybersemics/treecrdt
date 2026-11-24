@@ -4,8 +4,8 @@ use super::op_index::SqliteParentOpIndex;
 use super::op_storage::SqliteOpStorage;
 use super::payload_store::SqlitePayloadStore;
 use super::util::{
-    read_blob, read_blob16, read_optional_blob16, read_required_blob, read_text,
-    sqlite_err_from_core, sqlite_result_json,
+    read_blob, read_blob16, read_optional_blob, read_optional_blob16, read_required_blob,
+    read_text, sqlite_err_from_core, sqlite_result_json,
 };
 use super::*;
 use treecrdt_core::{
@@ -319,6 +319,48 @@ where
     finish_local_core_op(session, op, plan)
 }
 
+/// Reads the placement of a local insert or move from its name, its `after` arg and its trailing
+/// args. On a bad placement it sets the error result and returns None.
+fn read_placement(
+    ctx: *mut sqlite3_context,
+    function: &str,
+    placement: &str,
+    after: Option<NodeId>,
+    trailing: &[*mut sqlite3_value],
+) -> Option<LocalPlacement> {
+    let reason = match (placement, trailing) {
+        ("at", &[key]) => match read_optional_blob(key) {
+            Some(key) => return Some(LocalPlacement::At { key }),
+            None => "placement at needs a key, not NULL",
+        },
+        // A NULL bound is an open end.
+        ("between", &[left, right]) => {
+            return Some(LocalPlacement::Between {
+                left: read_optional_blob(left),
+                right: read_optional_blob(right),
+            });
+        }
+        ("at", _) => "placement at takes one trailing arg (key)",
+        ("between", _) => "placement between takes two trailing args (left,right)",
+        (placement, []) => match LocalPlacement::from_parts(placement, after) {
+            Ok(placement) => return Some(placement),
+            Err(err) => {
+                sqlite_result_error_code(ctx, sqlite_err_from_core(err));
+                return None;
+            }
+        },
+        _ => "only placements at and between take trailing args",
+    };
+    // Both parts are static, with no NUL byte to fail on.
+    let message = CString::new(format!("{function}: {reason}")).unwrap_or_default();
+    sqlite_result_error(ctx, message.as_ptr());
+    None
+}
+
+/// `treecrdt_local_insert(replica, parent, node, placement, after, payload, ...)`, where the
+/// trailing args are the key of placement 'at', or the left and right bounds of placement
+/// 'between' (NULL: an open end). Placements 'first', 'last' and 'after' (the `after` node) take
+/// none.
 pub(super) unsafe extern "C" fn treecrdt_local_insert(
     ctx: *mut sqlite3_context,
     argc: c_int,
@@ -329,10 +371,11 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
         return;
     }
 
-    if argc != 6 {
+    if !(6..=8).contains(&argc) {
         sqlite_result_error(
             ctx,
-            b"treecrdt_local_insert expects 6 args (replica,parent,node,placement,after,payload)\0"
+            b"treecrdt_local_insert expects 6 args (replica,parent,node,placement,after,payload), \
+              then the key of placement at or the left and right bounds of placement between\0"
                 .as_ptr() as *const c_char,
         );
         return;
@@ -382,6 +425,16 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
         }
     };
     let payload = read_blob(args[5]);
+    let after_id = after.map(|id| NodeId(u128::from_be_bytes(id)));
+    let Some(placement) = read_placement(
+        ctx,
+        "treecrdt_local_insert",
+        &placement,
+        after_id,
+        &args[6..],
+    ) else {
+        return;
+    };
 
     let db = sqlite_context_db_handle(ctx);
     let doc_id = match load_doc_id(db) {
@@ -402,14 +455,6 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
 
     let parent_id = NodeId(u128::from_be_bytes(parent));
     let node_id = NodeId(u128::from_be_bytes(node));
-    let after_id = after.map(|id| NodeId(u128::from_be_bytes(id)));
-    let placement = match LocalPlacement::from_parts(placement.as_str(), after_id) {
-        Ok(v) => v,
-        Err(err) => {
-            sqlite_result_error_code(ctx, sqlite_err_from_core(err));
-            return;
-        }
-    };
     let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_insert", |crdt| {
         crdt.prepare_local_insert(parent_id, node_id, placement, payload.clone())
     }) {
@@ -423,6 +468,8 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
     sqlite_result_json(ctx, &out);
 }
 
+/// `treecrdt_local_move(replica, node, new_parent, placement, after, ...)`, with the trailing args
+/// of `treecrdt_local_insert`.
 pub(super) unsafe extern "C" fn treecrdt_local_move(
     ctx: *mut sqlite3_context,
     argc: c_int,
@@ -433,10 +480,11 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
         return;
     }
 
-    if argc != 5 {
+    if !(5..=7).contains(&argc) {
         sqlite_result_error(
             ctx,
-            b"treecrdt_local_move expects 5 args (replica,node,new_parent,placement,after)\0"
+            b"treecrdt_local_move expects 5 args (replica,node,new_parent,placement,after), \
+              then the key of placement at or the left and right bounds of placement between\0"
                 .as_ptr() as *const c_char,
         );
         return;
@@ -485,6 +533,12 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
             return;
         }
     };
+    let after_id = after.map(|id| NodeId(u128::from_be_bytes(id)));
+    let Some(placement) =
+        read_placement(ctx, "treecrdt_local_move", &placement, after_id, &args[5..])
+    else {
+        return;
+    };
 
     let db = sqlite_context_db_handle(ctx);
     let doc_id = match load_doc_id(db) {
@@ -505,14 +559,6 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
 
     let node_id = NodeId(u128::from_be_bytes(node));
     let new_parent_id = NodeId(u128::from_be_bytes(new_parent));
-    let after_id = after.map(|id| NodeId(u128::from_be_bytes(id)));
-    let placement = match LocalPlacement::from_parts(placement.as_str(), after_id) {
-        Ok(v) => v,
-        Err(err) => {
-            sqlite_result_error_code(ctx, sqlite_err_from_core(err));
-            return;
-        }
-    };
     let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_move", |crdt| {
         crdt.prepare_local_move(node_id, new_parent_id, placement)
     }) {

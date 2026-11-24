@@ -50,6 +50,16 @@ pub(super) fn read_blob(val: *mut sqlite3_value) -> Option<Vec<u8>> {
     }
 }
 
+/// Like `read_blob`, but a zero-length BLOB reads as empty rather than as NULL.
+pub(super) fn read_optional_blob(val: *mut sqlite3_value) -> Option<Vec<u8>> {
+    unsafe {
+        if sqlite_value_type(val) == SQLITE_NULL as c_int {
+            return None;
+        }
+    }
+    Some(read_blob(val).unwrap_or_default())
+}
+
 pub(super) fn read_required_blob(val: *mut sqlite3_value) -> Result<Vec<u8>, ()> {
     match read_blob(val) {
         Some(v) => Ok(v),
