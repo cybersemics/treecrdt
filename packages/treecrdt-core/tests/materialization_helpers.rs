@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::collections::BTreeSet;
 use std::rc::Rc;
 use treecrdt_core::NodeStore;
 use treecrdt_core::{
@@ -154,6 +155,64 @@ fn finalize_local_records_unique_hints_and_extras() {
     assert_eq!(index.records.len(), 2);
     assert_eq!(index.records[0], (parent, op.meta.id.clone(), 42));
     assert_eq!(index.records[1], (parent, extra_op_id, 42));
+}
+
+// Writers that create one deterministic id can insert a node that already sits under another
+// parent. The writer must index that insert as peers applying it do, as it would a move.
+#[test]
+fn finalize_local_indexes_an_insert_of_an_existing_node_like_a_remote_apply() {
+    let tree = |replica: &[u8]| {
+        TreeCrdt::new(
+            ReplicaId::new(replica),
+            MemoryStorage::default(),
+            LamportClock::default(),
+        )
+        .unwrap()
+    };
+    let records = |index: RecordingIndex| -> BTreeSet<(NodeId, OperationId)> {
+        index.records.into_iter().map(|(parent, op_id, _)| (parent, op_id)).collect()
+    };
+    let (old_parent, new_parent, node) = (NodeId(1), NodeId(2), NodeId(3));
+    for payload in [None, Some(b"new".to_vec())] {
+        let (mut local, mut remote) = (tree(b"local"), tree(b"remote"));
+        let mut history = Vec::new();
+        for (parent, child) in [
+            (NodeId::ROOT, old_parent),
+            (NodeId::ROOT, new_parent),
+            (old_parent, node),
+        ] {
+            history.push(local.local_insert(parent, child, LocalPlacement::Last, None).unwrap().0);
+        }
+        let (payload_op, _) = local.local_payload(node, Some(b"old".to_vec())).unwrap();
+        history.push(payload_op.clone());
+        remote.apply_remote_batch(history).unwrap();
+
+        let (op, plan) = local
+            .local_insert(new_parent, node, LocalPlacement::Last, payload.clone())
+            .unwrap();
+        let mut local_index = RecordingIndex::default();
+        local.finalize_local(&op, &mut local_index, 0, &plan).unwrap();
+        let mut remote_index = RecordingIndex::default();
+        remote
+            .apply_remote_with_materialization_seq(op.clone(), &mut remote_index, &mut 0)
+            .unwrap();
+
+        // Both parents see the node move, and the new one finds its payload, unless the insert
+        // carries one itself.
+        let mut expected = BTreeSet::from([
+            (old_parent, op.meta.id.clone()),
+            (new_parent, op.meta.id.clone()),
+        ]);
+        if payload.is_none() {
+            expected.insert((new_parent, payload_op.meta.id.clone()));
+        }
+        assert_eq!(records(local_index), expected, "local, payload {payload:?}");
+        assert_eq!(
+            records(remote_index),
+            expected,
+            "remote, payload {payload:?}"
+        );
+    }
 }
 
 #[test]

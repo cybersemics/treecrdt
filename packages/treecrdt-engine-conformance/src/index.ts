@@ -180,6 +180,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioLocalWriteReportsRestoredParent,
     },
     {
+      name: 'local ops: an insert of an existing node is placed and indexed like a move',
+      run: scenarioLocalInsertOfExistingNode,
+    },
+    {
       name: 'tree: children slice pagination',
       run: scenarioChildrenSlicePagination,
     },
@@ -998,6 +1002,46 @@ async function scenarioLocalWriteReportsRestoredParent(
       );
     }
   }
+}
+
+// Writers that create one deterministic id can insert a node that already exists. The insert
+// applies as a move, so the writer must place and index it as one.
+async function scenarioLocalInsertOfExistingNode(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const [p1, p2, node] = [1, 2, 3].map(nodeIdFromInt);
+  const children = async (parent: string) =>
+    (await engine.tree.node(parent).children()).map((child) => child.id);
+  const indexedCounters = async (parent: string) =>
+    (await engine.ops.get(await engine.opRefs.children(parent))).map((op) => op.meta.id.counter);
+
+  await engine.local.insert(replica, root, p1, { type: 'last' }, null);
+  await engine.local.insert(replica, root, p2, { type: 'last' }, null);
+  await engine.local.insert(replica, p1, node, { type: 'last' }, null);
+  const payload = await engine.local.payload(replica, node, new TextEncoder().encode('hi'));
+
+  // 'last' must skip the node itself, which is already the last child.
+  await engine.local.insert(replica, p1, node, { type: 'last' }, null);
+  assertArrayEqual(await children(p1), [node], 'children(p1) after inserting its last child');
+  assertEqual((await engine.ops.all()).length, 5, 'ops.all length');
+
+  const insert = await engine.local.insert(replica, p2, node, { type: 'last' }, null);
+  assertArrayEqual(await children(p1), [], 'children(p1) after inserting the node under p2');
+  assertArrayEqual(await children(p2), [node], 'children(p2)');
+  // Partial sync of p1 must see the node leave, and of p2 must find its payload.
+  assert(
+    (await indexedCounters(p1)).includes(insert.meta.id.counter),
+    'opRefs.children(p1) includes the insert',
+  );
+  const p2Counters = await indexedCounters(p2);
+  assert(p2Counters.includes(insert.meta.id.counter), 'opRefs.children(p2) includes the insert');
+  assert(
+    p2Counters.includes(payload.meta.id.counter),
+    'opRefs.children(p2) includes the latest payload',
+  );
 }
 
 async function scenarioChildrenSlicePagination(

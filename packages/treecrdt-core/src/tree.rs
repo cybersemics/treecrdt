@@ -171,18 +171,35 @@ where
         placement: LocalPlacement,
         payload: Option<Vec<u8>>,
     ) -> Result<PreparedLocalOp> {
-        let after = self.resolve_after_for_placement(parent, placement, None)?;
+        // An insert of an existing node applies as a move, so place and index it as a move does.
+        let old_parent = self.parent(node)?;
+        // Excluding the node keeps Last from resolving to the node itself when it is already the
+        // last child.
+        let after = self.resolve_after_for_placement(parent, placement, Some(node))?;
         let payload_after = payload.clone();
         let (replica, counter, lamport, seed) = self.next_op_meta();
         let order_key = self.allocate_child_key_after(parent, node, after, &seed)?;
+
+        let mut parent_hints = vec![parent];
+        parent_hints.extend(old_parent);
+
+        // Keep the node's latest payload findable under its new parent, as a move does. An insert
+        // with a payload is that writer itself.
+        let mut extra_index_records: Vec<(NodeId, OperationId)> = Vec::new();
+        if payload.is_none() && old_parent != Some(parent) && parent != NodeId::TRASH {
+            if let Some((_lamport, payload_id)) = self.payload_last_writer(node)? {
+                extra_index_records.push((parent, payload_id));
+            }
+        }
+
         let op = Operation::insert_with_optional_payload(
             &replica, counter, lamport, parent, node, order_key, payload,
         );
         Ok(PreparedLocalOp {
             op,
             plan: LocalFinalizePlan {
-                parent_hints: vec![parent],
-                extra_index_records: Vec::new(),
+                parent_hints,
+                extra_index_records,
                 changes: vec![MaterializationChange::Insert {
                     node,
                     parent_after: parent,

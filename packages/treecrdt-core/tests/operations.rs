@@ -1,6 +1,6 @@
 use treecrdt_core::{
-    LamportClock, LocalPlacement, MemoryStorage, NodeId, NoopParentOpIndex, Operation, ReplicaId,
-    TreeCrdt,
+    LamportClock, LocalPlacement, MemoryStorage, NodeId, NoopParentOpIndex, Operation,
+    OperationKind, ReplicaId, TreeCrdt,
 };
 
 #[test]
@@ -298,6 +298,73 @@ fn resolve_after_rejects_excluded_node() {
         .resolve_after_for_placement(root, LocalPlacement::After(node), Some(node))
         .unwrap_err();
     assert!(format!("{err:?}").contains("excluded"));
+}
+
+fn order_key(op: &Operation) -> Option<&[u8]> {
+    match &op.kind {
+        OperationKind::Insert { order_key, .. } | OperationKind::Move { order_key, .. } => {
+            Some(order_key)
+        }
+        _ => None,
+    }
+}
+
+// Writers that create one deterministic id can insert a node that already exists. The insert
+// applies as a move, so it must be placed like one.
+#[test]
+fn local_insert_of_existing_node_is_placed_like_a_move() {
+    let root = NodeId::ROOT;
+    let (a, b, node) = (NodeId(1), NodeId(2), NodeId(3));
+    // (siblings before, placement, siblings after)
+    let cases = [
+        // Already last, so Last must skip the node itself.
+        (vec![node], LocalPlacement::Last, vec![node]),
+        (vec![a, b, node], LocalPlacement::Last, vec![a, b, node]),
+        // Already right after the anchor, and elsewhere.
+        (vec![a, node, b], LocalPlacement::After(a), vec![a, node, b]),
+        (vec![a, b, node], LocalPlacement::After(a), vec![a, node, b]),
+    ];
+    for (siblings, placement, expected) in cases {
+        // Same replica and history, so the insert and the move draw the same order-key seed.
+        let replica = || {
+            let mut crdt = TreeCrdt::new(
+                ReplicaId::new(b"a"),
+                MemoryStorage::default(),
+                LamportClock::default(),
+            )
+            .unwrap();
+            for &child in &siblings {
+                crdt.local_insert(root, child, LocalPlacement::Last, None).unwrap();
+            }
+            crdt
+        };
+        let (mut inserted, mut moved) = (replica(), replica());
+        let (insert, _) = inserted.local_insert(root, node, placement, None).unwrap();
+        let (mv, _) = moved.local_move(node, root, placement).unwrap();
+
+        assert_eq!(inserted.children(root).unwrap(), expected, "{placement:?}");
+        assert_eq!(moved.children(root).unwrap(), expected, "{placement:?}");
+        assert_eq!(inserted.parent(node).unwrap(), moved.parent(node).unwrap());
+        assert_eq!(order_key(&insert), order_key(&mv), "{placement:?}");
+    }
+}
+
+#[test]
+fn local_insert_after_itself_is_rejected_like_a_move() {
+    let mut crdt = TreeCrdt::new(
+        ReplicaId::new(b"a"),
+        MemoryStorage::default(),
+        LamportClock::default(),
+    )
+    .unwrap();
+    let root = NodeId::ROOT;
+    let node = NodeId(1);
+    crdt.local_insert(root, node, LocalPlacement::Last, None).unwrap();
+
+    let insert_err = crdt.local_insert(root, node, LocalPlacement::After(node), None).unwrap_err();
+    let move_err = crdt.local_move(node, root, LocalPlacement::After(node)).unwrap_err();
+    assert_eq!(insert_err.to_string(), move_err.to_string());
+    assert_eq!(crdt.children(root).unwrap(), &[node]);
 }
 
 #[test]
