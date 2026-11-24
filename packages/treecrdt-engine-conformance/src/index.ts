@@ -160,6 +160,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioLocalOpsMaterializationWriteId,
     },
     {
+      name: 'local ops: concurrent placements in one gap get distinct order keys',
+      run: scenarioConcurrentPlacementsGetDistinctOrderKeys,
+    },
+    {
       name: 'append/appendMany: idempotent + headLamport monotonic',
       run: scenarioAppendIdempotentAndHeadLamportMonotonic,
     },
@@ -703,6 +707,69 @@ async function scenarioLocalOpsMaterializationWriteId(
     'bound local insert',
   );
   assertChangeSource(boundInsertEvents[0]!, boundNode, boundInsertOp!, 'bound local insert');
+}
+
+async function scenarioConcurrentPlacementsGetDistinctOrderKeys(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const a = ctx.engine;
+  const b = await ctx.createEngine({ docId: ctx.docId, name: 'peer-b' });
+  const root = nodeIdFromInt(0);
+  const orderKey = (op: Operation): string => {
+    if (op.kind.type !== 'insert') throw new Error(`expected insert op, got ${op.kind.type}`);
+    return bytesToHex(op.kind.orderKey);
+  };
+  const childIds = async (engine: TreecrdtEngine, parent: string): Promise<string[]> =>
+    (await engine.tree.node(parent).children()).map((child) => child.id);
+
+  // A single pair of replicas may draw distinct keys by chance; several pairs exercise the race.
+  for (let trial = 0; trial < 12; trial += 1) {
+    const id = (n: number) => nodeIdFromInt(0x1000 + trial * 16 + n);
+    const [parent, first, last] = [id(0), id(1), id(2)];
+    const rA = replicaFromLabel(`concurrent-a${trial}`);
+    const rB = replicaFromLabel(`concurrent-b${trial}`);
+    await b.ops.appendMany([
+      await a.local.insert(rA, root, parent, { type: 'last' }, null),
+      await a.local.insert(rA, parent, first, { type: 'last' }, null),
+      await a.local.insert(rA, parent, last, { type: 'last' }, null),
+    ]);
+
+    // Unaware of each other, both replicas place a node after `first`, append one, and prepend one.
+    const placements = [
+      { type: 'after', after: first },
+      { type: 'last' },
+      { type: 'first' },
+    ] as const;
+    const opsA: Operation[] = [];
+    const opsB: Operation[] = [];
+    for (const [i, placement] of placements.entries()) {
+      opsA.push(await a.local.insert(rA, parent, id(3 + i), placement, null));
+      opsB.push(await b.local.insert(rB, parent, id(6 + i), placement, null));
+    }
+    await a.ops.appendMany(opsB);
+    await b.ops.appendMany(opsA);
+
+    for (const [i, op] of opsA.entries()) {
+      assert(
+        orderKey(op) !== orderKey(opsB[i]!),
+        `trial ${trial}: concurrent ${placements[i]!.type} placements share an order key`,
+      );
+    }
+    const children = await childIds(a, parent);
+    assertArrayEqual(await childIds(b, parent), children, `trial ${trial}: replicas converge`);
+
+    // An insert after the first of the two nodes placed after `first` lands right after it.
+    const [x, y] = [id(3), id(6)];
+    const shownFirst = children.indexOf(x) < children.indexOf(y) ? x : y;
+    const z = id(9);
+    await a.local.insert(rA, parent, z, { type: 'after', after: shownFirst }, null);
+    const after = await childIds(a, parent);
+    assertEqual(
+      after[after.indexOf(shownFirst) + 1],
+      z,
+      `trial ${trial}: insert after ${shownFirst}`,
+    );
+  }
 }
 
 async function scenarioAppendIdempotentAndHeadLamportMonotonic(

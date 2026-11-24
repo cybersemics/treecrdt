@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use crate::ids::NodeId;
 
 const ORDER_KEY_DOMAIN: &[u8] = b"treecrdt/order_key/v0";
 const DIGIT_BYTES: usize = 2;
@@ -64,15 +65,25 @@ fn choose_in_range(seed: &[u8], depth: usize, lo: u16, hi: u16) -> u16 {
     lo + n
 }
 
-/// Allocate a stable ordering key strictly between `left` and `right` (lexicographic order).
+/// Allocate `node`'s ordering key strictly between `left` and `right` (lexicographic order).
 ///
 /// Keys are encoded as a variable-length sequence of big-endian `u16` digits, compared
 /// lexicographically. The generator is LSEQ-inspired: it prefers allocating within a bounded
 /// interval near one side to reduce expected key growth in repeated "insert between the same
 /// neighbors" workloads.
-pub fn allocate_between(left: Option<&[u8]>, right: Option<&[u8]>, seed: &[u8]) -> Result<Vec<u8>> {
+///
+/// Concurrent placements in one gap can draw the same position, so the key ends with `node`'s id,
+/// which keeps their keys distinct, and a final `1` digit, which leaves room below the key. The
+/// position is already below `right` at one of its digits (when `right` ends in a non-zero digit,
+/// as allocated keys do), so the suffix keeps the key below `right`.
+pub fn allocate_between(
+    left: Option<&[u8]>,
+    right: Option<&[u8]>,
+    seed: &[u8],
+    node: NodeId,
+) -> Result<Vec<u8>> {
     let left_digits = decode_digits(left.unwrap_or_default())?;
-    let right_digits = decode_digits(right.unwrap_or_default())?;
+    let mut right_digits = decode_digits(right.unwrap_or_default())?;
 
     let mut out: Vec<u16> = Vec::new();
     let mut depth: usize = 0;
@@ -89,34 +100,32 @@ pub fn allocate_between(left: Option<&[u8]>, right: Option<&[u8]>, seed: &[u8]) 
         if u32::from(rd) > u32::from(ld) + 1 {
             let gap = rd - ld - 1;
             let boundary = DEFAULT_BOUNDARY.min(gap);
-            let choose_left = choose_side(seed, depth);
 
-            let (lo, hi) = if gap > boundary {
-                if choose_left {
-                    (ld + 1, ld + boundary)
-                } else {
-                    (rd - boundary, rd - 1)
-                }
-            } else {
-                (ld + 1, rd - 1)
+            // Pick a `boundary`-wide band next to the bound that has a digit here, leaving the
+            // open side for the next insert at the same position.
+            let lo = match (left_digits.get(depth), right_digits.get(depth)) {
+                (Some(_), None) => ld + 1,
+                (None, Some(_)) => rd - boundary,
+                (None, None) => ld + 1 + (gap - boundary) / 2,
+                (Some(_), Some(_)) if choose_side(seed, depth) => ld + 1,
+                (Some(_), Some(_)) => rd - boundary,
             };
 
-            out.push(choose_in_range(seed, depth, lo, hi));
-            break;
-        }
-
-        // Once a concrete left digit is immediately below the upper digit, its remaining suffix
-        // can be extended without comparing it against the right key's suffix.
-        if rd > ld && depth < left_digits.len() {
-            out.extend_from_slice(&left_digits[depth..]);
-            out.push(choose_in_range(seed, left_digits.len(), 1, u16::MAX));
+            out.push(choose_in_range(seed, depth, lo, lo + boundary - 1));
             break;
         }
 
         // No room at this level; extend the prefix and continue deeper.
+        if rd > ld {
+            // `ld` is below `rd`, so `right` no longer bounds deeper digits.
+            right_digits.clear();
+        }
         out.push(ld);
         depth += 1;
     }
 
-    Ok(encode_digits(&out))
+    let mut key = encode_digits(&out);
+    key.extend_from_slice(&node.0.to_be_bytes());
+    key.extend_from_slice(&1u16.to_be_bytes());
+    Ok(key)
 }
