@@ -72,7 +72,7 @@ fn choose_in_range(seed: &[u8], depth: usize, lo: u16, hi: u16) -> u16 {
 /// neighbors" workloads.
 pub fn allocate_between(left: Option<&[u8]>, right: Option<&[u8]>, seed: &[u8]) -> Result<Vec<u8>> {
     let left_digits = decode_digits(left.unwrap_or_default())?;
-    let right_digits = decode_digits(right.unwrap_or_default())?;
+    let mut right_digits = decode_digits(right.unwrap_or_default())?;
 
     let mut out: Vec<u16> = Vec::new();
     let mut depth: usize = 0;
@@ -89,31 +89,26 @@ pub fn allocate_between(left: Option<&[u8]>, right: Option<&[u8]>, seed: &[u8]) 
         if u32::from(rd) > u32::from(ld) + 1 {
             let gap = rd - ld - 1;
             let boundary = DEFAULT_BOUNDARY.min(gap);
-            let choose_left = choose_side(seed, depth);
 
-            let (lo, hi) = if gap > boundary {
-                if choose_left {
-                    (ld + 1, ld + boundary)
-                } else {
-                    (rd - boundary, rd - 1)
-                }
-            } else {
-                (ld + 1, rd - 1)
+            // Pick a `boundary`-wide band next to the bound that has a digit here, leaving the
+            // open side for the next insert at the same position.
+            let lo = match (left_digits.get(depth), right_digits.get(depth)) {
+                (Some(_), None) => ld + 1,
+                (None, Some(_)) => rd - boundary,
+                (None, None) => ld + 1 + (gap - boundary) / 2,
+                (Some(_), Some(_)) if choose_side(seed, depth) => ld + 1,
+                (Some(_), Some(_)) => rd - boundary,
             };
 
-            out.push(choose_in_range(seed, depth, lo, hi));
-            break;
-        }
-
-        // Once a concrete left digit is immediately below the upper digit, its remaining suffix
-        // can be extended without comparing it against the right key's suffix.
-        if rd > ld && depth < left_digits.len() {
-            out.extend_from_slice(&left_digits[depth..]);
-            out.push(choose_in_range(seed, left_digits.len(), 1, u16::MAX));
+            out.push(choose_in_range(seed, depth, lo, lo + boundary - 1));
             break;
         }
 
         // No room at this level; extend the prefix and continue deeper.
+        if rd > ld {
+            // `ld` is below `rd`, so `right` no longer bounds deeper digits.
+            right_digits.clear();
+        }
         out.push(ld);
         depth += 1;
     }
