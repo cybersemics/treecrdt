@@ -28,6 +28,8 @@ struct JsonOp {
     order_key: Option<Vec<u8>>,
     known_state: Option<Vec<u8>>,
     payload: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    if_absent: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -196,12 +198,20 @@ fn decode_ops_or_local_result(json: &str) -> Vec<JsonOp> {
 }
 
 fn json_op(op: &Operation) -> JsonOp {
+    let if_absent = matches!(
+        op.kind,
+        OperationKind::Insert {
+            if_absent: true,
+            ..
+        }
+    );
     let (kind, parent, node, new_parent, order_key, payload) = match &op.kind {
         OperationKind::Insert {
             parent,
             node,
             order_key,
             payload,
+            ..
         } => (
             "insert",
             Some(parent.0.to_be_bytes()),
@@ -247,6 +257,7 @@ fn json_op(op: &Operation) -> JsonOp {
         order_key,
         known_state: op.meta.known_state.as_ref().map(|vector| vector.encode().unwrap()),
         payload,
+        if_absent,
     }
 }
 
@@ -426,6 +437,13 @@ impl MaterializationConformanceHarness for SqliteConformanceHarness {
         .iter()
         .map(|op| op.kind.clone())
         .collect()
+    }
+
+    fn pull_children(&self, source: &Self, parent: NodeId) {
+        let refs = oprefs_children(&source.conn, &node_bytes_from_id(parent));
+        if !refs.is_empty() {
+            append_ops(&self.conn, &ops_by_oprefs(&source.conn, &refs));
+        }
     }
 }
 
@@ -675,6 +693,18 @@ fn remote_replayed_delete_is_reported_once() {
 }
 
 #[test]
+fn remote_late_op_after_rejected_self_move_keeps_accepted_parent() {
+    let harness = setup_conformance_harness();
+    materialization_conformance::late_op_after_rejected_self_move_keeps_accepted_parent(&harness);
+}
+
+#[test]
+fn remote_late_op_after_cycle_rejected_move_keeps_accepted_parent() {
+    let harness = setup_conformance_harness();
+    materialization_conformance::late_op_after_cycle_rejected_move_keeps_accepted_parent(&harness);
+}
+
+#[test]
 fn remote_append_replay_from_start_frontier_catches_up_immediately() {
     let harness = setup_conformance_harness();
     materialization_conformance::replay_from_start_frontier_catches_up_immediately(&harness);
@@ -699,6 +729,28 @@ fn remote_append_out_of_order_delete_suffix_falls_back_and_restores_parent() {
     let harness = setup_conformance_harness();
     materialization_conformance::out_of_order_delete_suffix_falls_back_and_restores_parent(
         &harness,
+    );
+}
+
+#[test]
+fn remote_late_create_only_insert_voids_the_shown_one() {
+    let harness = setup_conformance_harness();
+    materialization_conformance::late_create_only_insert_voids_the_shown_one(&harness);
+}
+
+#[test]
+fn remote_scoped_peer_learns_its_create_only_insert_was_voided() {
+    let (server, peer) = (setup_conformance_harness(), setup_conformance_harness());
+    materialization_conformance::scoped_peer_learns_its_create_only_insert_was_voided(
+        &server, &peer,
+    );
+}
+
+#[test]
+fn remote_scoped_peer_learns_its_own_create_only_insert_changed_nothing() {
+    let (server, peer) = (setup_conformance_harness(), setup_conformance_harness());
+    materialization_conformance::scoped_peer_learns_its_own_create_only_insert_changed_nothing(
+        &server, &peer,
     );
 }
 
@@ -1203,6 +1255,208 @@ fn local_at_rejects_wrong_args_and_keys_that_are_not_whole_digits() {
 
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0)).unwrap();
     assert_eq!(count, 1);
+}
+
+#[test]
+fn local_insert_if_absent_writes_nothing_for_a_node_in_the_tree() {
+    let conn = setup_conn();
+
+    let replica = b"r1".to_vec();
+    let root = node_bytes(0);
+    let node = node_bytes(1);
+    let other = node_bytes(2);
+    let insert_if_absent = |sql: &str, node: &[u8]| -> Option<String> {
+        conn.query_row(sql, rusqlite::params![replica, root, node], |row| {
+            row.get(0)
+        })
+        .unwrap()
+    };
+
+    // It takes treecrdt_local_insert's args, placement args included.
+    let json = insert_if_absent(
+        "SELECT treecrdt_local_insert_if_absent(?1, ?2, ?3, 'at', NULL, X'05', X'0005')",
+        &node,
+    )
+    .expect("an absent node is created");
+    let op = &decode_ops_or_local_result(&json)[0];
+    assert_eq!(op.kind, "insert");
+    assert!(op.if_absent);
+    assert_eq!(
+        (op.counter, op.order_key.clone(), op.payload.clone()),
+        (
+            1,
+            Some([vec![0x00, 0x05], node.clone(), vec![0x00, 0x01]].concat()),
+            Some(vec![0x05])
+        )
+    );
+    let outcome =
+        json_outcome_to_core(serde_json::from_str::<JsonLocalOpResult>(&json).unwrap().outcome);
+    assert_eq!(outcome.affected_nodes(), [NodeId::ROOT, NodeId(1)]);
+    assert_eq!(visible_children(&conn, &root), vec![node.clone()]);
+
+    // The node is in the tree now, deleted too, so the function returns NULL and writes nothing,
+    // not even the catch-up of a pending replay.
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_local_delete(?1, ?2)",
+            rusqlite::params![replica, node],
+            |row| row.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        "UPDATE tree_meta SET replay_lamport = 0, replay_replica = X'', replay_counter = 0",
+        [],
+    )
+    .unwrap();
+    let meta = read_tree_meta(&conn);
+    for sql in [
+        "SELECT treecrdt_local_insert_if_absent(?1, ?2, ?3, 'first', NULL, NULL)",
+        "SELECT treecrdt_local_insert_if_absent(?1, ?2, ?3, 'between', NULL, NULL, NULL, NULL)",
+    ] {
+        assert_eq!(insert_if_absent(sql, &node), None, "{sql}");
+    }
+    assert_eq!(read_tree_meta(&conn), meta);
+    assert_eq!(
+        read_replay_frontier(&conn),
+        (Some(0), Some(Vec::new()), Some(0))
+    );
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0)).unwrap();
+    assert_eq!(count, 2);
+
+    // An absent node takes the next counter.
+    let json = insert_if_absent(
+        "SELECT treecrdt_local_insert_if_absent(?1, ?2, ?3, 'between', NULL, NULL, NULL, X'0005')",
+        &other,
+    )
+    .expect("an absent node is created");
+    let op = &decode_ops_or_local_result(&json)[0];
+    assert!(op.if_absent);
+    assert_eq!(op.counter, 3);
+    assert!(op.order_key.as_deref().unwrap() < [0x00, 0x05].as_slice());
+
+    let error = |sql: &str| {
+        conn.query_row(sql, rusqlite::params![replica, root, other], |row| {
+            row.get::<_, String>(0)
+        })
+        .unwrap_err()
+        .to_string()
+    };
+    for (sql, message) in [
+        (
+            "SELECT treecrdt_local_insert_if_absent(?1, ?2, ?3, 'at', NULL, NULL)",
+            "treecrdt_local_insert_if_absent: placement at takes one trailing arg (key)",
+        ),
+        (
+            "SELECT treecrdt_local_insert_if_absent(?1, ?2, ?3, 'first')",
+            "treecrdt_local_insert_if_absent expects 6 args",
+        ),
+    ] {
+        assert!(error(sql).contains(message), "{sql}: {}", error(sql));
+    }
+}
+
+#[test]
+fn create_only_flag_survives_storage_and_both_append_paths() {
+    let conn = setup_conn();
+
+    let setup = ReplicaId::new(b"setup");
+    let (p1, p2, n) = (NodeId(1), NodeId(2), NodeId(10));
+    let shown = Operation::insert_if_absent(
+        &ReplicaId::new(b"b"),
+        1,
+        11,
+        p2,
+        n,
+        vec![0x00, 0x01],
+        Some(vec![2]),
+    );
+    append_ops(
+        &conn,
+        &json_ops(&[
+            Operation::insert(&setup, 1, 1, NodeId::ROOT, p1, vec![0x00, 0x01]),
+            Operation::insert(&setup, 2, 2, NodeId::ROOT, p2, vec![0x00, 0x02]),
+            shown,
+        ]),
+    );
+    assert_eq!(
+        visible_children(&conn, &node_bytes(2)),
+        vec![node_bytes(10)]
+    );
+
+    // The single-op append takes the flag as a tenth arg. This earlier create arrives late, so the
+    // append catches up from the stored ops: the shown create must come back create-only.
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_append_op(?1, ?2, ?3, 'insert', ?4, ?5, NULL, ?6, ?7, 1)",
+            rusqlite::params![
+                b"a".to_vec(),
+                1i64,
+                10i64,
+                node_bytes(1),
+                node_bytes(10),
+                vec![0x00u8, 0x01],
+                vec![1u8]
+            ],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        visible_children(&conn, &node_bytes(1)),
+        vec![node_bytes(10)]
+    );
+    assert!(visible_children(&conn, &node_bytes(2)).is_empty());
+    assert_eq!(payload_bytes(&conn, &node_bytes(10)), Some(vec![1]));
+
+    // Op reads write the flag for create-only inserts only.
+    let json: String =
+        conn.query_row("SELECT treecrdt_ops_since(0)", [], |row| row.get(0)).unwrap();
+    assert_eq!(json.matches("if_absent").count(), 2, "{json}");
+    let flags: Vec<(u64, bool)> = decode_ops_or_local_result(&json)
+        .iter()
+        .map(|op| (op.lamport, op.if_absent))
+        .collect();
+    assert_eq!(flags, [(1, false), (2, false), (10, true), (11, true)]);
+    let indexed = ops_by_oprefs(&conn, &oprefs_children(&conn, &node_bytes(1)));
+    assert_eq!(indexed.len(), 1);
+    assert!(indexed[0].if_absent && indexed[0].lamport == 10);
+
+    // Only an insert can be create-only.
+    let error = conn
+        .query_row(
+            "SELECT treecrdt_append_op(?1, 2, 12, 'payload', NULL, ?2, NULL, NULL, NULL, 1)",
+            rusqlite::params![b"a".to_vec(), node_bytes(10)],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("only an insert can be create-only"),
+        "{error}"
+    );
+    let mut payload = json_op(&Operation::set_payload(
+        &ReplicaId::new(b"a"),
+        2,
+        12,
+        n,
+        vec![3],
+    ));
+    payload.if_absent = true;
+    let mut encoded = Vec::new();
+    ciborium::ser::into_writer(&[payload], &mut encoded).unwrap();
+    let error = conn
+        .query_row(
+            "SELECT treecrdt_append_ops(?1)",
+            rusqlite::params![encoded],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("only an insert can be create-only"),
+        "{error}"
+    );
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0)).unwrap();
+    assert_eq!(count, 4);
 }
 
 #[test]

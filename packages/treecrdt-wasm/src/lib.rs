@@ -25,6 +25,9 @@ struct JsOp {
     order_key: Option<String>, // hex
     known_state: Option<Vec<u8>>,
     payload: Option<String>, // hex
+    /// Written only for create-only inserts.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    if_absent: bool,
 }
 
 #[derive(Deserialize)]
@@ -57,6 +60,9 @@ struct KindInput {
     new_parent: Option<String>,
     order_key: Option<ByteBuf>,
     payload: Option<ByteBuf>,
+    /// True for a create-only insert.
+    #[serde(default)]
+    if_absent: bool,
 }
 
 #[derive(Deserialize)]
@@ -100,12 +106,20 @@ fn node_to_hex(id: NodeId) -> String {
 }
 
 fn op_to_js(op: &Operation) -> Result<JsOp, String> {
+    let if_absent = matches!(
+        op.kind,
+        OperationKind::Insert {
+            if_absent: true,
+            ..
+        }
+    );
     let (kind, parent, node, new_parent, order_key, payload) = match &op.kind {
         OperationKind::Insert {
             parent,
             node,
             order_key,
             payload,
+            ..
         } => (
             "insert",
             Some(*parent),
@@ -155,6 +169,7 @@ fn op_to_js(op: &Operation) -> Result<JsOp, String> {
         order_key,
         known_state,
         payload,
+        if_absent,
     })
 }
 
@@ -175,12 +190,16 @@ fn js_to_op(js: OperationInput) -> Result<Operation, String> {
         .map_err(|e| e.to_string())?;
     let input = js.kind;
     let node = hex_to_node(&input.node)?;
+    if input.if_absent && !matches!(input.kind, KindTag::Insert) {
+        return Err("only an insert can be create-only (ifAbsent)".into());
+    }
     let kind = match input.kind {
         KindTag::Insert => OperationKind::Insert {
             parent: hex_to_node(&input.parent.ok_or("insert requires parent")?)?,
             node,
             order_key: input.order_key.ok_or("insert requires orderKey")?.into_vec(),
             payload: input.payload.map(ByteBuf::into_vec),
+            if_absent: input.if_absent,
         },
         KindTag::Move => OperationKind::Move {
             node,

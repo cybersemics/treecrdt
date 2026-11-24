@@ -165,6 +165,21 @@ pub trait ExactPayloadStore: PayloadStore {
 pub trait ParentOpIndex {
     fn reset(&mut self) -> Result<()>;
     fn record(&mut self, parent: NodeId, op_id: &OperationId, seq: u64) -> Result<()>;
+    /// Records under `parent` the op that put `node` under `placed_under` before `before`: the
+    /// latest insert or move of `node` that names `placed_under` and sorts before `before`.
+    ///
+    /// Core calls it for a create-only insert that changed nothing, which it records under the
+    /// parent it names: a peer that syncs only that parent's children then replays this placement
+    /// first and voids the create too. Finding the op takes the op log, which an index kept beside
+    /// it can query.
+    fn record_placement(
+        &mut self,
+        parent: NodeId,
+        node: NodeId,
+        placed_under: NodeId,
+        before: &Operation,
+        seq: u64,
+    ) -> Result<()>;
 }
 
 pub trait TruncatingParentOpIndex: ParentOpIndex {
@@ -184,6 +199,17 @@ impl ParentOpIndex for NoopParentOpIndex {
     }
 
     fn record(&mut self, _parent: NodeId, _op_id: &OperationId, _seq: u64) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_placement(
+        &mut self,
+        _parent: NodeId,
+        _node: NodeId,
+        _placed_under: NodeId,
+        _before: &Operation,
+        _seq: u64,
+    ) -> Result<()> {
         Ok(())
     }
 }

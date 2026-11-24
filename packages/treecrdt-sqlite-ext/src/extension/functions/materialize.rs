@@ -196,6 +196,9 @@ fn append_op_to_operation(op: &AppendOp) -> Result<treecrdt_core::Operation, c_i
         None => None,
     };
 
+    if op.if_absent && op.kind != "insert" {
+        return Err(SQLITE_ERROR as c_int);
+    }
     let (kind, known_state) = match op.kind.as_str() {
         "insert" => (
             OperationKind::Insert {
@@ -203,6 +206,7 @@ fn append_op_to_operation(op: &AppendOp) -> Result<treecrdt_core::Operation, c_i
                 node,
                 order_key: op.order_key.clone().ok_or(SQLITE_ERROR as c_int)?,
                 payload: op.payload.clone(),
+                if_absent: op.if_absent,
             },
             None,
         ),

@@ -29,6 +29,14 @@ pub enum OperationKind {
         /// When present, this is treated like a `Payload` op at the same `(lamport, replica, counter)`,
         /// with last-writer-wins ordering per node.
         payload: Option<Vec<u8>>,
+        /// Create-only: when `node` is already in the tree at this op's place in the total order
+        /// (ROOT, TRASH, or attached anywhere, deleted included), the insert changes nothing, its
+        /// payload included. A plain insert (`false`) moves a node that exists, as `Move` does.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "std::ops::Not::not")
+        )]
+        if_absent: bool,
     },
     Move {
         node: NodeId,
@@ -114,6 +122,34 @@ impl Operation {
                 node,
                 order_key: order_key.into(),
                 payload,
+                if_absent: false,
+            },
+        }
+    }
+
+    /// A create-only insert: it does nothing wherever `node` is already in the tree when it
+    /// applies, so it can never move a node that another op placed.
+    pub fn insert_if_absent(
+        replica: &ReplicaId,
+        counter: u64,
+        lamport: Lamport,
+        parent: NodeId,
+        node: NodeId,
+        order_key: impl Into<Vec<u8>>,
+        payload: Option<Vec<u8>>,
+    ) -> Self {
+        Self {
+            meta: OperationMetadata {
+                id: OperationId::new(replica, counter),
+                lamport,
+                known_state: None,
+            },
+            kind: OperationKind::Insert {
+                parent,
+                node,
+                order_key: order_key.into(),
+                payload,
+                if_absent: true,
             },
         }
     }

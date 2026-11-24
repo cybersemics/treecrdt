@@ -169,6 +169,18 @@ export async function createClientFromBackend(runtime: RuntimeConnection): Promi
         ...writeOpts,
         ...(payload ? { payload } : {}),
       }),
+    insertIfAbsent: (
+      replica: ReplicaId,
+      parent: string,
+      node: string,
+      placement: TreecrdtSqlitePlacement,
+      payload: Uint8Array | null,
+      writeOpts?: LocalWriteOptions,
+    ) =>
+      localWriterFor(replica).insertIfAbsent(parent, node, placement, {
+        ...writeOpts,
+        ...(payload ? { payload } : {}),
+      }),
     move: (
       replica: ReplicaId,
       node: string,

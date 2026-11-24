@@ -92,6 +92,15 @@ the same way until the old build's tabs close their clients or go away.
 
 Callers only see `TreecrdtClient` (`ops` / `tree` / `local` / `onMaterialized` / `onMaterializedDurable` / `close` / `drop`).
 
+### Creating a node that may already exist
+
+`local.insertIfAbsent` writes a create-only insert, which changes nothing on any replica where another op placed the node first. Use it for nodes that devices create on their own: devices that create the same node at a key they compute the same way agree, and none of them moves the node once someone has placed it.
+
+```ts
+const op = await client.local.insertIfAbsent(replica, parent, node, { type: 'at', key }, payload);
+// null when the node is already in the tree, deleted included; nothing was written
+```
+
 ### Reading many nodes at once
 
 `tree.read(ids)` reads many nodes in one worker call, all from the same state. Use it where you would otherwise read node by node through `tree.node(id)`:

@@ -118,10 +118,12 @@ function buildAppendOp(
   )[];
 
   switch (kind.type) {
-    case 'insert':
+    case 'insert': {
+      // Only a create-only insert passes the tenth arg, which older extensions lack.
+      const ifAbsent = kind.ifAbsent ? ',1' : '';
       if (kind.payload !== undefined) {
         return {
-          sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,?8)',
+          sql: `SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,?8${ifAbsent})`,
           params: [
             ...base,
             'insert',
@@ -133,7 +135,7 @@ function buildAppendOp(
         };
       }
       return {
-        sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,NULL)',
+        sql: `SELECT treecrdt_append_op(?1,?2,?3,?4,?5,?6,NULL,?7,NULL${ifAbsent})`,
         params: [
           ...base,
           'insert',
@@ -142,6 +144,7 @@ function buildAppendOp(
           kind.orderKey,
         ],
       };
+    }
     case 'move':
       return {
         sql: 'SELECT treecrdt_append_op(?1,?2,?3,?4,NULL,?5,?6,?7,NULL)',
@@ -216,6 +219,7 @@ function buildAppendOpsPayload(
         node: serialize(kind.node),
         new_parent: null,
         ...(kind.payload ? { payload: kind.payload } : {}),
+        ...(kind.ifAbsent ? { if_absent: true } : {}),
       };
     } else if (kind.type === 'move') {
       return {
@@ -718,6 +722,13 @@ export type TreecrdtSqliteWriter = {
     placement: TreecrdtSqlitePlacement,
     opts?: { payload?: Uint8Array } & LocalWriteOptions,
   ) => Promise<Operation>;
+  /** `insert` as a create-only insert. See `TreecrdtEngineLocal.insertIfAbsent`. */
+  insertIfAbsent: (
+    parent: string,
+    node: string,
+    placement: TreecrdtSqlitePlacement,
+    opts?: { payload?: Uint8Array } & LocalWriteOptions,
+  ) => Promise<Operation | null>;
   move: (
     node: string,
     newParent: string,
@@ -754,34 +765,35 @@ export function createTreecrdtSqliteWriter(
   const replica = opts.replica;
   const replicaBytes = replicaIdToBytes(replica);
 
-  const getLocalOp = async (
+  /** Runs a local op function. Null when it returned NULL, which means it wrote nothing. */
+  const writeLocalOp = async (
     sql: string,
     params: SqlCall['params'],
     writeOpts?: LocalWriteOptions,
-  ) => {
+  ): Promise<Operation | null> => {
+    // wa-sqlite reads a NULL result as ''.
+    const read = async () => {
+      const text = await runner.getText(sql, params);
+      return text ? decodeLocalOpResult(JSON.parse(text), sql) : null;
+    };
     const authSession = writeOpts?.authSession;
     if (!authSession) {
-      const { op, outcome } = decodeLocalOpResult(
-        await sqliteGetJson<any>(runner, sql, params),
-        sql,
-      );
-      emitLocalOutcome(outcome, opts.onMaterialized, writeOpts?.writeId);
-      return op;
+      const result = await read();
+      if (result) emitLocalOutcome(result.outcome, opts.onMaterialized, writeOpts?.writeId);
+      return result?.op ?? null;
     }
 
     const savepoint = `treecrdt_local_auth_${++localAuthSavepointCounter}`;
     let released = false;
     await sqliteExec(runner, `SAVEPOINT ${savepoint}`);
     try {
-      const { op, outcome } = decodeLocalOpResult(
-        await sqliteGetJson<any>(runner, sql, params),
-        sql,
-      );
-      await authSession.authorizeLocalOps([op]);
+      const result = await read();
+      if (result) await authSession.authorizeLocalOps([result.op]);
       await sqliteExec(runner, `RELEASE ${savepoint}`);
       released = true;
-      emitLocalOutcome(outcome, opts.onMaterialized, writeOpts?.writeId);
-      return op;
+      if (!result) return null;
+      emitLocalOutcome(result.outcome, opts.onMaterialized, writeOpts?.writeId);
+      return result.op;
     } catch (err) {
       if (!released) {
         try {
@@ -794,14 +806,25 @@ export function createTreecrdtSqliteWriter(
     }
   };
 
-  const insert = async (
+  const getLocalOp = async (
+    sql: string,
+    params: SqlCall['params'],
+    writeOpts?: LocalWriteOptions,
+  ): Promise<Operation> => {
+    const op = await writeLocalOp(sql, params, writeOpts);
+    if (!op) throw new Error(`expected JSON result for query: ${sql}`);
+    return op;
+  };
+
+  /** A call of `fn`, which takes the args of treecrdt_local_insert. */
+  const insertCall = (
+    fn: string,
     parent: string,
     node: string,
     placement: TreecrdtSqlitePlacement,
-    o: { payload?: Uint8Array } & LocalWriteOptions = {},
-  ) => {
+    payload: Uint8Array | null,
+  ): SqlCall => {
     const afterNode = placement.type === 'after' ? nodeIdToBytes16(placement.after) : null;
-    const payload = o.payload ?? null;
     const params = [
       replicaBytes,
       nodeIdToBytes16(parent),
@@ -813,20 +836,47 @@ export function createTreecrdtSqliteWriter(
     // Placements by sibling keep the 6-arg call, which extensions without 'at' and 'between' also
     // accept.
     if (placement.type === 'at') {
-      return getLocalOp(
-        'SELECT treecrdt_local_insert(?1,?2,?3,?4,?5,?6,?7)',
-        [...params, placement.key],
-        o,
-      );
+      return { sql: `SELECT ${fn}(?1,?2,?3,?4,?5,?6,?7)`, params: [...params, placement.key] };
     }
     if (placement.type === 'between') {
-      return getLocalOp(
-        'SELECT treecrdt_local_insert(?1,?2,?3,?4,?5,?6,?7,?8)',
-        [...params, ...betweenBounds(placement)],
-        o,
-      );
+      return {
+        sql: `SELECT ${fn}(?1,?2,?3,?4,?5,?6,?7,?8)`,
+        params: [...params, ...betweenBounds(placement)],
+      };
     }
-    return getLocalOp('SELECT treecrdt_local_insert(?1,?2,?3,?4,?5,?6)', params, o);
+    return { sql: `SELECT ${fn}(?1,?2,?3,?4,?5,?6)`, params };
+  };
+
+  const insert = async (
+    parent: string,
+    node: string,
+    placement: TreecrdtSqlitePlacement,
+    o: { payload?: Uint8Array } & LocalWriteOptions = {},
+  ) => {
+    const { sql, params } = insertCall(
+      'treecrdt_local_insert',
+      parent,
+      node,
+      placement,
+      o.payload ?? null,
+    );
+    return getLocalOp(sql, params, o);
+  };
+
+  const insertIfAbsent = async (
+    parent: string,
+    node: string,
+    placement: TreecrdtSqlitePlacement,
+    o: { payload?: Uint8Array } & LocalWriteOptions = {},
+  ) => {
+    const { sql, params } = insertCall(
+      'treecrdt_local_insert_if_absent',
+      parent,
+      node,
+      placement,
+      o.payload ?? null,
+    );
+    return writeLocalOp(sql, params, o);
   };
 
   const move = async (
@@ -878,7 +928,7 @@ export function createTreecrdtSqliteWriter(
     );
   };
 
-  return { insert, move, delete: del, payload };
+  return { insert, insertIfAbsent, move, delete: del, payload };
 }
 
 // ---- Decoders for extension JSON payloads ----
@@ -1174,6 +1224,7 @@ export function decodeSqliteOps(raw: unknown): Operation[] {
           node: decodeNodeId(row.node),
           orderKey,
           ...(payload !== undefined ? { payload } : {}),
+          ...(row.if_absent ? { ifAbsent: true } : {}),
         },
       } as Operation;
     }

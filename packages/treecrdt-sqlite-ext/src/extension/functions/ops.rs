@@ -52,7 +52,7 @@ pub(super) unsafe extern "C" fn treecrdt_ops_by_oprefs(
 
     let db = sqlite_context_db_handle(ctx);
     let sql = CString::new(
-        "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
+        "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload,if_absent \
          FROM ops \
          WHERE op_ref = ?1",
     )
@@ -138,6 +138,9 @@ struct JsonOp {
     order_key: Option<Vec<u8>>,
     known_state: Option<Vec<u8>>,
     payload: Option<Vec<u8>>,
+    /// Written only for create-only inserts.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    if_absent: bool,
 }
 
 pub(super) unsafe extern "C" fn treecrdt_ops_since(
@@ -159,7 +162,7 @@ pub(super) unsafe extern "C" fn treecrdt_ops_since(
 
     let db = sqlite_context_db_handle(ctx);
     let sql = CString::new(
-        "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
+        "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload,if_absent \
          FROM ops \
          WHERE lamport > ?1 \
          AND (?2 IS NULL OR parent = ?2 OR node = ?2 OR new_parent = ?2) \
@@ -278,6 +281,7 @@ fn read_row(stmt: *mut sqlite3_stmt) -> Result<JsonOp, c_int> {
                 Some(slice::from_raw_parts(ptr, len).to_vec())
             }
         };
+        let if_absent = sqlite_column_int64(stmt, 10) != 0;
 
         Ok(JsonOp {
             replica,
@@ -290,6 +294,7 @@ fn read_row(stmt: *mut sqlite3_stmt) -> Result<JsonOp, c_int> {
             order_key,
             known_state,
             payload,
+            if_absent,
         })
     }
 }

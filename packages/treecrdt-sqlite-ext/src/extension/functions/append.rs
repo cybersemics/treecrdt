@@ -3,7 +3,8 @@ use super::util::sqlite_result_json;
 use super::*;
 
 /// Append an operation row to the `ops` table. Args:
-/// replica BLOB, counter INT, lamport INT, kind TEXT, parent BLOB|null, node BLOB, new_parent BLOB|null, order_key BLOB|null, known_state_or_payload BLOB|null
+/// replica BLOB, counter INT, lamport INT, kind TEXT, parent BLOB|null, node BLOB, new_parent BLOB|null, order_key BLOB|null, known_state_or_payload BLOB|null,
+/// then optionally if_absent INT, nonzero for a create-only insert.
 pub(super) unsafe extern "C" fn treecrdt_append_op(
     ctx: *mut sqlite3_context,
     argc: c_int,
@@ -14,10 +15,10 @@ pub(super) unsafe extern "C" fn treecrdt_append_op(
         return;
     }
 
-    if argc != 9 {
+    if !(9..=10).contains(&argc) {
         sqlite_result_error(
             ctx,
-            b"treecrdt_append_op expects 9 args\0".as_ptr() as *const c_char,
+            c"treecrdt_append_op expects 9 args, then optionally if_absent".as_ptr(),
         );
         return;
     }
@@ -100,6 +101,7 @@ pub(super) unsafe extern "C" fn treecrdt_append_op(
     let new_parent = read_opt_blob(args[6]);
     let order_key = read_opt_blob(args[7]);
     let known_state_or_payload = read_opt_blob(args[8]);
+    let if_absent = argc == 10 && unsafe { sqlite_value_int64(args[9]) } != 0;
 
     let (known_state, payload) = match kind.as_str() {
         // Deletes must carry known_state (writer-side subtree version vector).
@@ -136,6 +138,13 @@ pub(super) unsafe extern "C" fn treecrdt_append_op(
         );
         return;
     }
+    if if_absent && kind != "insert" {
+        sqlite_result_error(
+            ctx,
+            c"treecrdt_append_op: only an insert can be create-only (if_absent)".as_ptr(),
+        );
+        return;
+    }
 
     let op = AppendOp {
         replica,
@@ -148,6 +157,7 @@ pub(super) unsafe extern "C" fn treecrdt_append_op(
         order_key,
         known_state,
         payload,
+        if_absent,
     };
 
     match append_ops_impl(db, &doc_id, "treecrdt_append_op", std::slice::from_ref(&op)) {
@@ -176,6 +186,9 @@ pub(super) struct AppendOp {
     pub(super) known_state: Option<Vec<u8>>,
     #[serde(default, with = "serde_bytes")]
     pub(super) payload: Option<Vec<u8>>,
+    /// True for a create-only insert.
+    #[serde(default)]
+    pub(super) if_absent: bool,
 }
 
 /// Batch append: accepts a CBOR BLOB array with fields matching the ops table.
@@ -265,6 +278,13 @@ pub(super) unsafe extern "C" fn treecrdt_append_ops(
                 ctx,
                 b"treecrdt_append_ops: insert/move op missing order_key\0".as_ptr()
                     as *const c_char,
+            );
+            return;
+        }
+        if op.if_absent && op.kind != "insert" {
+            sqlite_result_error(
+                ctx,
+                c"treecrdt_append_ops: only an insert can be create-only (if_absent)".as_ptr(),
             );
             return;
         }

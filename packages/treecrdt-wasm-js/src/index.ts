@@ -116,6 +116,8 @@ type JsOp = {
   order_key?: string | null;
   known_state?: number[] | null;
   payload?: string | null;
+  /** Set only on a create-only insert. */
+  if_absent?: true;
 };
 
 // Serde's byte-buffer reader uses realm-local instanceof checks.

@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use crate::affected::coalesce_materialization_changes;
+use crate::affected::{affected_parents, coalesce_materialization_changes};
 use crate::ops::{cmp_op_key, cmp_ops, Operation};
 use crate::traits::{
     Clock, ExactNodeStore, ExactPayloadStore, LamportClock, MemoryNodeStore, MemoryPayloadStore,
@@ -142,25 +142,6 @@ pub trait FrontierRewindStorage: Storage {
         Ok(())
     }
 
-    fn latest_structural_before(
-        &self,
-        node: NodeId,
-        before: &MaterializationFrontierRef<'_>,
-    ) -> Result<Option<Operation>> {
-        let mut ops = self.load_since(0)?;
-        ops.sort_by(cmp_ops);
-        Ok(ops.into_iter().rfind(|op| {
-            let frontier = frontier_from_op(op);
-            cmp_frontiers(&frontier, before) == Ordering::Less
-                && matches!(
-                    op.kind,
-                    crate::ops::OperationKind::Insert { node: n, .. }
-                        | crate::ops::OperationKind::Move { node: n, .. }
-                        if n == node
-                )
-        }))
-    }
-
     fn latest_payload_before(
         &self,
         node: NodeId,
@@ -257,14 +238,26 @@ pub struct PersistedRemoteStores<C, N, P, I> {
     pub index: I,
 }
 
+/// The args of one [`ParentOpIndex::record_placement`] call.
+struct PlacementRecord {
+    parent: NodeId,
+    node: NodeId,
+    placed_under: NodeId,
+    before: Operation,
+    seq: u64,
+}
+
 #[derive(Default)]
 struct RecordingIndex {
     records: Vec<(NodeId, OperationId, u64)>,
+    /// Placements the backend index looks up in the op log, which a replay does not keep.
+    placements: Vec<PlacementRecord>,
 }
 
 impl ParentOpIndex for RecordingIndex {
     fn reset(&mut self) -> Result<()> {
         self.records.clear();
+        self.placements.clear();
         Ok(())
     }
 
@@ -272,11 +265,30 @@ impl ParentOpIndex for RecordingIndex {
         self.records.push((parent, op_id.clone(), seq));
         Ok(())
     }
+
+    fn record_placement(
+        &mut self,
+        parent: NodeId,
+        node: NodeId,
+        placed_under: NodeId,
+        before: &Operation,
+        seq: u64,
+    ) -> Result<()> {
+        self.placements.push(PlacementRecord {
+            parent,
+            node,
+            placed_under,
+            before: before.clone(),
+            seq,
+        });
+        Ok(())
+    }
 }
 
 impl TruncatingParentOpIndex for RecordingIndex {
     fn truncate_from(&mut self, seq: u64) -> Result<()> {
         self.records.retain(|(_, _, existing_seq)| *existing_seq < seq);
+        self.placements.retain(|placement| placement.seq < seq);
         Ok(())
     }
 }
@@ -449,6 +461,10 @@ fn start_replay_frontier() -> MaterializationFrontier {
     }
 }
 
+fn is_start_frontier<R: AsRef<[u8]>>(frontier: &MaterializationKey<R>) -> bool {
+    frontier.lamport == 0 && frontier.replica.as_ref().is_empty() && frontier.counter == 0
+}
+
 fn op_requires_full_replay(op: &Operation) -> bool {
     matches!(
         op.kind,
@@ -456,12 +472,16 @@ fn op_requires_full_replay(op: &Operation) -> bool {
     )
 }
 
-fn op_sets_payload(op: &Operation) -> bool {
-    match &op.kind {
-        crate::ops::OperationKind::Insert { payload, .. } => payload.is_some(),
-        crate::ops::OperationKind::Payload { .. } => true,
-        _ => false,
-    }
+/// Whether a create-only insert took effect depends on the whole tree before it: an earlier op on
+/// its node may have been rejected as a cycle. Only a replay reconstructs that.
+fn is_create_only(op: &Operation) -> bool {
+    matches!(
+        op.kind,
+        crate::ops::OperationKind::Insert {
+            if_absent: true,
+            ..
+        }
+    )
 }
 
 fn payload_from_op(op: &Operation) -> Option<Option<Vec<u8>>> {
@@ -472,95 +492,27 @@ fn payload_from_op(op: &Operation) -> Option<Option<Vec<u8>>> {
     }
 }
 
-fn rewind_structure_op_in_place<S: FrontierRewindStorage, N: NodeStore>(
-    nodes: &mut N,
-    storage: &S,
-    op: &Operation,
-) -> Result<()> {
-    let node = op.kind.node();
-    // Direct rewind is deliberately local: ask storage for the previous structural winner for this
-    // node, clear the currently materialized attachment, then restore that predecessor if one
-    // exists. Anything more complicated (delete/tombstone/revival) stays on the conservative
-    // replay-from-frontier path.
-    let previous = storage.latest_structural_before(node, &frontier_from_op(op).as_borrowed())?;
-    nodes.ensure_node(node)?;
-    nodes.detach(node)?;
-
-    match previous.as_ref().map(|prev| &prev.kind) {
-        Some(crate::ops::OperationKind::Insert {
-            parent, order_key, ..
-        }) => nodes.attach(node, *parent, order_key.clone())?,
-        Some(crate::ops::OperationKind::Move {
-            new_parent,
-            order_key,
-            ..
-        }) => nodes.attach(node, *new_parent, order_key.clone())?,
-        Some(_) | None => {}
-    }
-
-    Ok(())
-}
-
-fn rewind_payload_op_in_place<S: FrontierRewindStorage, P: ExactPayloadStore>(
+/// Restores `node`'s payload to `previous`, its latest payload-bearing op before the frontier.
+fn rewind_payload_in_place<P: ExactPayloadStore>(
     payloads: &mut P,
-    storage: &S,
-    op: &Operation,
+    node: NodeId,
+    previous: Option<Operation>,
 ) -> Result<()> {
-    let node = op.kind.node();
-    // Payload rewind needs the previous winning payload-bearing op, not just the current bytes.
-    // If no predecessor exists, direct rewind must clear the payload row entirely.
-    let previous = storage.latest_payload_before(node, &frontier_from_op(op).as_borrowed())?;
-
-    if let Some(previous) = previous {
-        let payload = payload_from_op(&previous)
-            .ok_or_else(|| Error::Storage("payload rewind expected payload-bearing op".into()))?;
-        payloads.set_payload(
-            node,
-            payload,
-            (previous.meta.lamport, previous.meta.id.clone()),
-        )?;
-    } else {
-        payloads.clear_payload(node)?;
-    }
-
-    Ok(())
-}
-
-fn rewind_existing_suffix_in_place<S, N, P>(
-    nodes: &mut N,
-    payloads: &mut P,
-    storage: &S,
-    existing_suffix_ops: &[Operation],
-) -> Result<()>
-where
-    S: FrontierRewindStorage,
-    N: NodeStore,
-    P: ExactPayloadStore,
-{
-    for op in existing_suffix_ops.iter().rev() {
-        match &op.kind {
-            crate::ops::OperationKind::Insert { .. } => {
-                if op_sets_payload(op) {
-                    rewind_payload_op_in_place(payloads, storage, op)?;
-                }
-                rewind_structure_op_in_place(nodes, storage, op)?;
-            }
-            crate::ops::OperationKind::Move { .. } => {
-                rewind_structure_op_in_place(nodes, storage, op)?
-            }
-            crate::ops::OperationKind::Payload { .. } => {
-                rewind_payload_op_in_place(payloads, storage, op)?
-            }
-            crate::ops::OperationKind::Delete { .. }
-            | crate::ops::OperationKind::Tombstone { .. } => {
-                return Err(Error::Storage(
-                    "delete/tombstone ops are not supported by direct rewind".into(),
-                ));
-            }
+    // Payloads are last-writer-wins, so a node's payload at the frontier comes from its latest
+    // payload-bearing op before the frontier. Without one, the payload row must be cleared.
+    match previous {
+        Some(previous) => {
+            let payload = payload_from_op(&previous).ok_or_else(|| {
+                Error::Storage("payload rewind expected payload-bearing op".into())
+            })?;
+            payloads.set_payload(
+                node,
+                payload,
+                (previous.meta.lamport, previous.meta.id.clone()),
+            )
         }
+        None => payloads.clear_payload(node),
     }
-
-    Ok(())
 }
 
 fn next_replay_frontier<M: MaterializationCursor>(
@@ -825,7 +777,12 @@ fn replay_frontier_in_memory<S: Storage>(
     storage: &S,
     frontier: &MaterializationFrontier,
     replica_id: &ReplicaId,
-) -> Result<(RebuiltMaterialization, u64, MaterializationOutcome)> {
+) -> Result<(
+    RebuiltMaterialization,
+    u64,
+    MaterializationOutcome,
+    Vec<NodeId>,
+)> {
     let mut crdt = TreeCrdt::with_stores(
         replica_id.clone(),
         NoopStorage,
@@ -835,8 +792,16 @@ fn replay_frontier_in_memory<S: Storage>(
     )?;
     let mut index = RecordingIndex::default();
     let mut replay = ReplayAccumulator::new(0, ReplayChangeScope::FromFrontier(frontier));
+    // Coalesced changes can hide rows a replayed op changed, such as an intermediate parent or a
+    // delete that left visibility unchanged. Collect every node that ops from the frontier touch.
+    let mut touched = Vec::new();
 
     storage.scan_since(0, &mut |op| {
+        if replay.change_scope.includes(&op) {
+            touched.push(op.kind.node());
+            let parent = crdt.node_store().parent(op.kind.node())?;
+            touched.extend(affected_parents(parent, &op.kind));
+        }
         replay.apply_remote(
             &mut crdt,
             &mut index,
@@ -846,8 +811,6 @@ fn replay_frontier_in_memory<S: Storage>(
     })?;
 
     let run = replay.finish();
-    let prefix_seq = run.prefix_seq;
-    let outcome = run.outcome;
     Ok((
         RebuiltMaterialization {
             crdt,
@@ -855,8 +818,9 @@ fn replay_frontier_in_memory<S: Storage>(
             head: run.head,
             seq: run.seq,
         },
-        prefix_seq,
-        outcome,
+        run.prefix_seq,
+        run.outcome,
+        touched,
     ))
 }
 
@@ -898,11 +862,69 @@ fn correct_replayed_moves(
     Ok(())
 }
 
+/// A node's parent and order key.
+type Placement = (Option<NodeId>, Option<Vec<u8>>);
+
+/// Replay reports each insert it applies as an insert, but the backend may show the node already:
+/// it showed that insert before the late op arrived, or a create-only insert the late op voided. As
+/// for moves, report the change from the shown place to the final one instead: a move (within the
+/// parent when only the key changed), a delete when the node left the tree, or nothing. Patching
+/// the rows reports the payload when it changed.
+fn correct_replayed_inserts(
+    outcome: &mut MaterializationOutcome,
+    mut placements: impl FnMut(NodeId) -> Result<(Placement, Placement)>,
+) -> Result<()> {
+    for mut change in std::mem::take(&mut outcome.changes) {
+        if let MaterializationChange::Insert {
+            node,
+            parent_after,
+            source,
+            ..
+        } = &mut change
+        {
+            let ((before, key_before), (after, key_after)) = placements(*node)?;
+            // A correction caused by rejecting a formerly applied op is not that op.
+            if after != Some(*parent_after) {
+                *source = None;
+            }
+            match (before.filter(|parent| *parent != NodeId::TRASH), after) {
+                (Some(before), Some(after)) => {
+                    if (before, key_before) != (after, key_after) {
+                        outcome.changes.push(MaterializationChange::Move {
+                            node: *node,
+                            parent_before: Some(before),
+                            parent_after: after,
+                            source: source.clone(),
+                        });
+                    }
+                    continue;
+                }
+                (Some(before), None) => {
+                    outcome.changes.push(MaterializationChange::Delete {
+                        node: *node,
+                        parent_before: Some(before),
+                        source: None,
+                    });
+                    continue;
+                }
+                (None, None) => continue,
+                (None, Some(after)) => *parent_after = after,
+            }
+        }
+        outcome.changes.push(change);
+    }
+    Ok(())
+}
+
 /// Try a direct rewind/replay catch-up for append-time out-of-order suffixes.
 ///
 /// This rewinds the already-materialized suffix directly on the backend stores, truncates suffix
-/// oprefs, and then replays the full invalidated suffix in canonical order. It deliberately bails
-/// out for delete/tombstone suffixes and for broader recovery cases.
+/// oprefs, and then replays the full invalidated suffix in canonical order. Only payload ops can be
+/// rewound in place: rewinding a move or insert needs the node's parent before it, and nothing
+/// records which earlier structural op set it, since the latest one may have been rejected as a
+/// self-move or cycle. So it bails out when the materialized suffix contains structural ops, when
+/// the suffix contains deletes or tombstones, when a payload would be rewound to a create-only
+/// insert, and for broader recovery cases.
 pub fn try_direct_rewind_catch_up_materialized_state<S, C, N, P, I, M, FlushNodes, FlushIndex>(
     storage: &S,
     inserted_op_ids: &HashSet<OperationId>,
@@ -929,7 +951,7 @@ where
         return Ok(None);
     };
 
-    if frontier.lamport == 0 && frontier.replica.is_empty() && frontier.counter == 0 {
+    if is_start_frontier(frontier) {
         return Ok(None);
     }
     if cmp_frontiers(frontier, &head.at) != Ordering::Less {
@@ -937,37 +959,54 @@ where
     }
 
     let mut full_suffix_ops = Vec::new();
-    let mut existing_suffix_ops = Vec::new();
+    let mut existing_suffix_len = 0u64;
+    let mut rewound_payload_nodes = Vec::new();
     let mut requires_full_replay = false;
     storage.scan_frontier_range(frontier, &mut |op| {
         // One pass does double duty:
         // - `full_suffix_ops` is the corrected suffix we will replay forward.
-        // - `existing_suffix_ops` is the subset that was already materialized before this append,
-        //   which is exactly what must be unwound first.
+        // - ops that were already materialized before this append must be unwound first.
         let op_frontier = frontier_from_op(&op);
         if cmp_frontiers(&op_frontier, &head.at) != Ordering::Greater
             && !inserted_op_ids.contains(&op.meta.id)
         {
-            existing_suffix_ops.push(op.clone());
+            existing_suffix_len += 1;
+            match &op.kind {
+                crate::ops::OperationKind::Payload { node, .. } => {
+                    rewound_payload_nodes.push(*node)
+                }
+                _ => requires_full_replay = true,
+            }
         }
         requires_full_replay |= op_requires_full_replay(&op);
         full_suffix_ops.push(op);
         Ok(())
     })?;
-    if full_suffix_ops.is_empty() || existing_suffix_ops.is_empty() || requires_full_replay {
+    if full_suffix_ops.is_empty() || existing_suffix_len == 0 || requires_full_replay {
         return Ok(None);
+    }
+    rewound_payload_nodes.sort();
+    rewound_payload_nodes.dedup();
+    // Looked up before anything is rewound, since a bail-out must leave the stores untouched. A
+    // create-only insert before the frontier may have been a no-op that set no payload.
+    let mut payloads_before = Vec::with_capacity(rewound_payload_nodes.len());
+    for node in rewound_payload_nodes {
+        let previous = storage.latest_payload_before(node, frontier)?;
+        if previous.as_ref().is_some_and(is_create_only) {
+            return Ok(None);
+        }
+        payloads_before.push((node, previous));
     }
 
     // `head.seq` reflects the fully materialized suffix. Removing the already-materialized suffix
     // yields the trusted prefix length and the first seq that must be rewritten in the index.
-    let prefix_seq =
-        head.seq.saturating_sub(existing_suffix_ops.len().min(u64::MAX as usize) as u64);
+    let prefix_seq = head.seq.saturating_sub(existing_suffix_len);
     let truncate_from = prefix_seq.saturating_add(1);
 
     let PersistedRemoteStores {
         replica_id,
         clock,
-        mut nodes,
+        nodes,
         mut payloads,
         mut index,
     } = stores;
@@ -982,7 +1021,11 @@ where
     }
 
     index.truncate_from(truncate_from)?;
-    rewind_existing_suffix_in_place(&mut nodes, &mut payloads, storage, &existing_suffix_ops)?;
+    // The materialized suffix only set payloads, so structure already matches the frontier, and
+    // create-only inserts in the suffix replay against the tree they applied to.
+    for (node, previous) in payloads_before {
+        rewind_payload_in_place(&mut payloads, node, previous)?;
+    }
 
     // After rewinding, the backend stores now represent the prefix immediately before the
     // invalidated suffix. Replaying `full_suffix_ops` forward rebuilds only the corrected suffix.
@@ -1028,6 +1071,13 @@ where
 
     for node in affected_nodes {
         let existed_before = nodes.exists(*node)?;
+        let replayed = rebuilt.crdt.node_store_mut();
+        if !existed_before && !replayed.exists(*node)? {
+            continue;
+        }
+        // A parent that only a now-voided create-only insert named has a row on the backend but
+        // none in the replay. Patch it as the placeholder it is there.
+        replayed.ensure_node(*node)?;
         let previous_parent = if existed_before {
             nodes.parent(*node)?
         } else {
@@ -1077,8 +1127,18 @@ where
         let deleted_at = rebuilt.crdt.node_store_mut().deleted_at(*node)?;
         nodes.set_deleted_at_exact(*node, deleted_at.as_ref())?;
 
+        // Replay reports the payload of each op it applied, but a late op that voids a create-only
+        // insert leaves the payload to an earlier write, or to none, which no replayed op reports.
+        let payload = rebuilt.crdt.payload(*node)?;
+        if payloads.payload(*node)? != payload {
+            patch_changes.push(MaterializationChange::Payload {
+                node: *node,
+                payload: payload.clone(),
+                source: None,
+            });
+        }
         if let Some(writer) = rebuilt.crdt.payload_last_writer(*node)? {
-            payloads.set_payload(*node, rebuilt.crdt.payload(*node)?, writer)?;
+            payloads.set_payload(*node, payload, writer)?;
         } else {
             payloads.clear_payload(*node)?;
         }
@@ -1094,6 +1154,20 @@ where
     records.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0)).then_with(|| a.1.cmp(&b.1)));
     for (parent, op_id, seq) in records {
         index.record(parent, &op_id, seq)?;
+    }
+    for placement in rebuilt
+        .index
+        .placements
+        .iter()
+        .filter(|placement| placement.seq >= truncate_from)
+    {
+        index.record_placement(
+            placement.parent,
+            placement.node,
+            placement.placed_under,
+            &placement.before,
+            placement.seq,
+        )?;
     }
 
     Ok(MaterializationOutcome::from_changes(rebuilt.seq, patch_changes).changes)
@@ -1139,13 +1213,18 @@ where
         mut index,
     } = stores;
 
-    let (mut rebuilt, prefix_seq, mut replay_outcome) =
+    let (mut rebuilt, prefix_seq, mut replay_outcome, touched) =
         replay_frontier_in_memory(&storage, frontier, &replica_id)?;
+    // Patch every touched node, plus its ancestors before and after the replay: tombstones
+    // depend on subtrees.
     let mut affected_nodes = replay_outcome.affected_nodes();
+    affected_nodes.extend(touched.into_iter().filter(|node| *node != NodeId::TRASH));
     let mut seen_nodes: HashSet<NodeId> = affected_nodes.iter().copied().collect();
     let mut idx = 0usize;
     while idx < affected_nodes.len() {
-        if let Some(parent) = rebuilt.crdt.node_store_mut().parent(affected_nodes[idx])? {
+        let node = affected_nodes[idx];
+        let parents = [nodes.parent(node)?, rebuilt.crdt.node_store().parent(node)?];
+        for parent in parents.into_iter().flatten() {
             if parent != NodeId::ROOT && parent != NodeId::TRASH && seen_nodes.insert(parent) {
                 affected_nodes.push(parent);
             }
@@ -1157,6 +1236,17 @@ where
     correct_replayed_moves(&mut replay_outcome, |node| {
         Ok((nodes.parent(node)?, rebuilt.crdt.node_store().parent(node)?))
     })?;
+    // A replay from the start recovers from a failed append, so the backend rows can hold more
+    // than consumers were told: report the inserts replay applied as inserts.
+    if !is_start_frontier(frontier) {
+        correct_replayed_inserts(&mut replay_outcome, |node| {
+            let replayed = rebuilt.crdt.node_store();
+            Ok((
+                (nodes.parent(node)?, nodes.order_key(node)?),
+                (replayed.parent(node)?, replayed.order_key(node)?),
+            ))
+        })?;
+    }
     let patch_changes = patch_final_state_in_place(
         &mut rebuilt,
         prefix_seq,
@@ -1182,18 +1272,38 @@ where
         visibility_key(change).is_none_or(|key| !repaired_visibility.contains(&key))
     });
 
+    let mut outcome = MaterializationOutcome::merge(
+        rebuilt.seq,
+        [
+            replay_outcome,
+            MaterializationOutcome::from_changes(rebuilt.seq, patch_changes),
+        ],
+    );
+    // Payloads too: coalescing keeps a node's last payload change over the payload a later insert
+    // or restore carries, so a replayed payload can be a superseded write. Report final payloads;
+    // patching reported each one that changed.
+    for mut change in std::mem::take(&mut outcome.changes) {
+        match &mut change {
+            MaterializationChange::Insert { node, payload, .. }
+            | MaterializationChange::Restore { node, payload, .. } => {
+                *payload = rebuilt.crdt.payload(*node)?;
+            }
+            MaterializationChange::Payload { node, payload, .. }
+                if *payload != rebuilt.crdt.payload(*node)? =>
+            {
+                continue;
+            }
+            _ => {}
+        }
+        outcome.changes.push(change);
+    }
+
     Ok(CatchUpResult {
         head: rebuilt
             .head
             .as_ref()
             .map(|head| MaterializationHead::from_op(head, rebuilt.seq)),
-        outcome: MaterializationOutcome::merge(
-            rebuilt.seq,
-            [
-                replay_outcome,
-                MaterializationOutcome::from_changes(rebuilt.seq, patch_changes),
-            ],
-        ),
+        outcome,
     })
 }
 
@@ -1362,10 +1472,14 @@ where
     }
 
     let refreshed_meta = load_catch_up_meta()?;
-    let catch_up_result = if !had_pending_frontier {
-        try_direct_rewind(&refreshed_meta, &inserted_op_ids)?.unwrap_or(catch_up(&refreshed_meta)?)
+    let direct_rewind = if had_pending_frontier {
+        None
     } else {
-        catch_up(&refreshed_meta)?
+        try_direct_rewind(&refreshed_meta, &inserted_op_ids)?
+    };
+    let catch_up_result = match direct_rewind {
+        Some(result) => result,
+        None => catch_up(&refreshed_meta)?,
     };
 
     let head = catch_up_result

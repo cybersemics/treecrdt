@@ -81,6 +81,7 @@ fn read_operation_row(stmt: *mut sqlite3_stmt) -> treecrdt_core::Result<treecrdt
             Some(unsafe { slice::from_raw_parts(ptr, len) }.to_vec())
         }
     };
+    let if_absent = unsafe { sqlite_column_int64(stmt, 10) } != 0;
 
     let op_kind = match kind {
         "insert" => {
@@ -91,6 +92,7 @@ fn read_operation_row(stmt: *mut sqlite3_stmt) -> treecrdt_core::Result<treecrdt
                 node: sqlite_bytes_to_node_id(node),
                 order_key,
                 payload,
+                if_absent,
             }
         }
         "move" => {
@@ -161,12 +163,20 @@ impl treecrdt_core::Storage for SqliteOpStorage {
     fn apply(&mut self, op: treecrdt_core::Operation) -> treecrdt_core::Result<bool> {
         let doc_id = self.ensure_doc_id()?;
 
+        let if_absent = matches!(
+            op.kind,
+            treecrdt_core::OperationKind::Insert {
+                if_absent: true,
+                ..
+            }
+        );
         let (kind, parent, node, new_parent, order_key, known_state, payload) = match op.kind {
             treecrdt_core::OperationKind::Insert {
                 parent,
                 node,
                 order_key,
                 payload,
+                ..
             } => (
                 "insert",
                 Some(sqlite_node_id_bytes(parent).to_vec()),
@@ -223,8 +233,8 @@ impl treecrdt_core::Storage for SqliteOpStorage {
 
         let insert_sql = CString::new(
             "INSERT OR IGNORE INTO ops \
-             (replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload,op_ref) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+             (replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload,op_ref,if_absent) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
         )
         .expect("insert op sql");
         let mut stmt: *mut sqlite3_stmt = null_mut();
@@ -325,6 +335,7 @@ impl treecrdt_core::Storage for SqliteOpStorage {
                 OPREF_V0_WIDTH as c_int,
                 None,
             ) != SQLITE_OK as c_int;
+            bind_err |= sqlite_bind_int64(stmt, 12, i64::from(if_absent)) != SQLITE_OK as c_int;
         }
 
         if bind_err {
@@ -348,7 +359,7 @@ impl treecrdt_core::Storage for SqliteOpStorage {
 
     fn load_since(&self, lamport: Lamport) -> treecrdt_core::Result<Vec<treecrdt_core::Operation>> {
         let sql = CString::new(
-            "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
+            "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload,if_absent \
              FROM ops \
              WHERE lamport > ?1 \
              ORDER BY lamport, replica, counter",
@@ -391,7 +402,7 @@ impl treecrdt_core::Storage for SqliteOpStorage {
         visit: &mut dyn FnMut(treecrdt_core::Operation) -> treecrdt_core::Result<()>,
     ) -> treecrdt_core::Result<()> {
         let sql = CString::new(
-            "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
+            "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload,if_absent \
              FROM ops \
              WHERE lamport > ?1 \
              ORDER BY lamport, replica, counter",
@@ -494,7 +505,7 @@ impl treecrdt_core::FrontierRewindStorage for SqliteOpStorage {
         visit: &mut dyn FnMut(treecrdt_core::Operation) -> treecrdt_core::Result<()>,
     ) -> treecrdt_core::Result<()> {
         let sql = CString::new(
-            "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
+            "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload,if_absent \
              FROM ops \
              WHERE (lamport > ?1 OR (lamport = ?1 AND (replica > ?2 OR (replica = ?2 AND counter >= ?3)))) \
              ORDER BY lamport, replica, counter",
@@ -551,82 +562,13 @@ impl treecrdt_core::FrontierRewindStorage for SqliteOpStorage {
         Ok(())
     }
 
-    fn latest_structural_before(
-        &self,
-        node: NodeId,
-        before: &treecrdt_core::MaterializationFrontierRef<'_>,
-    ) -> treecrdt_core::Result<Option<treecrdt_core::Operation>> {
-        let sql = CString::new(
-            "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
-             FROM ops \
-             WHERE node = ?1 \
-               AND kind IN ('insert', 'move') \
-               AND (lamport < ?2 OR (lamport = ?2 AND (replica < ?3 OR (replica = ?3 AND counter < ?4)))) \
-             ORDER BY lamport DESC, replica DESC, counter DESC \
-             LIMIT 1",
-        )
-        .expect("latest structural before sql");
-        let mut stmt: *mut sqlite3_stmt = null_mut();
-        let rc = sqlite_prepare_v2(self.db, sql.as_ptr(), -1, &mut stmt, null_mut());
-        if rc != SQLITE_OK as c_int {
-            return Err(sqlite_rc_error(rc, "prepare latest structural failed"));
-        }
-
-        let node_bytes = sqlite_node_id_bytes(node);
-        let mut bind_err = false;
-        unsafe {
-            bind_err |= sqlite_bind_blob(
-                stmt,
-                1,
-                node_bytes.as_ptr() as *const c_void,
-                node_bytes.len() as c_int,
-                None,
-            ) != SQLITE_OK as c_int;
-            bind_err |= sqlite_bind_int64(stmt, 2, before.lamport as i64) != SQLITE_OK as c_int;
-            bind_err |= sqlite_bind_blob(
-                stmt,
-                3,
-                before.replica.as_ptr() as *const c_void,
-                before.replica.len() as c_int,
-                None,
-            ) != SQLITE_OK as c_int;
-            bind_err |= sqlite_bind_int64(stmt, 4, before.counter as i64) != SQLITE_OK as c_int;
-        }
-        if bind_err {
-            unsafe { sqlite_finalize(stmt) };
-            return Err(sqlite_rc_error(
-                SQLITE_ERROR as c_int,
-                "bind latest structural failed",
-            ));
-        }
-
-        let step_rc = unsafe { sqlite_step(stmt) };
-        let op = if step_rc == SQLITE_ROW as c_int {
-            Some(read_operation_row(stmt)?)
-        } else if step_rc == SQLITE_DONE as c_int {
-            None
-        } else {
-            unsafe { sqlite_finalize(stmt) };
-            return Err(sqlite_rc_error(step_rc, "latest structural step failed"));
-        };
-
-        let finalize_rc = unsafe { sqlite_finalize(stmt) };
-        if finalize_rc != SQLITE_OK as c_int {
-            return Err(sqlite_rc_error(
-                finalize_rc,
-                "finalize latest structural failed",
-            ));
-        }
-        Ok(op)
-    }
-
     fn latest_payload_before(
         &self,
         node: NodeId,
         before: &treecrdt_core::MaterializationFrontierRef<'_>,
     ) -> treecrdt_core::Result<Option<treecrdt_core::Operation>> {
         let sql = CString::new(
-            "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload \
+            "SELECT replica,counter,lamport,kind,parent,node,new_parent,order_key,known_state,payload,if_absent \
              FROM ops \
              WHERE node = ?1 \
                AND (kind = 'payload' OR (kind = 'insert' AND payload IS NOT NULL)) \

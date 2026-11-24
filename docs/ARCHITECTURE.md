@@ -92,6 +92,7 @@ flowchart TD
 
 ## Core CRDT shape
 - Operation log with `(OperationId { replica, counter }, lamport, kind)`; kinds: insert/move/delete/tombstone.
+- An insert of a node that exists moves it, unless the insert is create-only (`if_absent`): then it changes nothing, so automatic creates never move a node someone placed.
 - Deterministic application rules following Kleppmann Tree CRDT; extend to support alternative tombstone semantics if needed (per linked proposal).
 - Access control hooks applied before state mutation.
 - Partial sync support via indexed direct-children filters.

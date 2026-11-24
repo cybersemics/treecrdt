@@ -50,6 +50,8 @@ pub struct NativeOp {
     pub order_key: Option<Buffer>,
     pub payload: Option<Buffer>,
     pub known_state: Option<Buffer>,
+    /// True for a create-only insert; unset otherwise.
+    pub if_absent: Option<bool>,
 }
 
 #[napi(object)]
@@ -258,6 +260,12 @@ fn native_to_core_op(op: NativeOp) -> CoreResult<Operation> {
     };
 
     let node = bytes16_to_node(&op.node)?;
+    let if_absent = op.if_absent.unwrap_or(false);
+    if if_absent && op.kind != "insert" {
+        return Err(CoreError::Storage(
+            "only an insert can be create-only (ifAbsent)".into(),
+        ));
+    }
 
     let kind = match op.kind.as_str() {
         "insert" => {
@@ -272,6 +280,7 @@ fn native_to_core_op(op: NativeOp) -> CoreResult<Operation> {
                 node,
                 order_key: order_key.to_vec(),
                 payload: op.payload.map(|p| p.to_vec()),
+                if_absent,
             }
         }
         "move" => {
@@ -315,6 +324,7 @@ fn core_to_native_op(op: Operation) -> CoreResult<NativeOp> {
             node,
             order_key,
             payload,
+            if_absent,
         } => Ok(NativeOp {
             lamport,
             replica: Buffer::from(op.meta.id.replica.as_bytes().to_vec()),
@@ -326,6 +336,7 @@ fn core_to_native_op(op: Operation) -> CoreResult<NativeOp> {
             order_key: Some(Buffer::from(order_key)),
             payload: payload.map(Buffer::from),
             known_state,
+            if_absent: if_absent.then_some(true),
         }),
         OperationKind::Move {
             node,
@@ -342,6 +353,7 @@ fn core_to_native_op(op: Operation) -> CoreResult<NativeOp> {
             order_key: Some(Buffer::from(order_key)),
             payload: None,
             known_state,
+            if_absent: None,
         }),
         OperationKind::Delete { node } => Ok(NativeOp {
             lamport,
@@ -354,6 +366,7 @@ fn core_to_native_op(op: Operation) -> CoreResult<NativeOp> {
             order_key: None,
             payload: None,
             known_state,
+            if_absent: None,
         }),
         OperationKind::Tombstone { node } => Ok(NativeOp {
             lamport,
@@ -366,6 +379,7 @@ fn core_to_native_op(op: Operation) -> CoreResult<NativeOp> {
             order_key: None,
             payload: None,
             known_state,
+            if_absent: None,
         }),
         OperationKind::Payload { node, payload } => Ok(NativeOp {
             lamport,
@@ -378,6 +392,7 @@ fn core_to_native_op(op: Operation) -> CoreResult<NativeOp> {
             order_key: None,
             payload: payload.map(Buffer::from),
             known_state,
+            if_absent: None,
         }),
     }
 }
@@ -681,6 +696,43 @@ impl PgBackend {
         )
         .map_err(map_core_err)?;
         Ok(NativePreparedLocalOpTx { tx: Some(tx) })
+    }
+
+    /// `prepare_local_insert` for a create-only insert: null, with nothing written, when the node
+    /// is already in the tree.
+    #[napi]
+    pub fn prepare_local_insert_if_absent(
+        &self,
+        replica: Buffer,
+        parent: Buffer,
+        node: Buffer,
+        placement: String,
+        after: Option<Buffer>,
+        payload: Option<Buffer>,
+    ) -> napi::Result<Option<NativePreparedLocalOpTx>> {
+        let client = connect(&self.url)?;
+        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+
+        let replica = ReplicaId(replica.to_vec());
+        let parent = bytes16_to_node(&parent).map_err(map_core_err)?;
+        let node = bytes16_to_node(&node).map_err(map_core_err)?;
+        let after_id = match after {
+            None => None,
+            Some(b) => Some(bytes16_to_node(&b).map_err(map_core_err)?),
+        };
+
+        let tx = treecrdt_postgres::prepare_local_insert_if_absent_tx(
+            &client,
+            &self.doc_id,
+            &replica,
+            parent,
+            node,
+            &placement,
+            after_id,
+            payload.map(|p| p.to_vec()),
+        )
+        .map_err(map_core_err)?;
+        Ok(tx.map(|tx| NativePreparedLocalOpTx { tx: Some(tx) }))
     }
 
     #[napi]

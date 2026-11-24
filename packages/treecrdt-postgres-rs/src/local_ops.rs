@@ -197,16 +197,31 @@ fn prepare_local_core_op<F>(
 where
     F: FnOnce(&mut LocalCrdt) -> Result<PreparedLocalOp>,
 {
+    prepare_optional_local_core_op(client, doc_id, replica, |crdt| build(crdt).map(Some))?
+        .ok_or_else(|| Error::Storage("local op prepared nothing".into()))
+}
+
+/// Prepares a local op in a transaction. When `build` prepares no op, it rolls the transaction
+/// back, a catch-up included, and returns None.
+fn prepare_optional_local_core_op<F>(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    replica: &ReplicaId,
+    build: F,
+) -> Result<Option<PreparedLocalOpTx>>
+where
+    F: FnOnce(&mut LocalCrdt) -> Result<Option<PreparedLocalOp>>,
+{
     begin_tx(client)?;
     let res = (|| {
         let mut session = begin_local_core_op(client, doc_id, replica)?;
         let prepared = build(&mut session.crdt)?;
-        Ok(PreparedLocalOpTx {
+        Ok(prepared.map(|prepared| PreparedLocalOpTx {
             session: Some(session),
             prepared: Some(prepared),
-        })
+        }))
     })();
-    if res.is_err() {
+    if !matches!(res, Ok(Some(_))) {
         let _ = rollback_tx(client);
     }
     res
@@ -243,6 +258,25 @@ pub fn prepare_local_insert_tx(
     prepare_local_core_op(client, doc_id, replica, |crdt| {
         let placement = LocalPlacement::from_parts(placement, after)?;
         crdt.prepare_local_insert(parent, node, placement, payload)
+    })
+}
+
+/// `prepare_local_insert_tx` for a create-only insert. Returns None and writes nothing when the
+/// node is already in the tree: ROOT, TRASH, or attached anywhere, deleted included.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_local_insert_if_absent_tx(
+    client: &Rc<RefCell<Client>>,
+    doc_id: &str,
+    replica: &ReplicaId,
+    parent: NodeId,
+    node: NodeId,
+    placement: &str,
+    after: Option<NodeId>,
+    payload: Option<Vec<u8>>,
+) -> Result<Option<PreparedLocalOpTx>> {
+    prepare_optional_local_core_op(client, doc_id, replica, |crdt| {
+        let placement = LocalPlacement::from_parts(placement, after)?;
+        crdt.prepare_local_insert_if_absent(parent, node, placement, payload)
     })
 }
 

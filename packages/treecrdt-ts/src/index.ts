@@ -35,6 +35,12 @@ export type OperationKind =
        * with last-writer-wins ordering per node.
        */
       payload?: Uint8Array;
+      /**
+       * Create-only: where `node` is already in the tree at this op's place in the operation
+       * order (ROOT, TRASH, or attached anywhere, deleted included), the insert changes nothing,
+       * its payload included. Omitted on a plain insert, which moves a node that exists.
+       */
+      ifAbsent?: true;
     }
   | {
       type: 'move';

@@ -218,6 +218,18 @@ export function createTreecrdtClient(
       ...writeOpts,
       ...(payload ? { payload } : {}),
     });
+  const localInsertIfAbsentImpl = async (
+    replica: ReplicaId,
+    parent: string,
+    node: string,
+    placement: TreecrdtSqlitePlacement,
+    payload: Uint8Array | null,
+    writeOpts?: LocalWriteOptions,
+  ) =>
+    localWriterFor(replica).insertIfAbsent(parent, node, placement, {
+      ...writeOpts,
+      ...(payload ? { payload } : {}),
+    });
   const localMoveImpl = async (
     replica: ReplicaId,
     node: string,
@@ -236,6 +248,7 @@ export function createTreecrdtClient(
 
   const local = createTreecrdtEngineLocal({
     insert: localInsertImpl,
+    insertIfAbsent: localInsertIfAbsentImpl,
     move: localMoveImpl,
     delete: localDeleteImpl,
     payload: localPayloadImpl,

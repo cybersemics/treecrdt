@@ -174,6 +174,26 @@ export async function createTreecrdtPostgresClient(
     return finishPreparedLocalOp(tx, writeOpts);
   };
 
+  const localInsertIfAbsentImpl = async (
+    replica: ReplicaId,
+    parent: string,
+    node: string,
+    placement: TreecrdtSqlitePlacement,
+    payload: Uint8Array | null,
+    writeOpts?: LocalWriteOptions,
+  ) => {
+    const { type, after } = placementToArgs(placement);
+    const tx = backend.prepareLocalInsertIfAbsent(
+      encodeReplica(replica),
+      nodeIdToBytes16(parent),
+      nodeIdToBytes16(node),
+      type,
+      after,
+      payload,
+    );
+    return tx ? finishPreparedLocalOp(tx, writeOpts) : null;
+  };
+
   const localMoveImpl = async (
     replica: ReplicaId,
     node: string,
@@ -213,6 +233,7 @@ export async function createTreecrdtPostgresClient(
 
   const local = createTreecrdtEngineLocal({
     insert: localInsertImpl,
+    insertIfAbsent: localInsertIfAbsentImpl,
     move: localMoveImpl,
     delete: localDeleteImpl,
     payload: localPayloadImpl,

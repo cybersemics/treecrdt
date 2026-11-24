@@ -77,11 +77,18 @@ async function maybeLoadNodePayloadWriterOpRef(opts: {
   }
 
   // Fallback: query the op-log directly. This avoids relying on derived state (which can be stale
-  // if materialization fails or is unavailable in a given environment).
+  // if materialization fails or is unavailable in a given environment). A create-only insert
+  // writes its payload only where it places its node, so, best effort, one that an insert or move
+  // of the node precedes is left out.
   const opRefHex = await opts.runner.getText(
     "SELECT lower(hex(op_ref)) \
-     FROM ops \
-     WHERE node = ?1 AND op_ref IS NOT NULL AND (kind = 'payload' OR (kind = 'insert' AND payload IS NOT NULL)) \
+     FROM ops AS o \
+     WHERE node = ?1 AND op_ref IS NOT NULL \
+       AND (kind = 'payload' OR (kind = 'insert' AND payload IS NOT NULL AND (if_absent = 0 OR NOT EXISTS ( \
+         SELECT 1 FROM ops AS e \
+         WHERE e.node = o.node AND e.kind IN ('insert', 'move') \
+           AND (e.lamport < o.lamport OR (e.lamport = o.lamport \
+             AND (e.replica < o.replica OR (e.replica = o.replica AND e.counter < o.counter)))))))) \
      ORDER BY lamport DESC, replica DESC, counter DESC \
      LIMIT 1",
     [opts.nodeBytes],

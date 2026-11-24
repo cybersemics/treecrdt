@@ -6,7 +6,11 @@ import type { Operation } from '@treecrdt/interface';
 import { bytesToHex, nodeIdToBytes16 } from '@treecrdt/interface/ids';
 import { makeOp, nodeIdFromInt } from '@treecrdt/benchmark';
 
-import { treecrdtSyncV0ProtobufCodec } from '../dist/protobuf.js';
+import {
+  decodeTreecrdtSyncV0Operation,
+  encodeTreecrdtSyncV0Operation,
+  treecrdtSyncV0ProtobufCodec,
+} from '../dist/protobuf.js';
 import { SyncPeer } from '../dist/sync.js';
 import { createInMemoryConnectedPeers } from '../dist/in-memory.js';
 import {
@@ -1237,6 +1241,26 @@ test('syncOnce protobuf roundtrips ribltStatus.more', () => {
   };
 
   expect(treecrdtSyncV0ProtobufCodec.decode(treecrdtSyncV0ProtobufCodec.encode(msg))).toEqual(msg);
+});
+
+test('protobuf carries the create-only flag of an insert', () => {
+  const kind = {
+    type: 'insert',
+    parent: nodeIdFromInt(1),
+    node: nodeIdFromInt(2),
+    orderKey: Uint8Array.of(1),
+    payload: Uint8Array.of(7),
+  } as const;
+  const plain = makeOp(replicas.a, 1, 1, kind);
+  const createOnly = makeOp(replicas.a, 2, 2, { ...kind, ifAbsent: true });
+
+  for (const op of [plain, createOnly]) {
+    expect(decodeTreecrdtSyncV0Operation(encodeTreecrdtSyncV0Operation(op))).toStrictEqual(op);
+  }
+  // Proto3 leaves a false bool out, so a plain insert encodes as it did before the flag.
+  expect(encodeTreecrdtSyncV0Operation(createOnly)).toHaveLength(
+    encodeTreecrdtSyncV0Operation(plain).length + 2,
+  );
 });
 
 test('syncOnce waits for ribltStatus.more before sending another codeword batch', async () => {
