@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS treecrdt_ops (
   order_key BYTEA,
   payload BYTEA,
   known_state BYTEA,
+  -- TRUE for a create-only insert, a no-op where its node is already in the tree.
+  if_absent BOOLEAN NOT NULL DEFAULT FALSE,
   PRIMARY KEY (doc_id, op_ref),
   UNIQUE (doc_id, replica, counter)
 );

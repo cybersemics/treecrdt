@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 pub struct NodeExport {
     pub node: NodeId,
     pub parent: Option<NodeId>,
+    pub order_key: Option<Vec<u8>>,
     pub children: Vec<NodeId>,
     /// Gap-aware structural history. Effective payload awareness is derived from its LWW writer.
     pub last_change: VersionVector,

@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS ops (
   op_ref BLOB,
   known_state BLOB,
   payload BLOB,
+  -- 1 for a create-only insert, a no-op where its node is already in the tree.
+  if_absent INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (replica, counter)
 );
 

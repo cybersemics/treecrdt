@@ -310,6 +310,14 @@ fn postgres_backend_out_of_order_delete_suffix_falls_back_and_restores_parent() 
 }
 
 #[test]
+fn postgres_backend_late_create_only_insert_voids_the_shown_one() {
+    let Some(harness) = setup_conformance_harness() else {
+        return;
+    };
+    materialization_conformance::late_create_only_insert_voids_the_shown_one(&harness);
+}
+
+#[test]
 fn postgres_backend_failed_immediate_catch_up_rolls_back_inserted_ops_and_meta() {
     let Some(client) = connect() else {
         return;

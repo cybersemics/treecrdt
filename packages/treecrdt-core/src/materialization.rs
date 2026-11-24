@@ -430,10 +430,26 @@ fn start_replay_frontier() -> MaterializationFrontier {
     }
 }
 
+fn is_start_frontier<R: AsRef<[u8]>>(frontier: &MaterializationKey<R>) -> bool {
+    frontier.lamport == 0 && frontier.replica.as_ref().is_empty() && frontier.counter == 0
+}
+
 fn op_requires_full_replay(op: &Operation) -> bool {
     matches!(
         op.kind,
         crate::ops::OperationKind::Delete { .. } | crate::ops::OperationKind::Tombstone { .. }
+    )
+}
+
+/// Whether a create-only insert took effect depends on the whole tree before it: an earlier op on
+/// its node may have been rejected as a cycle. Only a replay reconstructs that.
+fn is_create_only(op: &Operation) -> bool {
+    matches!(
+        op.kind,
+        crate::ops::OperationKind::Insert {
+            if_absent: true,
+            ..
+        }
     )
 }
 
@@ -445,15 +461,15 @@ fn payload_from_op(op: &Operation) -> Option<Option<Vec<u8>>> {
     }
 }
 
-fn rewind_payload_in_place<S: FrontierRewindStorage, P: ExactPayloadStore>(
+/// Restores `node`'s payload to `previous`, its latest payload-bearing op before the frontier.
+fn rewind_payload_in_place<P: ExactPayloadStore>(
     payloads: &mut P,
-    storage: &S,
     node: NodeId,
-    frontier: &MaterializationFrontierRef<'_>,
+    previous: Option<Operation>,
 ) -> Result<()> {
     // Payloads are last-writer-wins, so a node's payload at the frontier comes from its latest
     // payload-bearing op before the frontier. Without one, the payload row must be cleared.
-    match storage.latest_payload_before(node, frontier)? {
+    match previous {
         Some(previous) => {
             let payload = payload_from_op(&previous).ok_or_else(|| {
                 Error::Storage("payload rewind expected payload-bearing op".into())
@@ -815,6 +831,60 @@ fn correct_replayed_moves(
     Ok(())
 }
 
+/// A node's parent and order key.
+type Placement = (Option<NodeId>, Option<Vec<u8>>);
+
+/// Replay reports each insert it applies as an insert, but the backend may show the node already:
+/// it showed that insert before the late op arrived, or a create-only insert the late op voided. As
+/// for moves, report the change from the shown place to the final one instead: a move (within the
+/// parent when only the key changed), a delete when the node left the tree, or nothing. Patching
+/// the rows reports the payload when it changed.
+fn correct_replayed_inserts(
+    outcome: &mut MaterializationOutcome,
+    mut placements: impl FnMut(NodeId) -> Result<(Placement, Placement)>,
+) -> Result<()> {
+    for mut change in std::mem::take(&mut outcome.changes) {
+        if let MaterializationChange::Insert {
+            node,
+            parent_after,
+            source,
+            ..
+        } = &mut change
+        {
+            let ((before, key_before), (after, key_after)) = placements(*node)?;
+            // A correction caused by rejecting a formerly applied op is not that op.
+            if after != Some(*parent_after) {
+                *source = None;
+            }
+            match (before.filter(|parent| *parent != NodeId::TRASH), after) {
+                (Some(before), Some(after)) => {
+                    if (before, key_before) != (after, key_after) {
+                        outcome.changes.push(MaterializationChange::Move {
+                            node: *node,
+                            parent_before: Some(before),
+                            parent_after: after,
+                            source: source.clone(),
+                        });
+                    }
+                    continue;
+                }
+                (Some(before), None) => {
+                    outcome.changes.push(MaterializationChange::Delete {
+                        node: *node,
+                        parent_before: Some(before),
+                        source: None,
+                    });
+                    continue;
+                }
+                (None, None) => continue,
+                (None, Some(after)) => *parent_after = after,
+            }
+        }
+        outcome.changes.push(change);
+    }
+    Ok(())
+}
+
 /// Try a direct rewind/replay catch-up for append-time out-of-order suffixes.
 ///
 /// This rewinds the already-materialized suffix directly on the backend stores, truncates suffix
@@ -822,7 +892,8 @@ fn correct_replayed_moves(
 /// rewound in place: rewinding a move or insert needs the node's parent before it, and nothing
 /// records which earlier structural op set it, since the latest one may have been rejected as a
 /// self-move or cycle. So it bails out when the materialized suffix contains structural ops, when
-/// the suffix contains deletes or tombstones, and for broader recovery cases.
+/// the suffix contains deletes or tombstones, when a payload would be rewound to a create-only
+/// insert, and for broader recovery cases.
 pub fn try_direct_rewind_catch_up_materialized_state<S, C, N, P, I, M, FlushNodes, FlushIndex>(
     storage: &S,
     inserted_op_ids: &HashSet<OperationId>,
@@ -849,7 +920,7 @@ where
         return Ok(None);
     };
 
-    if frontier.lamport == 0 && frontier.replica.is_empty() && frontier.counter == 0 {
+    if is_start_frontier(frontier) {
         return Ok(None);
     }
     if cmp_frontiers(frontier, &head.at) != Ordering::Less {
@@ -885,6 +956,16 @@ where
     }
     rewound_payload_nodes.sort();
     rewound_payload_nodes.dedup();
+    // Looked up before anything is rewound, since a bail-out must leave the stores untouched. A
+    // create-only insert before the frontier may have been a no-op that set no payload.
+    let mut payloads_before = Vec::with_capacity(rewound_payload_nodes.len());
+    for node in rewound_payload_nodes {
+        let previous = storage.latest_payload_before(node, frontier)?;
+        if previous.as_ref().is_some_and(is_create_only) {
+            return Ok(None);
+        }
+        payloads_before.push((node, previous));
+    }
 
     // `head.seq` reflects the fully materialized suffix. Removing the already-materialized suffix
     // yields the trusted prefix length and the first seq that must be rewritten in the index.
@@ -909,9 +990,10 @@ where
     }
 
     index.truncate_from(truncate_from)?;
-    // The materialized suffix only set payloads, so structure already matches the frontier.
-    for node in rewound_payload_nodes {
-        rewind_payload_in_place(&mut payloads, storage, node, frontier)?;
+    // The materialized suffix only set payloads, so structure already matches the frontier, and
+    // create-only inserts in the suffix replay against the tree they applied to.
+    for (node, previous) in payloads_before {
+        rewind_payload_in_place(&mut payloads, node, previous)?;
     }
 
     // After rewinding, the backend stores now represent the prefix immediately before the
@@ -958,6 +1040,13 @@ where
 
     for node in affected_nodes {
         let existed_before = nodes.exists(*node)?;
+        let replayed = rebuilt.crdt.node_store_mut();
+        if !existed_before && !replayed.exists(*node)? {
+            continue;
+        }
+        // A parent that only a now-voided create-only insert named has a row on the backend but
+        // none in the replay. Patch it as the placeholder it is there.
+        replayed.ensure_node(*node)?;
         let previous_parent = if existed_before {
             nodes.parent(*node)?
         } else {
@@ -1007,8 +1096,18 @@ where
         let deleted_at = rebuilt.crdt.node_store_mut().deleted_at(*node)?;
         nodes.set_deleted_at_exact(*node, deleted_at.as_ref())?;
 
+        // Replay reports the payload of each op it applied, but a late op that voids a create-only
+        // insert leaves the payload to an earlier write, or to none, which no replayed op reports.
+        let payload = rebuilt.crdt.payload(*node)?;
+        if payloads.payload(*node)? != payload {
+            patch_changes.push(MaterializationChange::Payload {
+                node: *node,
+                payload: payload.clone(),
+                source: None,
+            });
+        }
         if let Some(writer) = rebuilt.crdt.payload_last_writer(*node)? {
-            payloads.set_payload(*node, rebuilt.crdt.payload(*node)?, writer)?;
+            payloads.set_payload(*node, payload, writer)?;
         } else {
             payloads.clear_payload(*node)?;
         }
@@ -1092,6 +1191,17 @@ where
     correct_replayed_moves(&mut replay_outcome, |node| {
         Ok((nodes.parent(node)?, rebuilt.crdt.node_store().parent(node)?))
     })?;
+    // A replay from the start recovers from a failed append, so the backend rows can hold more
+    // than consumers were told: report the inserts replay applied as inserts.
+    if !is_start_frontier(frontier) {
+        correct_replayed_inserts(&mut replay_outcome, |node| {
+            let replayed = rebuilt.crdt.node_store();
+            Ok((
+                (nodes.parent(node)?, nodes.order_key(node)?),
+                (replayed.parent(node)?, replayed.order_key(node)?),
+            ))
+        })?;
+    }
     let patch_changes = patch_final_state_in_place(
         &mut rebuilt,
         prefix_seq,
@@ -1117,18 +1227,38 @@ where
         visibility_key(change).is_none_or(|key| !repaired_visibility.contains(&key))
     });
 
+    let mut outcome = MaterializationOutcome::merge(
+        rebuilt.seq,
+        [
+            replay_outcome,
+            MaterializationOutcome::from_changes(rebuilt.seq, patch_changes),
+        ],
+    );
+    // Payloads too: coalescing keeps a node's last payload change over the payload a later insert
+    // or restore carries, so a replayed payload can be a superseded write. Report final payloads;
+    // patching reported each one that changed.
+    for mut change in std::mem::take(&mut outcome.changes) {
+        match &mut change {
+            MaterializationChange::Insert { node, payload, .. }
+            | MaterializationChange::Restore { node, payload, .. } => {
+                *payload = rebuilt.crdt.payload(*node)?;
+            }
+            MaterializationChange::Payload { node, payload, .. }
+                if *payload != rebuilt.crdt.payload(*node)? =>
+            {
+                continue;
+            }
+            _ => {}
+        }
+        outcome.changes.push(change);
+    }
+
     Ok(CatchUpResult {
         head: rebuilt
             .head
             .as_ref()
             .map(|head| MaterializationHead::from_op(head, rebuilt.seq)),
-        outcome: MaterializationOutcome::merge(
-            rebuilt.seq,
-            [
-                replay_outcome,
-                MaterializationOutcome::from_changes(rebuilt.seq, patch_changes),
-            ],
-        ),
+        outcome,
     })
 }
 

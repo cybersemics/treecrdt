@@ -23,7 +23,8 @@ mod util;
 use append::{treecrdt_append_op, treecrdt_append_ops};
 use doc_id::{treecrdt_doc_id, treecrdt_set_doc_id};
 use local_ops::{
-    treecrdt_local_delete, treecrdt_local_insert, treecrdt_local_move, treecrdt_local_payload,
+    treecrdt_local_delete, treecrdt_local_insert, treecrdt_local_insert_if_absent,
+    treecrdt_local_move, treecrdt_local_payload,
 };
 use materialize::{append_ops_impl, ensure_materialized, treecrdt_ensure_materialized};
 use oprefs::{treecrdt_oprefs_all, treecrdt_oprefs_children};
@@ -164,10 +165,11 @@ fn register_functions(db: *mut sqlite3, pz_err_msg: *mut *mut c_char) -> c_int {
 
     let rc_append = {
         let name = CString::new("treecrdt_append_op").expect("static name");
+        // -1 allows 9 or 10 args (..., then if_absent for a create-only insert)
         sqlite_create_function_v2(
             db,
             name.as_ptr(),
-            9,
+            -1,
             SQLITE_UTF8 as c_int,
             null_mut(),
             Some(treecrdt_append_op),
@@ -308,6 +310,21 @@ fn register_functions(db: *mut sqlite3, pz_err_msg: *mut *mut c_char) -> c_int {
             None,
         )
     };
+    let rc_local_insert_if_absent = {
+        let name = CString::new("treecrdt_local_insert_if_absent").expect("static name");
+        // The args of treecrdt_local_insert
+        sqlite_create_function_v2(
+            db,
+            name.as_ptr(),
+            -1,
+            SQLITE_UTF8 as c_int,
+            null_mut(),
+            Some(treecrdt_local_insert_if_absent),
+            None,
+            None,
+            None,
+        )
+    };
     let rc_local_move = {
         let name = CString::new("treecrdt_local_move").expect("static name");
         // -1 allows 5 to 7 args (..., then the key of placement 'at' or the bounds of 'between')
@@ -362,6 +379,7 @@ fn register_functions(db: *mut sqlite3, pz_err_msg: *mut *mut c_char) -> c_int {
         || rc_ops_by_oprefs != SQLITE_OK as c_int
         || rc_since != SQLITE_OK as c_int
         || rc_local_insert != SQLITE_OK as c_int
+        || rc_local_insert_if_absent != SQLITE_OK as c_int
         || rc_local_move != SQLITE_OK as c_int
         || rc_local_delete != SQLITE_OK as c_int
         || rc_local_payload != SQLITE_OK as c_int
@@ -391,6 +409,8 @@ fn register_functions(db: *mut sqlite3, pz_err_msg: *mut *mut c_char) -> c_int {
             rc_ops_by_oprefs
         } else if rc_local_insert != SQLITE_OK as c_int {
             rc_local_insert
+        } else if rc_local_insert_if_absent != SQLITE_OK as c_int {
+            rc_local_insert_if_absent
         } else if rc_local_move != SQLITE_OK as c_int {
             rc_local_move
         } else if rc_local_delete != SQLITE_OK as c_int {

@@ -977,7 +977,7 @@ impl Storage for PgOpStorage {
         let mut c = self.ctx.client.borrow_mut();
         let stmt = self.ctx.stmt(
             &mut c,
-            "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
+            "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state, if_absent \
              FROM treecrdt_ops WHERE doc_id = $1 AND lamport > $2 ORDER BY lamport, replica, counter",
         )?;
         let rows = c.query(&stmt, &[&self.ctx.doc_id, &(lamport as i64)]).map_err(storage_debug)?;
@@ -1034,7 +1034,7 @@ impl FrontierRewindStorage for PgOpStorage {
         let mut c = self.ctx.client.borrow_mut();
         let stmt = self.ctx.stmt(
             &mut c,
-            "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
+            "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state, if_absent \
              FROM treecrdt_ops \
              WHERE doc_id = $1 \
                AND (lamport > $2 OR (lamport = $2 AND (replica > $3 OR (replica = $3 AND counter >= $4)))) \
@@ -1067,7 +1067,7 @@ impl FrontierRewindStorage for PgOpStorage {
         let mut c = self.ctx.client.borrow_mut();
         let stmt = self.ctx.stmt(
             &mut c,
-            "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
+            "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state, if_absent \
              FROM treecrdt_ops \
              WHERE doc_id = $1 \
                AND node = $2 \
@@ -1093,66 +1093,7 @@ impl FrontierRewindStorage for PgOpStorage {
 }
 
 pub(crate) fn row_to_op(row: Row) -> Result<Operation> {
-    let lamport = row.get::<_, i64>(0).max(0) as Lamport;
-    let replica: Vec<u8> = row.get(1);
-    let counter = row.get::<_, i64>(2).max(0) as u64;
-    let kind: String = row.get(3);
-    let parent: Option<Vec<u8>> = row.get(4);
-    let node: Vec<u8> = row.get(5);
-    let new_parent: Option<Vec<u8>> = row.get(6);
-    let order_key: Option<Vec<u8>> = row.get(7);
-    let payload: Option<Vec<u8>> = row.get(8);
-    let known_state_bytes: Option<Vec<u8>> = row.get(9);
-    let known_state = match known_state_bytes {
-        None => None,
-        Some(b) => Some(VersionVector::decode(&b)?),
-    };
-
-    let replica_id = ReplicaId(replica);
-    let op_id = OperationId::new(&replica_id, counter);
-    let meta = treecrdt_core::OperationMetadata {
-        id: op_id,
-        lamport,
-        known_state,
-    };
-
-    let kind = match kind.as_str() {
-        "insert" => {
-            let parent = parent.ok_or_else(|| Error::Storage("insert op missing parent".into()))?;
-            let order_key =
-                order_key.ok_or_else(|| Error::Storage("insert op missing order_key".into()))?;
-            OperationKind::Insert {
-                parent: bytes_to_node(&parent)?,
-                node: bytes_to_node(&node)?,
-                order_key,
-                payload,
-            }
-        }
-        "move" => {
-            let new_parent =
-                new_parent.ok_or_else(|| Error::Storage("move op missing new_parent".into()))?;
-            let order_key =
-                order_key.ok_or_else(|| Error::Storage("move op missing order_key".into()))?;
-            OperationKind::Move {
-                node: bytes_to_node(&node)?,
-                new_parent: bytes_to_node(&new_parent)?,
-                order_key,
-            }
-        }
-        "delete" => OperationKind::Delete {
-            node: bytes_to_node(&node)?,
-        },
-        "tombstone" => OperationKind::Tombstone {
-            node: bytes_to_node(&node)?,
-        },
-        "payload" => OperationKind::Payload {
-            node: bytes_to_node(&node)?,
-            payload,
-        },
-        other => return Err(Error::Storage(format!("unknown op kind: {other}"))),
-    };
-
-    Ok(Operation { meta, kind })
+    row_to_op_at(&row, 0)
 }
 
 pub(crate) fn row_to_op_at(row: &Row, base: usize) -> Result<Operation> {
@@ -1166,6 +1107,7 @@ pub(crate) fn row_to_op_at(row: &Row, base: usize) -> Result<Operation> {
     let order_key: Option<Vec<u8>> = row.get(base + 7);
     let payload: Option<Vec<u8>> = row.get(base + 8);
     let known_state_bytes: Option<Vec<u8>> = row.get(base + 9);
+    let if_absent: bool = row.get(base + 10);
     let known_state = match known_state_bytes {
         None => None,
         Some(b) => Some(VersionVector::decode(&b)?),
@@ -1189,6 +1131,7 @@ pub(crate) fn row_to_op_at(row: &Row, base: usize) -> Result<Operation> {
                 node: bytes_to_node(&node)?,
                 order_key,
                 payload,
+                if_absent,
             }
         }
         "move" => {
@@ -1226,6 +1169,7 @@ struct OpDbFields {
     order_key: Option<Vec<u8>>,
     payload: Option<Vec<u8>>,
     known_state: Option<Vec<u8>>,
+    if_absent: bool,
 }
 
 fn op_kind_to_db(op: &Operation) -> Result<OpDbFields> {
@@ -1240,6 +1184,7 @@ fn op_kind_to_db(op: &Operation) -> Result<OpDbFields> {
             node,
             order_key,
             payload,
+            if_absent,
         } => Ok(OpDbFields {
             kind: "insert",
             parent: Some(node_to_bytes(*parent).to_vec()),
@@ -1248,6 +1193,7 @@ fn op_kind_to_db(op: &Operation) -> Result<OpDbFields> {
             order_key: Some(order_key.clone()),
             payload: payload.clone(),
             known_state,
+            if_absent: *if_absent,
         }),
         OperationKind::Move {
             node,
@@ -1261,6 +1207,7 @@ fn op_kind_to_db(op: &Operation) -> Result<OpDbFields> {
             order_key: Some(order_key.clone()),
             payload: None,
             known_state,
+            if_absent: false,
         }),
         OperationKind::Delete { node } => {
             let Some(bytes) = known_state else {
@@ -1276,6 +1223,7 @@ fn op_kind_to_db(op: &Operation) -> Result<OpDbFields> {
                 order_key: None,
                 payload: None,
                 known_state: Some(bytes),
+                if_absent: false,
             })
         }
         OperationKind::Tombstone { node } => Ok(OpDbFields {
@@ -1286,6 +1234,7 @@ fn op_kind_to_db(op: &Operation) -> Result<OpDbFields> {
             order_key: None,
             payload: None,
             known_state,
+            if_absent: false,
         }),
         OperationKind::Payload { node, payload } => Ok(OpDbFields {
             kind: "payload",
@@ -1295,6 +1244,7 @@ fn op_kind_to_db(op: &Operation) -> Result<OpDbFields> {
             order_key: None,
             payload: payload.clone(),
             known_state,
+            if_absent: false,
         }),
     }
 }
@@ -1307,8 +1257,8 @@ fn insert_op_in_tx(ctx: &PgCtx, c: &mut Client, op: &Operation) -> Result<bool> 
 
     let stmt = ctx.stmt(
         c,
-        "INSERT INTO treecrdt_ops (doc_id, op_ref, lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) \
+        "INSERT INTO treecrdt_ops (doc_id, op_ref, lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state, if_absent) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) \
          ON CONFLICT (doc_id, op_ref) DO NOTHING",
     )?;
     let inserted = c
@@ -1327,6 +1277,7 @@ fn insert_op_in_tx(ctx: &PgCtx, c: &mut Client, op: &Operation) -> Result<bool> 
                 &row.order_key,
                 &row.payload,
                 &row.known_state,
+                &row.if_absent,
             ],
         )
         .map_err(storage_debug)?;
@@ -1349,6 +1300,7 @@ fn bulk_insert_ops_in_tx(ctx: &PgCtx, c: &mut Client, ops: &[Operation]) -> Resu
     let mut order_keys: Vec<Option<Vec<u8>>> = Vec::with_capacity(ops.len());
     let mut payloads: Vec<Option<Vec<u8>>> = Vec::with_capacity(ops.len());
     let mut known_states: Vec<Option<Vec<u8>>> = Vec::with_capacity(ops.len());
+    let mut if_absents: Vec<bool> = Vec::with_capacity(ops.len());
 
     for op in ops {
         let replica = op.meta.id.replica.as_bytes();
@@ -1367,14 +1319,15 @@ fn bulk_insert_ops_in_tx(ctx: &PgCtx, c: &mut Client, ops: &[Operation]) -> Resu
         order_keys.push(row.order_key);
         payloads.push(row.payload);
         known_states.push(row.known_state);
+        if_absents.push(row.if_absent);
     }
 
     let stmt = ctx.stmt(
         c,
-        "INSERT INTO treecrdt_ops (doc_id, op_ref, lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state) \
+        "INSERT INTO treecrdt_ops (doc_id, op_ref, lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state, if_absent) \
          SELECT \
            $1, \
-           src.op_ref, src.lamport, src.replica, src.counter, src.kind, src.parent, src.node, src.new_parent, src.order_key, src.payload, src.known_state \
+           src.op_ref, src.lamport, src.replica, src.counter, src.kind, src.parent, src.node, src.new_parent, src.order_key, src.payload, src.known_state, src.if_absent \
          FROM unnest( \
            $2::bytea[], \
            $3::bigint[], \
@@ -1386,8 +1339,9 @@ fn bulk_insert_ops_in_tx(ctx: &PgCtx, c: &mut Client, ops: &[Operation]) -> Resu
            $9::bytea[], \
            $10::bytea[], \
            $11::bytea[], \
-           $12::bytea[] \
-         ) AS src(op_ref, lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state) \
+           $12::bytea[], \
+           $13::boolean[] \
+         ) AS src(op_ref, lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state, if_absent) \
          ON CONFLICT (doc_id, op_ref) DO NOTHING \
          RETURNING op_ref",
     )?;
@@ -1408,6 +1362,7 @@ fn bulk_insert_ops_in_tx(ctx: &PgCtx, c: &mut Client, ops: &[Operation]) -> Resu
                 &order_keys,
                 &payloads,
                 &known_states,
+                &if_absents,
             ],
         )
         .map_err(storage_debug)?;

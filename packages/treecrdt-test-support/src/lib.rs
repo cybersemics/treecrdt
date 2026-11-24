@@ -160,10 +160,8 @@ pub fn out_of_order_append_catches_up_immediately_from_frontier<
 
     harness.append_ops(&[second]);
     let outcome = harness.append_ops_with_materialization_outcome(slice::from_ref(&first));
-    assert_eq!(
-        changed_nodes(&outcome),
-        vec![NodeId::ROOT, node(1), node(2)]
-    );
+    // Replay inserts node 2 again, but it was already shown where it stays.
+    assert_eq!(changed_nodes(&outcome), vec![NodeId::ROOT, node(1)]);
     assert_replay_cleared(harness);
     assert_eq!(harness.head_seq(), 2);
     assert_eq!(
@@ -566,4 +564,73 @@ pub fn late_op_after_cycle_rejected_move_keeps_accepted_parent<
     assert_eq!(harness.visible_children(NodeId::ROOT), vec![b]);
     assert_eq!(harness.visible_children(b), vec![a]);
     assert_eq!(harness.visible_children(a), vec![late_node]);
+}
+
+/// A create-only insert is a no-op wherever its node is already placed. The backend shows one
+/// create, then an earlier one arrives: catch-up replays the stored ops, the shown create among
+/// them, so it reports a move to the earlier create's parent only if storage kept the flag. A
+/// replay from the start agrees.
+pub fn late_create_only_insert_voids_the_shown_one<H: MaterializationConformanceHarness>(
+    harness: &H,
+) {
+    let setup = ReplicaId::new(b"setup");
+    let (p1, p2, n) = (node(1), node(2), node(10));
+    harness.append_ops(&[
+        Operation::insert(&setup, 1, 1, NodeId::ROOT, p1, order_key_from_position(0)),
+        Operation::insert(&setup, 2, 2, NodeId::ROOT, p2, order_key_from_position(1)),
+    ]);
+    let shown = Operation::insert_if_absent(
+        &ReplicaId::new(b"b"),
+        7,
+        11,
+        p2,
+        n,
+        order_key_from_position(0),
+        Some(vec![2]),
+    );
+    let late = Operation::insert_if_absent(
+        &ReplicaId::new(b"a"),
+        3,
+        10,
+        p1,
+        n,
+        order_key_from_position(0),
+        Some(vec![1]),
+    );
+    harness.append_ops(slice::from_ref(&shown));
+    assert_eq!(harness.visible_children(p2), vec![n]);
+    assert_eq!(harness.op_ref_counters_for_parent(p2), vec![7]);
+
+    let outcome = harness.append_ops_with_materialization_outcome(slice::from_ref(&late));
+    assert_eq!(
+        outcome.changes,
+        vec![
+            MaterializationChange::Move {
+                node: n,
+                parent_before: Some(p2),
+                parent_after: p1,
+                source: Some(MaterializationSource::from_op(&late)),
+            },
+            MaterializationChange::Payload {
+                node: n,
+                payload: Some(vec![1]),
+                source: None,
+            },
+        ]
+    );
+    assert_replay_cleared(harness);
+    assert_eq!(harness.head_seq(), 4);
+    let assert_late_create_won = || {
+        assert_eq!(harness.visible_children(p1), vec![n]);
+        assert!(harness.visible_children(p2).is_empty());
+        assert_eq!(harness.payload(n), Some(vec![1]));
+        assert_eq!(harness.op_ref_counters_for_parent(p1), vec![3]);
+        assert!(harness.op_ref_counters_for_parent(p2).is_empty());
+    };
+    assert_late_create_won();
+
+    harness.force_replay_from_start();
+    harness.ensure_materialized();
+    assert_replay_cleared(harness);
+    assert_late_create_won();
 }

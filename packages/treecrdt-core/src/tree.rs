@@ -20,6 +20,25 @@ use crate::version_vector::VersionVector;
 struct NodeSnapshot {
     parent: Option<NodeId>,
     order_key: Option<Vec<u8>>,
+    /// The op changed nothing: a create-only insert of a node already in the tree.
+    noop: bool,
+}
+
+impl NodeSnapshot {
+    fn export(&self) -> NodeSnapshotExport {
+        NodeSnapshotExport {
+            parent: self.parent,
+            order_key: self.order_key.clone(),
+        }
+    }
+
+    /// The visible changes of `op`, applied on top of this snapshot.
+    fn direct_changes(&self, op: &Operation) -> Vec<MaterializationChange> {
+        if self.noop {
+            return Vec::new();
+        }
+        direct_materialization_changes(self.parent, op)
+    }
 }
 
 fn attach_source_if_missing(
@@ -196,6 +215,45 @@ where
         })
     }
 
+    /// Inserts `node` unless it is already in the tree: ROOT, TRASH, or attached anywhere, deleted
+    /// included. When it is, returns `None` and checks and writes nothing, not even a counter or
+    /// clock tick.
+    ///
+    /// Otherwise writes a create-only insert, which stays a no-op on every replica where an
+    /// earlier op placed the node, so an automatic create never moves a node someone placed.
+    pub fn local_insert_if_absent(
+        &mut self,
+        parent: NodeId,
+        node: NodeId,
+        placement: LocalPlacement,
+        payload: Option<Vec<u8>>,
+    ) -> Result<Option<(Operation, LocalFinalizePlan)>> {
+        let Some(prepared) =
+            self.prepare_local_insert_if_absent(parent, node, placement, payload)?
+        else {
+            return Ok(None);
+        };
+        self.commit_prepared_local(prepared).map(Some)
+    }
+
+    pub fn prepare_local_insert_if_absent(
+        &mut self,
+        parent: NodeId,
+        node: NodeId,
+        placement: LocalPlacement,
+        payload: Option<Vec<u8>>,
+    ) -> Result<Option<PreparedLocalOp>> {
+        // Checked before the op takes a counter, so a node already placed mints nothing.
+        if Self::is_placed(&self.nodes, node)? {
+            return Ok(None);
+        }
+        let mut prepared = self.prepare_local_insert(parent, node, placement, payload)?;
+        if let OperationKind::Insert { if_absent, .. } = &mut prepared.op.kind {
+            *if_absent = true;
+        }
+        Ok(Some(prepared))
+    }
+
     pub fn local_move(
         &mut self,
         node: NodeId,
@@ -309,7 +367,12 @@ where
         prepared: PreparedLocalOp,
     ) -> Result<(Operation, LocalFinalizePlan)> {
         let PreparedLocalOp { op, mut plan } = prepared;
-        let (op, tombstone_changed) = self.commit_local(op)?;
+        let (op, tombstone_changed, noop) = self.commit_local(op)?;
+        if noop {
+            // The node was placed between prepare and commit, so the create-only insert changed
+            // nothing and has nothing to report or index.
+            plan = LocalFinalizePlan::default();
+        }
         // A local write can restore or hide the node and its ancestors, as a remote apply of the
         // same op would. The plan already reports a local delete of its own node.
         let deleted = match &op.kind {
@@ -381,25 +444,29 @@ where
     /// - `Some(delta)` for in-order applies where an exact changed-node set is known,
     /// - `None` for duplicate/not-applied ops or paths that require replay.
     pub fn apply_remote_with_delta(&mut self, op: Operation) -> Result<Option<ApplyDelta>> {
-        self.observe_remote(&op);
+        let Some(snapshot) = self.apply_remote_with_snapshot(&op)? else {
+            return Ok(None);
+        };
+        Ok(Some(ApplyDelta {
+            snapshot: snapshot.export(),
+            changes: snapshot.direct_changes(&op),
+        }))
+    }
+
+    /// Persists and applies one remote op, returning its node's state before the op when it
+    /// applied in order.
+    fn apply_remote_with_snapshot(&mut self, op: &Operation) -> Result<Option<NodeSnapshot>> {
+        self.observe_remote(op);
 
         if !self.storage.apply(op.clone())? {
             return Ok(None);
         }
 
-        if self.is_in_order(&op) {
-            let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
+        if self.is_in_order(op) {
+            let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, op)?;
             self.op_count += 1;
             self.head = Some(op.clone());
-
-            let changes = direct_materialization_changes(snapshot.parent, &op);
-            return Ok(Some(ApplyDelta {
-                snapshot: NodeSnapshotExport {
-                    parent: snapshot.parent,
-                    order_key: snapshot.order_key,
-                },
-                changes,
-            }));
+            return Ok(Some(snapshot));
         }
 
         // Out-of-order operation: catch derived state up from storage.
@@ -420,21 +487,13 @@ where
         seq: &mut u64,
     ) -> Result<Option<ApplyDelta>> {
         *seq = (*seq).saturating_add(1);
-        let delta = self.apply_remote_with_delta(op.clone())?;
-        let Some(delta) = delta else {
+        let Some(snapshot) = self.apply_remote_with_snapshot(&op)? else {
             *seq = (*seq).saturating_sub(1);
             return Ok(None);
         };
-        let snapshot = NodeSnapshot {
-            parent: delta.snapshot.parent,
-            order_key: delta.snapshot.order_key,
-        };
+        let changes = snapshot.direct_changes(&op);
         Ok(Some(self.finalize_materialized_apply(
-            snapshot,
-            &op,
-            index,
-            *seq,
-            delta.changes,
+            snapshot, &op, index, *seq, changes,
         )?))
     }
 
@@ -455,7 +514,7 @@ where
         self.op_count = seq;
         self.head = Some(op.clone());
 
-        let changes = direct_materialization_changes(snapshot.parent, &op);
+        let changes = snapshot.direct_changes(&op);
         self.finalize_materialized_apply(snapshot, &op, index, seq, changes)
     }
 
@@ -471,6 +530,13 @@ where
         seq: u64,
         mut changes: Vec<MaterializationChange>,
     ) -> Result<ApplyDelta> {
+        // A no-op touched no parent: nothing to index for partial sync, no tombstone to refresh.
+        if snapshot.noop {
+            return Ok(ApplyDelta {
+                snapshot: snapshot.export(),
+                changes,
+            });
+        }
         let op_node = op.kind.node();
         let parent_after = match &op.kind {
             OperationKind::Insert { parent, .. } => Some(*parent),
@@ -509,10 +575,7 @@ where
         }));
 
         Ok(ApplyDelta {
-            snapshot: NodeSnapshotExport {
-                parent: snapshot.parent,
-                order_key: snapshot.order_key,
-            },
+            snapshot: snapshot.export(),
             changes: coalesce_materialization_changes(changes),
         })
     }
@@ -745,6 +808,7 @@ where
             nodes.push(NodeExport {
                 node,
                 parent: self.nodes.parent(node)?,
+                order_key: self.nodes.order_key(node)?,
                 children: self.nodes.children(node)?,
                 last_change: self.nodes.last_change(node)?,
                 deleted_at: self.nodes.deleted_at(node)?,
@@ -765,18 +829,23 @@ where
         &mut self.nodes
     }
 
-    fn commit_local(&mut self, op: Operation) -> Result<(Operation, Vec<TombstoneDelta>)> {
+    /// Persists and applies a local op. The flag is true when it applied as a no-op.
+    fn commit_local(&mut self, op: Operation) -> Result<(Operation, Vec<TombstoneDelta>, bool)> {
         self.version_vector.observe(&self.replica_id, op.meta.id.counter);
         if !self.storage.apply(op.clone())? {
-            return Ok((op, Vec::new()));
+            return Ok((op, Vec::new(), false));
         }
         let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
-        let mut starts = affected_parents(snapshot.parent, &op.kind);
-        starts.push(op.kind.node());
-        let tombstone_changed = self.refresh_tombstones_upward_with_delta(starts)?;
+        let tombstone_changed = if snapshot.noop {
+            Vec::new()
+        } else {
+            let mut starts = affected_parents(snapshot.parent, &op.kind);
+            starts.push(op.kind.node());
+            self.refresh_tombstones_upward_with_delta(starts)?
+        };
         self.op_count += 1;
         self.head = Some(op.clone());
-        Ok((op, tombstone_changed))
+        Ok((op, tombstone_changed, snapshot.noop))
     }
 
     fn seed(replica: &ReplicaId, counter: u64) -> Vec<u8> {
@@ -930,14 +999,21 @@ where
     }
 
     fn apply_forward(nodes: &mut N, payloads: &mut P, op: &Operation) -> Result<NodeSnapshot> {
-        let snapshot = Self::snapshot(nodes, op)?;
+        let mut snapshot = Self::snapshot(nodes, op)?;
         match &op.kind {
             OperationKind::Insert {
                 parent,
                 node,
                 order_key,
                 payload,
+                if_absent,
             } => {
+                // A create-only insert of a placed node leaves no trace: no move, no payload, no
+                // last_change, so it is never a concurrent change that revives a deleted subtree.
+                if *if_absent && Self::is_placed(nodes, *node)? {
+                    snapshot.noop = true;
+                    return Ok(snapshot);
+                }
                 Self::apply_insert(nodes, op, *parent, *node, order_key.clone())?;
                 if payload.is_some() {
                     Self::apply_payload(nodes, payloads, op, *node, payload.as_deref())?;
@@ -968,7 +1044,17 @@ where
         nodes.ensure_node(node_id)?;
         let parent = nodes.parent(node_id)?;
         let order_key = nodes.order_key(node_id)?;
-        Ok(NodeSnapshot { parent, order_key })
+        Ok(NodeSnapshot {
+            parent,
+            order_key,
+            noop: false,
+        })
+    }
+
+    /// Whether `node` is in the tree: ROOT, TRASH, or attached anywhere, deleted included. A row
+    /// alone does not count: naming a node as a parent or writing its payload creates one.
+    fn is_placed(nodes: &N, node: NodeId) -> Result<bool> {
+        Ok(node == NodeId::ROOT || node == NodeId::TRASH || nodes.parent(node)?.is_some())
     }
 
     fn apply_insert(

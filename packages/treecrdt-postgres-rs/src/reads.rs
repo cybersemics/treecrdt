@@ -152,7 +152,7 @@ pub fn get_ops_by_op_refs(
         &mut c,
         "SELECT \
           i.ord, \
-          o.lamport, o.replica, o.counter, o.kind, o.parent, o.node, o.new_parent, o.order_key, o.payload, o.known_state \
+          o.lamport, o.replica, o.counter, o.kind, o.parent, o.node, o.new_parent, o.order_key, o.payload, o.known_state, o.if_absent \
          FROM unnest($2::bytea[]) WITH ORDINALITY AS i(op_ref, ord) \
          LEFT JOIN treecrdt_ops o \
            ON o.doc_id = $1 AND o.op_ref = i.op_ref \
@@ -183,7 +183,7 @@ pub fn ops_since(
     let mut c = client.borrow_mut();
     let stmt = ctx.stmt(
         &mut c,
-        "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state \
+        "SELECT lamport, replica, counter, kind, parent, node, new_parent, order_key, payload, known_state, if_absent \
          FROM treecrdt_ops \
          WHERE doc_id = $1 AND lamport > $2 \
            AND ($3::bytea IS NULL OR parent = $3 OR node = $3 OR new_parent = $3) \

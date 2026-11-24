@@ -1046,11 +1046,8 @@ async function scenarioMaterializationEventDefensiveRestore(
     deletion.meta.knownState,
     'receiver must preserve exact delete knownState bytes',
   );
-  assert(deleteEvents.length > 0, 'received delete must emit a materialization event');
-  assertEventNodeRefsSortedUnique(
-    materializationEventNodeRefs(deleteEvents[deleteEvents.length - 1]!),
-    'received delete event node refs',
-  );
+  // The child the deleter never saw keeps the parent visible, so the receiver shows no change.
+  assertEqual(deleteEvents.length, 0, 'received delete changes nothing the receiver shows');
   assertArrayEqual(
     (await b.tree.root.children()).map((node) => node.id),
     [parent],

@@ -25,6 +25,9 @@ struct JsonOp {
     order_key: Option<Vec<u8>>,
     known_state: Option<Vec<u8>>,
     payload: Option<Vec<u8>>,
+    /// Written only for create-only inserts.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    if_absent: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -74,6 +77,7 @@ fn json_op_from_operation(op: Operation) -> Result<JsonOp, c_int> {
             node,
             order_key,
             payload,
+            if_absent,
         } => Ok(JsonOp {
             replica,
             counter,
@@ -85,6 +89,7 @@ fn json_op_from_operation(op: Operation) -> Result<JsonOp, c_int> {
             order_key: Some(order_key),
             known_state: None,
             payload,
+            if_absent,
         }),
         OperationKind::Move {
             node,
@@ -101,6 +106,7 @@ fn json_op_from_operation(op: Operation) -> Result<JsonOp, c_int> {
             order_key: Some(order_key),
             known_state: None,
             payload: None,
+            if_absent: false,
         }),
         OperationKind::Delete { node } => Ok(JsonOp {
             replica,
@@ -113,6 +119,7 @@ fn json_op_from_operation(op: Operation) -> Result<JsonOp, c_int> {
             order_key: None,
             known_state,
             payload: None,
+            if_absent: false,
         }),
         OperationKind::Tombstone { node } => Ok(JsonOp {
             replica,
@@ -125,6 +132,7 @@ fn json_op_from_operation(op: Operation) -> Result<JsonOp, c_int> {
             order_key: None,
             known_state,
             payload: None,
+            if_absent: false,
         }),
         OperationKind::Payload { node, payload } => Ok(JsonOp {
             replica,
@@ -137,6 +145,7 @@ fn json_op_from_operation(op: Operation) -> Result<JsonOp, c_int> {
             order_key: None,
             known_state: None,
             payload,
+            if_absent: false,
         }),
     }
 }
@@ -297,26 +306,52 @@ fn finish_local_core_op(
     })
 }
 
+/// Runs a local op in a savepoint. When `build` prepares no op, it writes nothing, a catch-up
+/// included, and returns None.
 fn run_local_core_op<F>(
     db: *mut sqlite3,
     doc_id: Vec<u8>,
     replica: Vec<u8>,
     savepoint_name: &str,
     build: F,
-) -> Result<JsonLocalOpResult, c_int>
+) -> Result<Option<JsonLocalOpResult>, c_int>
 where
-    F: FnOnce(&mut LocalCrdt) -> treecrdt_core::Result<PreparedLocalOp>,
+    F: FnOnce(&mut LocalCrdt) -> treecrdt_core::Result<Option<PreparedLocalOp>>,
 {
     let mut session = begin_local_core_op(db, &doc_id, &replica, savepoint_name)?;
     let prepared = match build(&mut session.crdt) {
-        Ok(v) => v,
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            session.rollback(SQLITE_OK as c_int);
+            return Ok(None);
+        }
         Err(err) => return Err(session.rollback(sqlite_err_from_core(err))),
     };
     let (op, plan) = match session.crdt.commit_prepared_local(prepared) {
         Ok(v) => v,
         Err(err) => return Err(session.rollback(sqlite_err_from_core(err))),
     };
-    finish_local_core_op(session, op, plan)
+    finish_local_core_op(session, op, plan).map(Some)
+}
+
+/// Sets a local op function's result: the op and its outcome as JSON, or NULL when it wrote nothing.
+fn sqlite_result_local_op(
+    ctx: *mut sqlite3_context,
+    out: Result<Option<JsonLocalOpResult>, c_int>,
+) {
+    match out {
+        Ok(Some(out)) => sqlite_result_json(ctx, &out),
+        // A function that sets no result returns NULL.
+        Ok(None) => {}
+        Err(rc) => sqlite_result_error_code(ctx, rc),
+    }
+}
+
+/// Sets the error result `{function}: {reason}`.
+fn sqlite_result_function_error(ctx: *mut sqlite3_context, function: &str, reason: &str) {
+    // Both parts are static, with no NUL byte to fail on.
+    let message = CString::new(format!("{function}: {reason}")).unwrap_or_default();
+    sqlite_result_error(ctx, message.as_ptr());
 }
 
 /// Reads the placement of a local insert or move from its name, its `after` arg and its trailing
@@ -351,9 +386,7 @@ fn read_placement(
         },
         _ => "only placements at and between take trailing args",
     };
-    // Both parts are static, with no NUL byte to fail on.
-    let message = CString::new(format!("{function}: {reason}")).unwrap_or_default();
-    sqlite_result_error(ctx, message.as_ptr());
+    sqlite_result_function_error(ctx, function, reason);
     None
 }
 
@@ -366,73 +399,65 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
     argc: c_int,
     argv: *mut *mut sqlite3_value,
 ) {
+    local_insert(ctx, argc, argv, "treecrdt_local_insert", false);
+}
+
+/// `treecrdt_local_insert_if_absent(...)`, with the args of `treecrdt_local_insert`, writes a
+/// create-only insert, which stays a no-op wherever an earlier op placed the node. When the node is
+/// already in the tree (ROOT, TRASH, or attached anywhere, deleted included), it returns NULL and
+/// writes nothing.
+pub(super) unsafe extern "C" fn treecrdt_local_insert_if_absent(
+    ctx: *mut sqlite3_context,
+    argc: c_int,
+    argv: *mut *mut sqlite3_value,
+) {
+    local_insert(ctx, argc, argv, "treecrdt_local_insert_if_absent", true);
+}
+
+fn local_insert(
+    ctx: *mut sqlite3_context,
+    argc: c_int,
+    argv: *mut *mut sqlite3_value,
+    function: &str,
+    if_absent: bool,
+) {
     if let Err(rc) = ensure_api_initialized() {
         sqlite_result_error_code(ctx, rc);
         return;
     }
 
     if !(6..=8).contains(&argc) {
-        sqlite_result_error(
-            ctx,
-            b"treecrdt_local_insert expects 6 args (replica,parent,node,placement,after,payload), \
-              then the key of placement at or the left and right bounds of placement between\0"
-                .as_ptr() as *const c_char,
-        );
+        // Static, with no NUL byte to fail on.
+        let message = CString::new(format!(
+            "{function} expects 6 args (replica,parent,node,placement,after,payload), \
+             then the key of placement at or the left and right bounds of placement between"
+        ))
+        .unwrap_or_default();
+        sqlite_result_error(ctx, message.as_ptr());
         return;
     }
 
     let args = unsafe { slice::from_raw_parts(argv, argc as usize) };
-    let replica = match read_required_blob(args[0]) {
-        Ok(v) => v,
-        Err(_) => {
-            sqlite_result_error(
-                ctx,
-                b"treecrdt_local_insert: NULL replica\0".as_ptr() as *const c_char,
-            );
-            return;
-        }
+    let Ok(replica) = read_required_blob(args[0]) else {
+        sqlite_result_function_error(ctx, function, "NULL replica");
+        return;
     };
-    let parent = match read_blob16(args[1]) {
-        Ok(v) => v,
-        Err(_) => {
-            sqlite_result_error(
-                ctx,
-                b"treecrdt_local_insert: parent must be 16-byte BLOB\0".as_ptr() as *const c_char,
-            );
-            return;
-        }
+    let Ok(parent) = read_blob16(args[1]) else {
+        sqlite_result_function_error(ctx, function, "parent must be 16-byte BLOB");
+        return;
     };
-    let node = match read_blob16(args[2]) {
-        Ok(v) => v,
-        Err(_) => {
-            sqlite_result_error(
-                ctx,
-                b"treecrdt_local_insert: node must be 16-byte BLOB\0".as_ptr() as *const c_char,
-            );
-            return;
-        }
+    let Ok(node) = read_blob16(args[2]) else {
+        sqlite_result_function_error(ctx, function, "node must be 16-byte BLOB");
+        return;
     };
     let placement = read_text(args[3]);
-    let after = match read_optional_blob16(args[4]) {
-        Ok(v) => v,
-        Err(_) => {
-            sqlite_result_error(
-                ctx,
-                b"treecrdt_local_insert: after must be 16-byte BLOB or NULL\0".as_ptr()
-                    as *const c_char,
-            );
-            return;
-        }
+    let Ok(after) = read_optional_blob16(args[4]) else {
+        sqlite_result_function_error(ctx, function, "after must be 16-byte BLOB or NULL");
+        return;
     };
     let payload = read_blob(args[5]);
     let after_id = after.map(|id| NodeId(u128::from_be_bytes(id)));
-    let Some(placement) = read_placement(
-        ctx,
-        "treecrdt_local_insert",
-        &placement,
-        after_id,
-        &args[6..],
-    ) else {
+    let Some(placement) = read_placement(ctx, function, &placement, after_id, &args[6..]) else {
         return;
     };
 
@@ -440,10 +465,10 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
     let doc_id = match load_doc_id(db) {
         Ok(Some(v)) => v,
         Ok(None) => {
-            sqlite_result_error(
+            sqlite_result_function_error(
                 ctx,
-                b"treecrdt_local_insert: doc_id not set (call treecrdt_set_doc_id)\0".as_ptr()
-                    as *const c_char,
+                function,
+                "doc_id not set (call treecrdt_set_doc_id)",
             );
             return;
         }
@@ -455,17 +480,14 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
 
     let parent_id = NodeId(u128::from_be_bytes(parent));
     let node_id = NodeId(u128::from_be_bytes(node));
-    let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_insert", |crdt| {
-        crdt.prepare_local_insert(parent_id, node_id, placement, payload.clone())
-    }) {
-        Ok(v) => v,
-        Err(rc) => {
-            sqlite_result_error_code(ctx, rc);
-            return;
+    let out = run_local_core_op(db, doc_id, replica, function, |crdt| {
+        if if_absent {
+            crdt.prepare_local_insert_if_absent(parent_id, node_id, placement, payload)
+        } else {
+            crdt.prepare_local_insert(parent_id, node_id, placement, payload).map(Some)
         }
-    };
-
-    sqlite_result_json(ctx, &out);
+    });
+    sqlite_result_local_op(ctx, out);
 }
 
 /// `treecrdt_local_move(replica, node, new_parent, placement, after, ...)`, with the trailing args
@@ -559,16 +581,10 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
 
     let node_id = NodeId(u128::from_be_bytes(node));
     let new_parent_id = NodeId(u128::from_be_bytes(new_parent));
-    let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_move", |crdt| {
-        crdt.prepare_local_move(node_id, new_parent_id, placement)
-    }) {
-        Ok(v) => v,
-        Err(rc) => {
-            sqlite_result_error_code(ctx, rc);
-            return;
-        }
-    };
-    sqlite_result_json(ctx, &out);
+    let out = run_local_core_op(db, doc_id, replica, "treecrdt_local_move", |crdt| {
+        crdt.prepare_local_move(node_id, new_parent_id, placement).map(Some)
+    });
+    sqlite_result_local_op(ctx, out);
 }
 
 pub(super) unsafe extern "C" fn treecrdt_local_delete(
@@ -629,16 +645,10 @@ pub(super) unsafe extern "C" fn treecrdt_local_delete(
     };
 
     let node_id = NodeId(u128::from_be_bytes(node));
-    let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_delete", |crdt| {
-        crdt.prepare_local_delete(node_id)
-    }) {
-        Ok(v) => v,
-        Err(rc) => {
-            sqlite_result_error_code(ctx, rc);
-            return;
-        }
-    };
-    sqlite_result_json(ctx, &out);
+    let out = run_local_core_op(db, doc_id, replica, "treecrdt_local_delete", |crdt| {
+        crdt.prepare_local_delete(node_id).map(Some)
+    });
+    sqlite_result_local_op(ctx, out);
 }
 
 pub(super) unsafe extern "C" fn treecrdt_local_payload(
@@ -701,14 +711,8 @@ pub(super) unsafe extern "C" fn treecrdt_local_payload(
     };
 
     let node_id = NodeId(u128::from_be_bytes(node));
-    let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_payload", |crdt| {
-        crdt.prepare_local_payload(node_id, payload.clone())
-    }) {
-        Ok(v) => v,
-        Err(rc) => {
-            sqlite_result_error_code(ctx, rc);
-            return;
-        }
-    };
-    sqlite_result_json(ctx, &out);
+    let out = run_local_core_op(db, doc_id, replica, "treecrdt_local_payload", |crdt| {
+        crdt.prepare_local_payload(node_id, payload).map(Some)
+    });
+    sqlite_result_local_op(ctx, out);
 }
