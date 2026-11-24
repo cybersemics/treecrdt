@@ -709,9 +709,9 @@ export type TreecrdtSqlitePlacement =
    */
   | { type: 'between'; left: Uint8Array | null; right: Uint8Array | null }
   /**
-   * Exactly `key`, so devices that derive a key the same way place a node alike. It must be
-   * canonical, as allocated keys are: whole big-endian u16 digits, the last non-zero. Nodes with
-   * equal keys go in node-id order.
+   * `key`, then the node id and a final 1 digit, so devices that derive `key` the same way place a
+   * node alike, nodes placed at one `key` go in node-id order, and no two nodes share a key. `key`
+   * must be non-empty whole big-endian u16 digits.
    */
   | { type: 'at'; key: Uint8Array };
 

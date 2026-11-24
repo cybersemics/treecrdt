@@ -18,6 +18,11 @@ fn at(key: &[u8]) -> LocalPlacement {
     LocalPlacement::At { key: key.to_vec() }
 }
 
+/// The key placement 'at' gives `node`: `key`, then the node id and a final 1 digit.
+fn key_at(key: &[u8], node: NodeId) -> Vec<u8> {
+    [key, &node.0.to_be_bytes(), &[0x00, 0x01]].concat()
+}
+
 fn order_key(op: &Operation) -> &[u8] {
     match &op.kind {
         OperationKind::Insert { order_key, .. } | OperationKind::Move { order_key, .. } => {
@@ -28,59 +33,55 @@ fn order_key(op: &Operation) -> &[u8] {
 }
 
 #[test]
-fn inserts_and_moves_get_exactly_the_key() {
+fn inserts_and_moves_get_the_key_then_the_node_id() {
     let mut crdt = tree(b"a");
     let (a, b, c) = (NodeId(1), NodeId(2), NodeId(3));
 
     let (insert_a, _) = crdt.local_insert(NodeId::ROOT, a, at(&[0x00, 0x05]), None).unwrap();
     let (insert_b, _) = crdt.local_insert(NodeId::ROOT, b, at(&[0x00, 0x03]), None).unwrap();
-    assert_eq!(order_key(&insert_a), [0x00, 0x05]);
-    assert_eq!(order_key(&insert_b), [0x00, 0x03]);
+    assert_eq!(order_key(&insert_a), key_at(&[0x00, 0x05], a));
+    assert_eq!(order_key(&insert_b), key_at(&[0x00, 0x03], b));
     assert_eq!(crdt.children(NodeId::ROOT).unwrap(), [b, a]);
 
     crdt.local_insert(NodeId::ROOT, c, LocalPlacement::Last, None).unwrap();
     let (move_c, _) = crdt.local_move(c, NodeId::ROOT, at(&[0x00, 0x04])).unwrap();
     assert!(matches!(move_c.kind, OperationKind::Move { node, .. } if node == c));
-    assert_eq!(order_key(&move_c), [0x00, 0x04]);
+    assert_eq!(order_key(&move_c), key_at(&[0x00, 0x04], c));
     assert_eq!(crdt.children(NodeId::ROOT).unwrap(), [b, c, a]);
 }
 
+/// Nodes placed at one key still get different keys, so an insert or a move after the first of
+/// them goes between them, not after both.
 #[test]
-fn other_placements_find_room_next_to_exact_keys() {
+fn placements_after_a_node_go_before_the_next_node_at_its_key() {
     let mut crdt = tree(b"a");
-    let [a, b, first, after_a, last] = [1, 2, 3, 4, 5].map(NodeId);
-    // Only keys longer than both lie between these two.
-    crdt.local_insert(NodeId::ROOT, a, at(&[0x00, 0x05]), None).unwrap();
-    crdt.local_insert(NodeId::ROOT, b, at(&[0x00, 0x05, 0x00, 0x01]), None).unwrap();
+    let [x, y, inserted, moved] = [1, 2, 3, 4].map(NodeId);
+    let key = [0x00, 0x05];
+    crdt.local_insert(NodeId::ROOT, x, at(&key), None).unwrap();
+    crdt.local_insert(NodeId::ROOT, y, at(&key), None).unwrap();
+    crdt.local_insert(NodeId::ROOT, moved, LocalPlacement::Last, None).unwrap();
+    assert_eq!(crdt.children(NodeId::ROOT).unwrap(), [x, y, moved]);
 
-    crdt.local_insert(NodeId::ROOT, first, LocalPlacement::First, None).unwrap();
-    crdt.local_insert(NodeId::ROOT, after_a, LocalPlacement::After(a), None)
+    crdt.local_insert(NodeId::ROOT, inserted, LocalPlacement::After(x), None)
         .unwrap();
-    crdt.local_insert(NodeId::ROOT, last, LocalPlacement::Last, None).unwrap();
-
     assert_eq!(
         crdt.children(NodeId::ROOT).unwrap(),
-        [first, a, after_a, b, last]
+        [x, inserted, y, moved]
+    );
+    crdt.local_move(moved, NodeId::ROOT, LocalPlacement::After(x)).unwrap();
+    assert_eq!(
+        crdt.children(NodeId::ROOT).unwrap(),
+        [x, moved, inserted, y]
     );
 }
 
 #[test]
-fn rejects_keys_that_are_not_canonical() {
+fn rejects_keys_that_are_not_whole_digits() {
     let mut crdt = tree(b"a");
     let (node, other) = (NodeId(1), NodeId(2));
     crdt.local_insert(NodeId::ROOT, node, LocalPlacement::First, None).unwrap();
-    let (empty, odd, zero) = (
-        "key must not be empty",
-        "key must have even length",
-        "key must not end in a zero digit",
-    );
-    let cases: [(&[u8], &str); 5] = [
-        (&[], empty),
-        (&[0x05], odd),
-        (&[0x00, 0x05, 0x01], odd),
-        (&[0x00, 0x00], zero),
-        (&[0x00, 0x05, 0x00, 0x00], zero),
-    ];
+    let (empty, odd) = ("key must not be empty", "key must have even length");
+    let cases: [(&[u8], &str); 3] = [(&[], empty), (&[0x05], odd), (&[0x00, 0x05, 0x01], odd)];
 
     for (key, reason) in cases {
         let insert = crdt.local_insert(NodeId::ROOT, other, at(key), None);
@@ -92,9 +93,11 @@ fn rejects_keys_that_are_not_canonical() {
             );
         }
     }
-    // No rejected key uses up a counter or ticks the clock.
-    let (op, _) = crdt.local_insert(NodeId::ROOT, other, at(&[0x00, 0x01]), None).unwrap();
+    // No rejected key uses up a counter or ticks the clock. A key may end in a zero digit: the
+    // node id and the final 1 after it keep the key canonical.
+    let (op, _) = crdt.local_insert(NodeId::ROOT, other, at(&[0x00, 0x00]), None).unwrap();
     assert_eq!((op.meta.id.counter, op.meta.lamport), (2, 2));
+    assert_eq!(order_key(&op), key_at(&[0x00, 0x00], other));
     // Engines that name placements cannot pass a key.
     assert!(matches!(
         LocalPlacement::from_parts("at", None),
@@ -111,7 +114,7 @@ fn insert_or_move_at_a_key_into_trash_gets_an_empty_key_like_other_placements() 
 
     let (last, _) = crdt.local_move(a, NodeId::TRASH, LocalPlacement::Last).unwrap();
     let (moved, _) = crdt.local_move(b, NodeId::TRASH, at(&[0x00, 0x05])).unwrap();
-    // Trashed nodes have no order, so not even a key that is not canonical matters.
+    // Trashed nodes have no order, so not even a key that would be rejected matters.
     let (inserted, _) = crdt.local_insert(NodeId::TRASH, c, at(&[]), None).unwrap();
     assert!(order_key(&last).is_empty());
     assert_eq!(order_key(&moved), order_key(&last));
@@ -134,7 +137,7 @@ fn replicas_placing_at_one_key_converge() {
     a.apply_remote_batch([b_shared, insert_y]).unwrap();
     b.apply_remote_batch([a_shared, insert_x]).unwrap();
 
-    // Equal keys go in node-id order.
+    // Nodes placed at one key go in node-id order.
     assert_eq!(a.children(NodeId::ROOT).unwrap(), [shared, y, x]);
     assert_eq!(b.children(NodeId::ROOT).unwrap(), [shared, y, x]);
 }

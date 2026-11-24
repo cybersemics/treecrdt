@@ -1126,7 +1126,11 @@ fn local_insert_and_move_place_at_a_key() {
         .unwrap();
     let op = &decode_ops_or_local_result(&json)[0];
     assert_eq!(op.kind, "insert");
-    assert_eq!(op.order_key, Some(key_a));
+    // The key, then the node id and a final 1 digit.
+    assert_eq!(
+        op.order_key,
+        Some([key_a, node_a.clone(), vec![0x00, 0x01]].concat())
+    );
 
     // Placements by sibling keep the 6-arg call.
     let _: String = conn
@@ -1150,12 +1154,15 @@ fn local_insert_and_move_place_at_a_key() {
         .unwrap();
     let op = &decode_ops_or_local_result(&json)[0];
     assert_eq!(op.kind, "move");
-    assert_eq!(op.order_key, Some(key_b));
+    assert_eq!(
+        op.order_key,
+        Some([key_b, node_b.clone(), vec![0x00, 0x01]].concat())
+    );
     assert_eq!(visible_children(&conn, &parent), vec![node_b, node_a]);
 }
 
 #[test]
-fn local_at_rejects_wrong_args_and_keys_that_are_not_canonical() {
+fn local_at_rejects_wrong_args_and_keys_that_are_not_whole_digits() {
     let conn = setup_conn();
 
     let replica = b"r1".to_vec();
@@ -1215,12 +1222,10 @@ fn local_at_rejects_wrong_args_and_keys_that_are_not_canonical() {
     ] {
         assert!(error(sql).contains(message), "{sql}: {}", error(sql));
     }
-    // Keys that are empty, odd-length, or end in a zero digit.
+    // Keys that are empty or odd-length.
     for sql in [
         "SELECT treecrdt_local_insert(?1, ?2, ?3, 'at', NULL, NULL, X'')",
         "SELECT treecrdt_local_move(?1, ?3, ?2, 'at', NULL, X'000501')",
-        "SELECT treecrdt_local_move(?1, ?3, ?2, 'at', NULL, X'0000')",
-        "SELECT treecrdt_local_move(?1, ?3, ?2, 'at', NULL, X'00050000')",
     ] {
         error(sql);
     }
@@ -1255,7 +1260,11 @@ fn local_insert_if_absent_writes_nothing_for_a_node_in_the_tree() {
     assert!(op.if_absent);
     assert_eq!(
         (op.counter, op.order_key.clone(), op.payload.clone()),
-        (1, Some(vec![0x00, 0x05]), Some(vec![0x05]))
+        (
+            1,
+            Some([vec![0x00, 0x05], node.clone(), vec![0x00, 0x01]].concat()),
+            Some(vec![0x05])
+        )
     );
     let outcome =
         json_outcome_to_core(serde_json::from_str::<JsonLocalOpResult>(&json).unwrap().outcome);

@@ -160,7 +160,7 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioLocalPlacementBetween,
     },
     {
-      name: 'local ops: placement at puts nodes at exactly an order key',
+      name: 'local ops: placement at puts nodes at an order key, then their id',
       run: scenarioLocalPlacementAt,
     },
     {
@@ -718,6 +718,9 @@ async function scenarioLocalPlacementAt(ctx: TreecrdtEngineConformanceContext): 
   const root = nodeIdFromInt(0);
   const [a, b, c, d] = [1, 2, 3, 4].map(nodeIdFromInt);
   const at = (...key: number[]) => ({ type: 'at', key: Uint8Array.from(key) }) as const;
+  // The key, then the node id and a final 1 digit.
+  const keyAt = (node: string, ...key: number[]) =>
+    Uint8Array.from([...key, ...nodeIdToBytes16(node), 0, 1]);
   const children = async () => (await engine.tree.root.children()).map((node) => node.id);
 
   let insertA: Operation;
@@ -727,27 +730,29 @@ async function scenarioLocalPlacementAt(ctx: TreecrdtEngineConformanceContext): 
     if (!String(error).includes("does not support placement 'at'")) throw error;
     return ctx.skip('engine has no at placement');
   }
-  assertBytesEqual(keyOf(insertA), Uint8Array.of(0, 5), 'insert at a key');
+  assertBytesEqual(keyOf(insertA), keyAt(a, 0, 5), 'insert at a key');
   await engine.local.insert(replica, root, b, at(0, 3), null);
-  // Equal keys go in node-id order.
+  // Nodes placed at one key go in node-id order.
   await engine.local.insert(replica, root, d, at(0, 5), null);
   assertArrayEqual(await children(), [b, a, d], 'children after inserts at keys');
 
-  // Placements by sibling mix with exact keys.
+  // Placements by sibling find room next to keys placed 'at', between two at one key too.
   await engine.local.insert(replica, root, c, { type: 'after', after: b }, null);
   assertArrayEqual(await children(), [b, c, a, d], 'children after an insert after a key');
+  await engine.local.move(replica, c, root, { type: 'after', after: a });
+  assertArrayEqual(await children(), [b, a, c, d], 'children after a move between nodes at a key');
 
   const moveC = await engine.local.move(replica, c, root, at(0, 6));
   assertEqual(moveC.kind.type, 'move', 'local move kind');
-  assertBytesEqual(keyOf(moveC), Uint8Array.of(0, 6), 'move at a key');
+  assertBytesEqual(keyOf(moveC), keyAt(c, 0, 6), 'move at a key');
   assertArrayEqual(await children(), [b, a, d, c], 'children after a move at a key');
 
-  // Keys that are empty, odd-length or end in a zero digit reject.
-  for (const key of [[], [5], [0, 0], [0, 5, 0, 0]]) {
+  // Keys that are empty or odd-length reject.
+  for (const key of [[], [5], [0, 5, 1]]) {
     assert(await rejects(engine.local.move(replica, c, root, at(...key))), `key [${key}] rejects`);
   }
   assertArrayEqual(await children(), [b, a, d, c], 'children after rejected keys');
-  assertEqual((await engine.ops.all()).length, 5, 'ops.all length');
+  assertEqual((await engine.ops.all()).length, 6, 'ops.all length');
 }
 
 /** The inserts of `node` among `ops`. */
@@ -942,7 +947,11 @@ async function scenarioCreateOnlyCreatesAtExactKeyAgree(
   ] as const) {
     const row = (await engine.tree.dump()).find((r) => r.node === node);
     assertEqual(row?.parent, root, `${name}: under the derived parent`);
-    assertBytesEqual(row?.orderKey ?? null, at.key, `${name}: at the derived key`);
+    assertBytesEqual(
+      row?.orderKey ?? null,
+      Uint8Array.from([...at.key, ...nodeIdToBytes16(node), 0, 1]),
+      `${name}: at the derived key, then the node id`,
+    );
     // A's create sorts first, and B's changes nothing.
     assertBytesEqual(
       await engine.tree.node(node).payload(),

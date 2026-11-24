@@ -855,7 +855,7 @@ where
         out
     }
 
-    /// Allocates the order key of the next local op from that op's seed, or checks the key of
+    /// Allocates the order key of the next local op from that op's seed, or builds the key of
     /// placement 'at', before the op takes its counter, so a placement that fails uses up no
     /// counter and leaves the clock alone.
     fn allocate_order_key(
@@ -877,7 +877,7 @@ where
             LocalPlacement::Between { left, right } => {
                 Self::allocate_key_between(node, left.as_deref(), right.as_deref(), &seed)
             }
-            LocalPlacement::At { key } => Self::key_at(key),
+            LocalPlacement::At { key } => Self::key_at(node, key),
             placement => {
                 let after = self.resolve_after_for_placement(parent, placement, exclude)?;
                 self.allocate_child_key_after(parent, node, after, &seed)
@@ -926,11 +926,11 @@ where
         Ok(key)
     }
 
-    /// Checks the key of placement 'at', which the node gets as is. It must be canonical, as
-    /// allocated keys are, so other placements always find room next to it: no key is below an
-    /// empty key, and only keys ending in a zero digit lie between a key and that key followed by
-    /// zero digits.
-    fn key_at(key: Vec<u8>) -> Result<Vec<u8>> {
+    /// The key of placement 'at': `key`, then the node id and a final 1 digit, as placement
+    /// 'between' ends its keys. Devices that derive `key` the same way still write the same key
+    /// for a node, but no two nodes share one, so a node placed after the first of two nodes at one
+    /// `key` goes between them. The suffix keeps the key canonical whatever `key` ends in.
+    fn key_at(node: NodeId, mut key: Vec<u8>) -> Result<Vec<u8>> {
         let invalid = |reason: &str| Error::InvalidOperation(format!("placement=at: {reason}"));
         if key.is_empty() {
             return Err(invalid("key must not be empty"));
@@ -938,9 +938,8 @@ where
         if !key.len().is_multiple_of(2) {
             return Err(invalid("key must have even length (u16 big-endian digits)"));
         }
-        if key.ends_with(&[0, 0]) {
-            return Err(invalid("key must not end in a zero digit"));
-        }
+        key.extend_from_slice(&node.0.to_be_bytes());
+        key.extend_from_slice(&1u16.to_be_bytes());
         Ok(key)
     }
 

@@ -45,6 +45,11 @@ fn at(digit: u16) -> LocalPlacement {
     LocalPlacement::At { key: key(digit) }
 }
 
+/// The key `at(digit)` gives `node`: the digit, then the node id and a final 1 digit.
+fn key_at(digit: u16, node: NodeId) -> Vec<u8> {
+    [key(digit), node.0.to_be_bytes().to_vec(), key(1)].concat()
+}
+
 fn vv_of(op: &Operation) -> VersionVector {
     let mut vv = VersionVector::new();
     vv.observe(&op.meta.id.replica, op.meta.id.counter);
@@ -509,12 +514,13 @@ fn local_create_only_insert_takes_any_placement() {
     let OperationKind::Insert { order_key, .. } = &insert_x.kind else {
         unreachable!("an insert")
     };
-    assert_eq!(order_key, &key(0x0005));
+    assert_eq!(order_key, &key_at(0x0005, x));
     assert_eq!(a.children(NodeId::ROOT).unwrap(), [y, x, z]);
 
     // A bad key fails like a plain insert's, before the op takes a counter.
     let logged = a.operations_since(0).unwrap().len();
-    let bad = a.local_insert_if_absent(NodeId::ROOT, N, at(0), None);
+    let odd = LocalPlacement::At { key: vec![0x05] };
+    let bad = a.local_insert_if_absent(NodeId::ROOT, N, odd, None);
     assert!(matches!(bad, Err(Error::InvalidOperation(_))));
     assert_eq!(a.operations_since(0).unwrap().len(), logged);
 }
@@ -557,7 +563,10 @@ fn concurrent_creates_at_one_exact_key_converge() {
     } else {
         b"b".to_vec()
     };
-    assert_eq!(placement(&a, N), (Some(P1), Some(key(0x0007)), Some(first)));
+    assert_eq!(
+        placement(&a, N),
+        (Some(P1), Some(key_at(0x0007, N)), Some(first))
+    );
     assert_eq!(a.children(P1).unwrap(), [N]);
 }
 
