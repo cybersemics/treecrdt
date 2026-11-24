@@ -438,6 +438,13 @@ impl MaterializationConformanceHarness for SqliteConformanceHarness {
         .map(|op| op.kind.clone())
         .collect()
     }
+
+    fn pull_children(&self, source: &Self, parent: NodeId) {
+        let refs = oprefs_children(&source.conn, &node_bytes_from_id(parent));
+        if !refs.is_empty() {
+            append_ops(&self.conn, &ops_by_oprefs(&source.conn, &refs));
+        }
+    }
 }
 
 fn setup_conformance_harness() -> SqliteConformanceHarness {
@@ -729,6 +736,22 @@ fn remote_append_out_of_order_delete_suffix_falls_back_and_restores_parent() {
 fn remote_late_create_only_insert_voids_the_shown_one() {
     let harness = setup_conformance_harness();
     materialization_conformance::late_create_only_insert_voids_the_shown_one(&harness);
+}
+
+#[test]
+fn remote_scoped_peer_learns_its_create_only_insert_was_voided() {
+    let (server, peer) = (setup_conformance_harness(), setup_conformance_harness());
+    materialization_conformance::scoped_peer_learns_its_create_only_insert_was_voided(
+        &server, &peer,
+    );
+}
+
+#[test]
+fn remote_scoped_peer_learns_its_own_create_only_insert_changed_nothing() {
+    let (server, peer) = (setup_conformance_harness(), setup_conformance_harness());
+    materialization_conformance::scoped_peer_learns_its_own_create_only_insert_changed_nothing(
+        &server, &peer,
+    );
 }
 
 #[test]

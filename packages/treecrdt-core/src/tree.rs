@@ -41,6 +41,27 @@ impl NodeSnapshot {
     }
 }
 
+/// A create-only insert that changed nothing is indexed under the parent it names. The op that put
+/// its node under `placed_under` is indexed there too, so a peer that syncs only that parent's
+/// children replays the placement first, and the insert changes nothing there either. When
+/// `placed_under` is that parent, the placement is indexed there already.
+fn record_voided_create_placement<I: ParentOpIndex>(
+    index: &mut I,
+    op: &Operation,
+    placed_under: Option<NodeId>,
+    seq: u64,
+) -> Result<()> {
+    let OperationKind::Insert { parent, node, .. } = &op.kind else {
+        return Ok(());
+    };
+    match placed_under {
+        Some(placed_under) if *parent != NodeId::TRASH && placed_under != *parent => {
+            index.record_placement(*parent, *node, placed_under, op, seq)
+        }
+        _ => Ok(()),
+    }
+}
+
 fn attach_source_if_missing(
     change: &mut MaterializationChange,
     next_source: Option<MaterializationSource>,
@@ -211,6 +232,7 @@ where
                     payload: payload_after,
                     source: None,
                 }],
+                placed_under: None,
             },
         })
     }
@@ -298,6 +320,7 @@ where
                     parent_after: new_parent,
                     source: None,
                 }],
+                placed_under: None,
             },
         })
     }
@@ -322,6 +345,7 @@ where
                     parent_before: old_parent.filter(|parent| *parent != NodeId::TRASH),
                     source: None,
                 }],
+                placed_under: None,
             },
         })
     }
@@ -358,6 +382,7 @@ where
                     payload: payload_after,
                     source: None,
                 }],
+                placed_under: None,
             },
         })
     }
@@ -367,11 +392,15 @@ where
         prepared: PreparedLocalOp,
     ) -> Result<(Operation, LocalFinalizePlan)> {
         let PreparedLocalOp { op, mut plan } = prepared;
-        let (op, tombstone_changed, noop) = self.commit_local(op)?;
-        if noop {
+        let (op, tombstone_changed, snapshot) = self.commit_local(op)?;
+        if let Some(snapshot) = snapshot.filter(|snapshot| snapshot.noop) {
             // The node was placed between prepare and commit, so the create-only insert changed
-            // nothing and has nothing to report or index.
+            // nothing: it reports nothing, and is indexed as a remote one that changed nothing is.
             plan = LocalFinalizePlan::default();
+            if let OperationKind::Insert { parent, .. } = &op.kind {
+                plan.extra_index_records.push((*parent, op.meta.id.clone()));
+                plan.placed_under = snapshot.parent.filter(|placed| placed != parent);
+            }
         }
         // A local write can restore or hide the node and its ancestors, as a remote apply of the
         // same op would. The plan already reports a local delete of its own node.
@@ -530,8 +559,14 @@ where
         seq: u64,
         mut changes: Vec<MaterializationChange>,
     ) -> Result<ApplyDelta> {
-        // A no-op touched no parent: nothing to index for partial sync, no tombstone to refresh.
+        // A no-op touched no parent, so it refreshes no tombstone.
         if snapshot.noop {
+            if let OperationKind::Insert { parent, .. } = &op.kind {
+                if *parent != NodeId::TRASH {
+                    index.record(*parent, &op.meta.id, seq)?;
+                }
+            }
+            record_voided_create_placement(index, op, snapshot.parent, seq)?;
             return Ok(ApplyDelta {
                 snapshot: snapshot.export(),
                 changes,
@@ -607,6 +642,7 @@ where
             }
             index.record(*parent, op_id, seq)?;
         }
+        record_voided_create_placement(index, op, plan.placed_under, seq)?;
 
         let source = Some(MaterializationSource::from_op(op));
         let mut changes = plan.changes.clone();
@@ -829,11 +865,15 @@ where
         &mut self.nodes
     }
 
-    /// Persists and applies a local op. The flag is true when it applied as a no-op.
-    fn commit_local(&mut self, op: Operation) -> Result<(Operation, Vec<TombstoneDelta>, bool)> {
+    /// Persists and applies a local op, returning its node's state before it, unless storage
+    /// already had the op.
+    fn commit_local(
+        &mut self,
+        op: Operation,
+    ) -> Result<(Operation, Vec<TombstoneDelta>, Option<NodeSnapshot>)> {
         self.version_vector.observe(&self.replica_id, op.meta.id.counter);
         if !self.storage.apply(op.clone())? {
-            return Ok((op, Vec::new(), false));
+            return Ok((op, Vec::new(), None));
         }
         let snapshot = Self::apply_forward(&mut self.nodes, &mut self.payloads, &op)?;
         let tombstone_changed = if snapshot.noop {
@@ -845,7 +885,7 @@ where
         };
         self.op_count += 1;
         self.head = Some(op.clone());
-        Ok((op, tombstone_changed, snapshot.noop))
+        Ok((op, tombstone_changed, Some(snapshot)))
     }
 
     fn seed(replica: &ReplicaId, counter: u64) -> Vec<u8> {

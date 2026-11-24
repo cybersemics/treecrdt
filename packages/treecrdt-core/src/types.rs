@@ -234,6 +234,9 @@ pub struct LocalFinalizePlan {
     pub parent_hints: Vec<NodeId>,
     pub extra_index_records: Vec<(NodeId, OperationId)>,
     pub changes: Vec<MaterializationChange>,
+    /// For a create-only insert that changed nothing: the other parent its node was under. The op
+    /// that put the node there is indexed under the parent the insert names, as for a remote one.
+    pub placed_under: Option<NodeId>,
 }
 
 #[derive(Clone, Debug)]

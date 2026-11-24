@@ -83,6 +83,18 @@ impl ParentOpIndex for RecordingIndex {
         self.records.push((parent, op_id.clone(), seq));
         Ok(())
     }
+
+    fn record_placement(
+        &mut self,
+        _parent: NodeId,
+        _node: NodeId,
+        _placed_under: NodeId,
+        _before: &Operation,
+        _seq: u64,
+    ) -> treecrdt_core::Result<()> {
+        // These tests write no create-only inserts.
+        Ok(())
+    }
 }
 
 impl TruncatingParentOpIndex for RecordingIndex {
@@ -150,6 +162,7 @@ fn finalize_local_records_unique_hints_and_extras() {
             (NodeId::TRASH, extra_op_id.clone()),
         ],
         changes: Vec::new(),
+        placed_under: None,
     };
 
     let mut index = RecordingIndex::default();

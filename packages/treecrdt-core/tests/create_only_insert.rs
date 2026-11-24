@@ -163,24 +163,59 @@ fn deliver(setup: &[Operation], ops: &[Operation]) -> Crdt {
 }
 
 /// A parent-op index that writes through to shared records: core takes stores by value, but a
-/// backend's index outlives each call.
+/// backend's index outlives each call. It looks placements up in a shared op log, as the SQLite
+/// and Postgres indexes look them up in theirs.
 #[derive(Clone, Default)]
-struct RecordingIndex(Rc<RefCell<Vec<(NodeId, OperationId, u64)>>>);
+struct RecordingIndex {
+    records: Rc<RefCell<Vec<(NodeId, OperationId, u64)>>>,
+    log: Rc<RefCell<Vec<Operation>>>,
+}
 
 impl RecordingIndex {
     fn ops_under(&self, parent: NodeId) -> Vec<OperationId> {
-        let records = self.0.borrow();
+        let records = self.records.borrow();
         records
             .iter()
             .filter(|(p, _, _)| *p == parent)
             .map(|(_, id, _)| id.clone())
             .collect()
     }
+
+    /// Each parent's ops, without seqs or repeats: the sets `children(parent)` peers reconcile.
+    /// Ops that write a payload are left out: an append skips a late payload op that a later one
+    /// overwrote, which a replay from scratch lists, and then lists an older writer where a move
+    /// lists the node's payload writer under its new parent.
+    fn listing(&self) -> Vec<(NodeId, Vec<u8>, u64)> {
+        let log = self.log.borrow();
+        let writes_payload = |id: &OperationId| {
+            log.iter().any(|op| {
+                op.meta.id == *id
+                    && matches!(
+                        op.kind,
+                        OperationKind::Payload { .. }
+                            | OperationKind::Insert {
+                                payload: Some(_),
+                                ..
+                            }
+                    )
+            })
+        };
+        let mut listing: Vec<_> = self
+            .records
+            .borrow()
+            .iter()
+            .filter(|(_, id, _)| !writes_payload(id))
+            .map(|(parent, id, _)| (*parent, id.replica.as_bytes().to_vec(), id.counter))
+            .collect();
+        listing.sort();
+        listing.dedup();
+        listing
+    }
 }
 
 impl ParentOpIndex for RecordingIndex {
     fn reset(&mut self) -> treecrdt_core::Result<()> {
-        self.0.borrow_mut().clear();
+        self.records.borrow_mut().clear();
         Ok(())
     }
 
@@ -190,14 +225,46 @@ impl ParentOpIndex for RecordingIndex {
         op_id: &OperationId,
         seq: u64,
     ) -> treecrdt_core::Result<()> {
-        self.0.borrow_mut().push((parent, op_id.clone(), seq));
+        self.records.borrow_mut().push((parent, op_id.clone(), seq));
         Ok(())
+    }
+
+    fn record_placement(
+        &mut self,
+        parent: NodeId,
+        node: NodeId,
+        placed_under: NodeId,
+        before: &Operation,
+        seq: u64,
+    ) -> treecrdt_core::Result<()> {
+        let placement = self
+            .log
+            .borrow()
+            .iter()
+            .filter(|op| cmp_ops(op, before).is_lt())
+            .filter(|op| match &op.kind {
+                OperationKind::Insert {
+                    node: n, parent: p, ..
+                } => *n == node && *p == placed_under,
+                OperationKind::Move {
+                    node: n,
+                    new_parent,
+                    ..
+                } => *n == node && *new_parent == placed_under,
+                _ => false,
+            })
+            .max_by(|a, b| cmp_ops(a, b))
+            .map(|op| op.meta.id.clone());
+        match placement {
+            Some(id) => self.record(parent, &id, seq),
+            None => Ok(()),
+        }
     }
 }
 
 impl TruncatingParentOpIndex for RecordingIndex {
     fn truncate_from(&mut self, seq: u64) -> treecrdt_core::Result<()> {
-        self.0.borrow_mut().retain(|(_, _, existing)| *existing < seq);
+        self.records.borrow_mut().retain(|(_, _, existing)| *existing < seq);
         Ok(())
     }
 }
@@ -239,7 +306,7 @@ impl ExactPayloadStore for SharedPayloads {
 /// materialized head, appended to through `orchestrate_persisted_remote_append` as the SQLite
 /// extension does.
 struct Backend {
-    log: RefCell<Vec<Operation>>,
+    log: Rc<RefCell<Vec<Operation>>>,
     nodes: RefCell<MemoryNodeStore>,
     payloads: SharedPayloads,
     index: RecordingIndex,
@@ -255,11 +322,12 @@ type BackendStores =
 
 impl Backend {
     fn new() -> Self {
+        let index = RecordingIndex::default();
         Self {
-            log: RefCell::default(),
+            log: index.log.clone(),
             nodes: RefCell::default(),
             payloads: SharedPayloads::default(),
-            index: RecordingIndex::default(),
+            index,
             meta: RefCell::new(MaterializationState {
                 head: None,
                 replay_from: None,
@@ -386,7 +454,19 @@ impl Backend {
     fn append_and_check(&self, ops: &[Operation]) -> Vec<MaterializationChange> {
         let changes = self.append(ops).unwrap();
         let log = self.log.borrow().clone();
-        assert_eq!(self.rows(), Backend::from_scratch(&log).rows(), "{ops:?}");
+        let scratch = Backend::from_scratch(&log);
+        assert_eq!(self.rows(), scratch.rows(), "{ops:?}");
+        // Every op the replay from scratch lists under a parent is listed there too. Appends may
+        // list more: one that skips a late payload op leaves the ops after it a seq behind, so a
+        // later catch-up keeps their old records.
+        let listed = self.index.listing();
+        let missing: Vec<_> = scratch
+            .index
+            .listing()
+            .into_iter()
+            .filter(|record| !listed.contains(record))
+            .collect();
+        assert!(missing.is_empty(), "{ops:?}: {missing:?}");
         changes
     }
 }
@@ -410,7 +490,9 @@ fn create_only_insert_of_a_placed_node_changes_nothing() {
     assert_eq!(a.operations_since(0).unwrap().len(), logged);
 
     // Remotely: a later create-only insert from a replica that never saw the node is a no-op. It
-    // still joins the log and advances the sequence, but reports and indexes nothing.
+    // still joins the log and advances the sequence, and reports nothing. It is indexed under the
+    // parent it names, with the insert that put the node under P1, so a peer that syncs only P2's
+    // children replays that insert first.
     let remote = Operation::insert_if_absent(
         &rid("b"),
         1,
@@ -421,13 +503,17 @@ fn create_only_insert_of_a_placed_node_changes_nothing() {
         Some(b"new".to_vec()),
     );
     let mut index = RecordingIndex::default();
+    index.log.borrow_mut().extend(a.operations_since(0).unwrap());
     let mut seq = 7;
     let delta = a
-        .apply_remote_with_materialization_seq(remote, &mut index, &mut seq)
+        .apply_remote_with_materialization_seq(remote.clone(), &mut index, &mut seq)
         .unwrap()
         .expect("an in-order op applies");
     assert!(delta.changes.is_empty());
-    assert!(index.0.borrow().is_empty());
+    assert_eq!(
+        *index.records.borrow(),
+        [(P2, remote.meta.id, 8), (P2, insert.meta.id.clone(), 8)]
+    );
     assert_eq!(seq, 8);
     assert_eq!(rows(&a), before);
     assert_eq!(a.parent(N).unwrap(), Some(P1));
@@ -592,10 +678,16 @@ fn create_only_insert_placed_between_prepare_and_commit_reports_nothing() {
         .unwrap();
     let before = rows(&a);
 
-    let (_, plan) = a.commit_prepared_local(prepared).unwrap();
+    // It reports nothing, and is indexed as a remote create that changed nothing is: under ROOT,
+    // with the insert that put the node under P1.
+    let (op, plan) = a.commit_prepared_local(prepared).unwrap();
     assert!(plan.changes.is_empty());
     assert!(plan.parent_hints.is_empty());
-    assert!(plan.extra_index_records.is_empty());
+    assert_eq!(
+        plan.extra_index_records,
+        [(NodeId::ROOT, op.meta.id.clone())]
+    );
+    assert_eq!(plan.placed_under, Some(P1));
     assert_eq!(rows(&a), before);
 }
 
@@ -868,7 +960,8 @@ fn plain_insert_after_a_create_only_insert_still_moves() {
 
 /// An earlier-stamped create arriving late turns the published create into a no-op. Catch-up
 /// reports the move away from the published parent and the payload left, and leaves the backend
-/// rows exactly as a replay from scratch would, the published parent's history and index included.
+/// rows exactly as a replay from scratch would, the published parent's history and index included:
+/// the index keeps the voided create under that parent, now with the create that placed the node.
 #[test]
 fn catch_up_reports_a_late_earlier_create_as_a_move_from_the_published_parent() {
     let late =
@@ -900,7 +993,9 @@ fn catch_up_reports_a_late_earlier_create_as_a_move_from_the_published_parent() 
         ]
     );
     assert!(!backend.nodes.borrow().last_change(P2).unwrap().is_aware_of(&published_vv));
-    assert!(!backend.index.ops_under(P2).contains(&published.meta.id));
+    let under_p2 = backend.index.ops_under(P2);
+    assert!(under_p2.contains(&published.meta.id), "{under_p2:?}");
+    assert!(under_p2.contains(&late.meta.id), "{under_p2:?}");
     assert!(backend.index.ops_under(P1).contains(&late.meta.id));
 }
 

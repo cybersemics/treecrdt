@@ -933,6 +933,51 @@ impl treecrdt_core::ParentOpIndex for PgParentOpIndex {
         }
         Ok(())
     }
+
+    fn record_placement(
+        &mut self,
+        parent: NodeId,
+        node: NodeId,
+        placed_under: NodeId,
+        before: &Operation,
+        seq: u64,
+    ) -> Result<()> {
+        let placement = {
+            let mut c = self.ctx.client.borrow_mut();
+            let stmt = self.ctx.stmt(
+                &mut c,
+                "SELECT replica, counter \
+                 FROM treecrdt_ops \
+                 WHERE doc_id = $1 \
+                   AND node = $2 \
+                   AND ((kind = 'insert' AND parent = $3) OR (kind = 'move' AND new_parent = $3)) \
+                   AND (lamport < $4 OR (lamport = $4 AND (replica < $5 OR (replica = $5 AND counter < $6)))) \
+                 ORDER BY lamport DESC, replica DESC, counter DESC \
+                 LIMIT 1",
+            )?;
+            let rows = c
+                .query(
+                    &stmt,
+                    &[
+                        &self.ctx.doc_id,
+                        &node_to_bytes(node).to_vec(),
+                        &node_to_bytes(placed_under).to_vec(),
+                        &(before.meta.lamport as i64),
+                        &before.meta.id.replica.as_bytes(),
+                        &(before.meta.id.counter as i64),
+                    ],
+                )
+                .map_err(storage_debug)?;
+            rows.first().map(|row| OperationId {
+                replica: ReplicaId(row.get::<_, Vec<u8>>(0)),
+                counter: row.get::<_, i64>(1).max(0) as u64,
+            })
+        };
+        match placement {
+            Some(op_id) => self.record(parent, &op_id, seq),
+            None => Ok(()),
+        }
+    }
 }
 
 impl TruncatingParentOpIndex for PgParentOpIndex {

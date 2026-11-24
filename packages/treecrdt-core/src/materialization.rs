@@ -238,14 +238,26 @@ pub struct PersistedRemoteStores<C, N, P, I> {
     pub index: I,
 }
 
+/// The args of one [`ParentOpIndex::record_placement`] call.
+struct PlacementRecord {
+    parent: NodeId,
+    node: NodeId,
+    placed_under: NodeId,
+    before: Operation,
+    seq: u64,
+}
+
 #[derive(Default)]
 struct RecordingIndex {
     records: Vec<(NodeId, OperationId, u64)>,
+    /// Placements the backend index looks up in the op log, which a replay does not keep.
+    placements: Vec<PlacementRecord>,
 }
 
 impl ParentOpIndex for RecordingIndex {
     fn reset(&mut self) -> Result<()> {
         self.records.clear();
+        self.placements.clear();
         Ok(())
     }
 
@@ -253,11 +265,30 @@ impl ParentOpIndex for RecordingIndex {
         self.records.push((parent, op_id.clone(), seq));
         Ok(())
     }
+
+    fn record_placement(
+        &mut self,
+        parent: NodeId,
+        node: NodeId,
+        placed_under: NodeId,
+        before: &Operation,
+        seq: u64,
+    ) -> Result<()> {
+        self.placements.push(PlacementRecord {
+            parent,
+            node,
+            placed_under,
+            before: before.clone(),
+            seq,
+        });
+        Ok(())
+    }
 }
 
 impl TruncatingParentOpIndex for RecordingIndex {
     fn truncate_from(&mut self, seq: u64) -> Result<()> {
         self.records.retain(|(_, _, existing_seq)| *existing_seq < seq);
+        self.placements.retain(|placement| placement.seq < seq);
         Ok(())
     }
 }
@@ -1123,6 +1154,20 @@ where
     records.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0)).then_with(|| a.1.cmp(&b.1)));
     for (parent, op_id, seq) in records {
         index.record(parent, &op_id, seq)?;
+    }
+    for placement in rebuilt
+        .index
+        .placements
+        .iter()
+        .filter(|placement| placement.seq >= truncate_from)
+    {
+        index.record_placement(
+            placement.parent,
+            placement.node,
+            placement.placed_under,
+            &placement.before,
+            placement.seq,
+        )?;
     }
 
     Ok(MaterializationOutcome::from_changes(rebuilt.seq, patch_changes).changes)

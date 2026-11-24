@@ -17,10 +17,24 @@ pub trait MaterializationConformanceHarness {
     fn ensure_materialized(&self);
     fn op_ref_counters_for_parent(&self, parent: NodeId) -> Vec<u64>;
     fn op_kinds_for_parent(&self, parent: NodeId) -> Vec<String>;
+    /// Appends the ops `source` lists for `children(parent)`, as a peer that syncs only that
+    /// filter receives them.
+    fn pull_children(&self, source: &Self, parent: NodeId);
 }
 
 fn changed_nodes(outcome: &MaterializationOutcome) -> Vec<NodeId> {
     outcome.affected_nodes()
+}
+
+/// Counters of the ops listed for `children(parent)`, in counter order: ops recorded by one apply
+/// share a seq, so the listing does not order them.
+fn sorted_op_ref_counters<H: MaterializationConformanceHarness>(
+    harness: &H,
+    parent: NodeId,
+) -> Vec<u64> {
+    let mut counters = harness.op_ref_counters_for_parent(parent);
+    counters.sort_unstable();
+    counters
 }
 
 fn visible_payload_source(
@@ -568,7 +582,8 @@ pub fn late_op_after_cycle_rejected_move_keeps_accepted_parent<
 
 /// A create-only insert is a no-op wherever its node is already placed. The backend shows one
 /// create, then an earlier one arrives: catch-up replays the stored ops, the shown create among
-/// them, so it reports a move to the earlier create's parent only if storage kept the flag. A
+/// them, so it reports a move to the earlier create's parent only if storage kept the flag. The
+/// voided create stays listed under its parent, now with the create that placed the node. A
 /// replay from the start agrees.
 pub fn late_create_only_insert_voids_the_shown_one<H: MaterializationConformanceHarness>(
     harness: &H,
@@ -625,7 +640,7 @@ pub fn late_create_only_insert_voids_the_shown_one<H: MaterializationConformance
         assert!(harness.visible_children(p2).is_empty());
         assert_eq!(harness.payload(n), Some(vec![1]));
         assert_eq!(harness.op_ref_counters_for_parent(p1), vec![3]);
-        assert!(harness.op_ref_counters_for_parent(p2).is_empty());
+        assert_eq!(sorted_op_ref_counters(harness, p2), vec![3, 7]);
     };
     assert_late_create_won();
 
@@ -633,4 +648,102 @@ pub fn late_create_only_insert_voids_the_shown_one<H: MaterializationConformance
     harness.ensure_materialized();
     assert_replay_cleared(harness);
     assert_late_create_won();
+}
+
+/// A peer that syncs only `children(P)` holds a create-only insert of a node under P. An earlier
+/// insert of the node under Q then reaches the server and voids the create there. The server lists
+/// that insert under P with the create, so the peer replays it first and drops the node from P too.
+pub fn scoped_peer_learns_its_create_only_insert_was_voided<
+    H: MaterializationConformanceHarness,
+>(
+    server: &H,
+    peer: &H,
+) {
+    let setup = ReplicaId::new(b"setup");
+    let (p, q, n) = (node(1), node(2), node(10));
+    server.append_ops(&[
+        Operation::insert(&setup, 1, 1, NodeId::ROOT, p, order_key_from_position(0)),
+        Operation::insert(&setup, 2, 2, NodeId::ROOT, q, order_key_from_position(1)),
+    ]);
+    let create = Operation::insert_if_absent(
+        &ReplicaId::new(b"b"),
+        7,
+        11,
+        p,
+        n,
+        order_key_from_position(0),
+        None,
+    );
+    server.append_ops(slice::from_ref(&create));
+    let sync = || {
+        peer.pull_children(server, NodeId::ROOT);
+        peer.pull_children(server, p);
+    };
+    sync();
+    assert_eq!(peer.visible_children(p), vec![n]);
+
+    let placed = Operation::insert(
+        &ReplicaId::new(b"a"),
+        3,
+        10,
+        q,
+        n,
+        order_key_from_position(0),
+    );
+    server.append_ops(slice::from_ref(&placed));
+    assert!(server.visible_children(p).is_empty());
+    assert_eq!(sorted_op_ref_counters(server, p), vec![3, 7]);
+
+    sync();
+    assert!(peer.visible_children(p).is_empty());
+    assert_eq!(sorted_op_ref_counters(peer, p), vec![3, 7]);
+}
+
+/// A peer that syncs only `children(P)` never sees a node under Q, so it creates the node under P.
+/// Its create-only insert sorts after the insert under Q and changes nothing on the server, which
+/// lists that insert under P with the create, so the peer drops the node from P once it syncs.
+pub fn scoped_peer_learns_its_own_create_only_insert_changed_nothing<
+    H: MaterializationConformanceHarness,
+>(
+    server: &H,
+    peer: &H,
+) {
+    let setup = ReplicaId::new(b"setup");
+    let (p, q, n) = (node(1), node(2), node(10));
+    server.append_ops(&[
+        Operation::insert(&setup, 1, 1, NodeId::ROOT, p, order_key_from_position(0)),
+        Operation::insert(&setup, 2, 2, NodeId::ROOT, q, order_key_from_position(1)),
+        Operation::insert(
+            &ReplicaId::new(b"a"),
+            3,
+            3,
+            q,
+            n,
+            order_key_from_position(0),
+        ),
+    ]);
+    let sync = || {
+        peer.pull_children(server, NodeId::ROOT);
+        peer.pull_children(server, p);
+    };
+    sync();
+
+    let create = Operation::insert_if_absent(
+        &ReplicaId::new(b"peer"),
+        7,
+        21,
+        p,
+        n,
+        order_key_from_position(0),
+        None,
+    );
+    peer.append_ops(slice::from_ref(&create));
+    assert_eq!(peer.visible_children(p), vec![n]);
+    server.append_ops(slice::from_ref(&create));
+    assert!(server.visible_children(p).is_empty());
+    assert_eq!(sorted_op_ref_counters(server, p), vec![3, 7]);
+
+    sync();
+    assert!(peer.visible_children(p).is_empty());
+    assert_eq!(sorted_op_ref_counters(peer, p), vec![3, 7]);
 }
