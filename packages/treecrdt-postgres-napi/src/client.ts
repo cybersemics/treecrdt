@@ -39,8 +39,8 @@ function placementToArgs(placement: TreecrdtSqlitePlacement): {
 } {
   if (placement.type === 'first') return { type: 'first', after: null };
   if (placement.type === 'last') return { type: 'last', after: null };
-  if (placement.type === 'between') {
-    throw new Error("the Postgres engine does not support placement 'between'");
+  if (placement.type === 'between' || placement.type === 'at') {
+    throw new Error(`the Postgres engine does not support placement '${placement.type}'`);
   }
   return { type: 'after', after: nodeIdToBytes16(placement.after) };
 }

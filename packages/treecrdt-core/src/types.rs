@@ -196,6 +196,12 @@ pub enum LocalPlacement {
         left: Option<Vec<u8>>,
         right: Option<Vec<u8>>,
     },
+    /// Exactly `key`, so devices that derive a key the same way place a node alike. It must be
+    /// canonical, as allocated keys are: whole big-endian u16 digits, the last non-zero. Nodes
+    /// with equal keys go in node-id order.
+    At {
+        key: Vec<u8>,
+    },
 }
 
 impl LocalPlacement {
@@ -213,6 +219,9 @@ impl LocalPlacement {
             }
             "between" => Err(Error::InvalidOperation(
                 "placement=between takes left and right bounds, not after".into(),
+            )),
+            "at" => Err(Error::InvalidOperation(
+                "placement=at takes a key, not after".into(),
             )),
             _ => Err(Error::InvalidOperation("invalid placement".into())),
         }

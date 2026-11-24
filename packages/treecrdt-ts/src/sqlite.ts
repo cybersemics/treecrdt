@@ -703,7 +703,13 @@ export type TreecrdtSqlitePlacement =
    * A new key strictly between two order keys (null: an open end), which need not be the keys of
    * siblings. The key ends with the node id, so no two nodes placed this way share one.
    */
-  | { type: 'between'; left: Uint8Array | null; right: Uint8Array | null };
+  | { type: 'between'; left: Uint8Array | null; right: Uint8Array | null }
+  /**
+   * Exactly `key`, so devices that derive a key the same way place a node alike. It must be
+   * canonical, as allocated keys are: whole big-endian u16 digits, the last non-zero. Nodes with
+   * equal keys go in node-id order.
+   */
+  | { type: 'at'; key: Uint8Array };
 
 export type TreecrdtSqliteWriter = {
   insert: (
@@ -804,7 +810,15 @@ export function createTreecrdtSqliteWriter(
       afterNode,
       payload,
     ];
-    // Other placements keep the 6-arg call, which extensions without 'between' also accept.
+    // Placements by sibling keep the 6-arg call, which extensions without 'at' and 'between' also
+    // accept.
+    if (placement.type === 'at') {
+      return getLocalOp(
+        'SELECT treecrdt_local_insert(?1,?2,?3,?4,?5,?6,?7)',
+        [...params, placement.key],
+        o,
+      );
+    }
     if (placement.type === 'between') {
       return getLocalOp(
         'SELECT treecrdt_local_insert(?1,?2,?3,?4,?5,?6,?7,?8)',
@@ -829,7 +843,15 @@ export function createTreecrdtSqliteWriter(
       placement.type,
       afterNode,
     ];
-    // Other placements keep the 5-arg call, which extensions without 'between' also accept.
+    // Placements by sibling keep the 5-arg call, which extensions without 'at' and 'between' also
+    // accept.
+    if (placement.type === 'at') {
+      return getLocalOp(
+        'SELECT treecrdt_local_move(?1,?2,?3,?4,?5,?6)',
+        [...params, placement.key],
+        writeOpts,
+      );
+    }
     if (placement.type === 'between') {
       return getLocalOp(
         'SELECT treecrdt_local_move(?1,?2,?3,?4,?5,?6,?7)',

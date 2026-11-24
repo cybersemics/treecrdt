@@ -1052,25 +1052,14 @@ fn local_between_rejects_missing_args_and_bounds_without_room() {
         .to_string()
     };
 
-    // 'between' needs both bound args, and the functions take both or neither.
-    for (sql, message) in [
-        (
-            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'between', NULL, NULL)",
-            "needs left and right",
-        ),
-        (
-            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'between', NULL, NULL, NULL)",
-            "expects 6 args",
-        ),
-        (
-            "SELECT treecrdt_local_move(?1, ?3, ?2, 'between', NULL)",
-            "needs left and right",
-        ),
-        (
-            "SELECT treecrdt_local_move(?1, ?3, ?2, 'between', NULL, NULL)",
-            "expects 5 args",
-        ),
+    // 'between' needs both bound args.
+    for sql in [
+        "SELECT treecrdt_local_insert(?1, ?2, ?3, 'between', NULL, NULL)",
+        "SELECT treecrdt_local_insert(?1, ?2, ?3, 'between', NULL, NULL, NULL)",
+        "SELECT treecrdt_local_move(?1, ?3, ?2, 'between', NULL)",
+        "SELECT treecrdt_local_move(?1, ?3, ?2, 'between', NULL, NULL)",
     ] {
+        let message = "placement between takes two trailing args (left,right)";
         assert!(error(sql).contains(message), "{sql}: {}", error(sql));
     }
     // Bounds out of order, odd-length, or with no key between them. A zero-length BLOB is a
@@ -1081,6 +1070,128 @@ fn local_between_rejects_missing_args_and_bounds_without_room() {
         "SELECT treecrdt_local_move(?1, ?3, ?2, 'between', NULL, X'000501', NULL)",
         "SELECT treecrdt_local_move(?1, ?3, ?2, 'between', NULL, X'0005', X'00050000')",
         "SELECT treecrdt_local_move(?1, ?3, ?2, 'between', NULL, NULL, X'')",
+    ] {
+        error(sql);
+    }
+
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0)).unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn local_insert_and_move_place_at_a_key() {
+    let conn = setup_conn();
+
+    let replica = b"r1".to_vec();
+    let parent = node_bytes(0);
+    let node_a = node_bytes(1);
+    let node_b = node_bytes(2);
+    let (key_a, key_b) = (vec![0x00, 0x05], vec![0x00, 0x03]);
+
+    let json: String = conn
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'at', NULL, NULL, ?4)",
+            rusqlite::params![replica, parent, node_a, key_a],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let op = &decode_ops_or_local_result(&json)[0];
+    assert_eq!(op.kind, "insert");
+    assert_eq!(op.order_key, Some(key_a));
+
+    // Placements by sibling keep the 6-arg call.
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'after', ?4, NULL)",
+            rusqlite::params![replica, parent, node_b, node_a],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        visible_children(&conn, &parent),
+        vec![node_a.clone(), node_b.clone()]
+    );
+
+    let json: String = conn
+        .query_row(
+            "SELECT treecrdt_local_move(?1, ?2, ?3, 'at', NULL, ?4)",
+            rusqlite::params![replica, node_b, parent, key_b],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let op = &decode_ops_or_local_result(&json)[0];
+    assert_eq!(op.kind, "move");
+    assert_eq!(op.order_key, Some(key_b));
+    assert_eq!(visible_children(&conn, &parent), vec![node_b, node_a]);
+}
+
+#[test]
+fn local_at_rejects_wrong_args_and_keys_that_are_not_canonical() {
+    let conn = setup_conn();
+
+    let replica = b"r1".to_vec();
+    let parent = node_bytes(0);
+    let node = node_bytes(1);
+    let _: String = conn
+        .query_row(
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'first', NULL, NULL)",
+            rusqlite::params![replica, parent, node],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    let error = |sql: &str| {
+        conn.query_row(sql, rusqlite::params![replica, parent, node], |row| {
+            row.get::<_, String>(0)
+        })
+        .unwrap_err()
+        .to_string()
+    };
+
+    // 'at' takes exactly one key arg, the placements by sibling take none, and neither function
+    // takes more args than 'between' does.
+    for (sql, message) in [
+        (
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'at', NULL, NULL)",
+            "placement at takes one trailing arg (key)",
+        ),
+        (
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'at', NULL, NULL, X'0005', NULL)",
+            "placement at takes one trailing arg (key)",
+        ),
+        (
+            "SELECT treecrdt_local_move(?1, ?3, ?2, 'at', NULL)",
+            "placement at takes one trailing arg (key)",
+        ),
+        (
+            "SELECT treecrdt_local_move(?1, ?3, ?2, 'at', NULL, X'0005', NULL)",
+            "placement at takes one trailing arg (key)",
+        ),
+        (
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'at', NULL, NULL, NULL)",
+            "placement at needs a key, not NULL",
+        ),
+        (
+            "SELECT treecrdt_local_move(?1, ?3, ?2, 'last', NULL, X'0005')",
+            "only placements at and between take trailing args",
+        ),
+        (
+            "SELECT treecrdt_local_insert(?1, ?2, ?3, 'at', NULL, NULL, X'0005', NULL, NULL)",
+            "treecrdt_local_insert expects 6 args",
+        ),
+        (
+            "SELECT treecrdt_local_move(?1, ?3, ?2, 'at')",
+            "treecrdt_local_move expects 5 args",
+        ),
+    ] {
+        assert!(error(sql).contains(message), "{sql}: {}", error(sql));
+    }
+    // Keys that are empty, odd-length, or end in a zero digit.
+    for sql in [
+        "SELECT treecrdt_local_insert(?1, ?2, ?3, 'at', NULL, NULL, X'')",
+        "SELECT treecrdt_local_move(?1, ?3, ?2, 'at', NULL, X'000501')",
+        "SELECT treecrdt_local_move(?1, ?3, ?2, 'at', NULL, X'0000')",
+        "SELECT treecrdt_local_move(?1, ?3, ?2, 'at', NULL, X'00050000')",
     ] {
         error(sql);
     }

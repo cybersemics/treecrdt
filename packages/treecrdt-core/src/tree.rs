@@ -149,9 +149,11 @@ where
                 }
                 Ok(children.last().copied())
             }
-            LocalPlacement::Between { .. } => Err(Error::InvalidOperation(
-                "placement=between places by key, not after a sibling".into(),
-            )),
+            LocalPlacement::Between { .. } | LocalPlacement::At { .. } => {
+                Err(Error::InvalidOperation(
+                    "placements between and at place by key, not after a sibling".into(),
+                ))
+            }
         }
     }
 
@@ -784,8 +786,9 @@ where
         out
     }
 
-    /// Allocates the order key of the next local op from that op's seed, before the op takes its
-    /// counter, so a placement that fails uses up no counter and leaves the clock alone.
+    /// Allocates the order key of the next local op from that op's seed, or checks the key of
+    /// placement 'at', before the op takes its counter, so a placement that fails uses up no
+    /// counter and leaves the clock alone.
     fn allocate_order_key(
         &self,
         parent: NodeId,
@@ -797,10 +800,15 @@ where
         match placement {
             // Trashed nodes have no order: allocate_child_key_after gives the other placements an
             // empty key there too.
-            LocalPlacement::Between { .. } if parent == NodeId::TRASH => Ok(Vec::new()),
+            LocalPlacement::Between { .. } | LocalPlacement::At { .. }
+                if parent == NodeId::TRASH =>
+            {
+                Ok(Vec::new())
+            }
             LocalPlacement::Between { left, right } => {
                 Self::allocate_key_between(node, left.as_deref(), right.as_deref(), &seed)
             }
+            LocalPlacement::At { key } => Self::key_at(key),
             placement => {
                 let after = self.resolve_after_for_placement(parent, placement, exclude)?;
                 self.allocate_child_key_after(parent, node, after, &seed)
@@ -845,6 +853,24 @@ where
             || right.is_some_and(|right| key.as_slice() >= right)
         {
             return Err(invalid("allocated key is outside the bounds"));
+        }
+        Ok(key)
+    }
+
+    /// Checks the key of placement 'at', which the node gets as is. It must be canonical, as
+    /// allocated keys are, so other placements always find room next to it: no key is below an
+    /// empty key, and only keys ending in a zero digit lie between a key and that key followed by
+    /// zero digits.
+    fn key_at(key: Vec<u8>) -> Result<Vec<u8>> {
+        let invalid = |reason: &str| Error::InvalidOperation(format!("placement=at: {reason}"));
+        if key.is_empty() {
+            return Err(invalid("key must not be empty"));
+        }
+        if !key.len().is_multiple_of(2) {
+            return Err(invalid("key must have even length (u16 big-endian digits)"));
+        }
+        if key.ends_with(&[0, 0]) {
+            return Err(invalid("key must not end in a zero digit"));
         }
         Ok(key)
     }

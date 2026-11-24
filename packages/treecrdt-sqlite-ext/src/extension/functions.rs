@@ -295,7 +295,7 @@ fn register_functions(db: *mut sqlite3, pz_err_msg: *mut *mut c_char) -> c_int {
 
     let rc_local_insert = {
         let name = CString::new("treecrdt_local_insert").expect("static name");
-        // -1 allows 6 or 8 args (..., optional left and right bounds for placement 'between')
+        // -1 allows 6 to 8 args (..., then the key of placement 'at' or the bounds of 'between')
         sqlite_create_function_v2(
             db,
             name.as_ptr(),
@@ -310,7 +310,7 @@ fn register_functions(db: *mut sqlite3, pz_err_msg: *mut *mut c_char) -> c_int {
     };
     let rc_local_move = {
         let name = CString::new("treecrdt_local_move").expect("static name");
-        // -1 allows 5 or 7 args (..., optional left and right bounds for placement 'between')
+        // -1 allows 5 to 7 args (..., then the key of placement 'at' or the bounds of 'between')
         sqlite_create_function_v2(
             db,
             name.as_ptr(),
