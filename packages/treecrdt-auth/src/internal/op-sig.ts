@@ -47,6 +47,8 @@ function prepareOpSignature(opts: { docId: string; op: Operation }): {
       const orderKey = opts.op.kind.orderKey;
       const orderKeyLen = u32be(orderKey.length);
       const payload = opts.op.kind.payload;
+      // A create-only insert can leave a node where a plain one would move it, so sign the flag.
+      const ifAbsent = u8(opts.op.kind.ifAbsent ? 1 : 0);
       if (payload) {
         kindFields = concatBytes(
           parent,
@@ -56,9 +58,10 @@ function prepareOpSignature(opts: { docId: string; op: Operation }): {
           u8(1),
           u32be(payload.length),
           payload,
+          ifAbsent,
         );
       } else {
-        kindFields = concatBytes(parent, node, orderKeyLen, orderKey, u8(0));
+        kindFields = concatBytes(parent, node, orderKeyLen, orderKey, u8(0), ifAbsent);
       }
       break;
     }

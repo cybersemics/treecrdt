@@ -16,6 +16,8 @@ export type NativeOp = {
   orderKey?: Uint8Array | null;
   payload?: Uint8Array | null;
   knownState?: Uint8Array | null;
+  /** True for a create-only insert; unset otherwise. */
+  ifAbsent?: boolean | null;
 };
 
 export type NativeMaterializationChange = {
@@ -90,6 +92,15 @@ export type NativeBackend = {
     after: Uint8Array | null,
     payload: Uint8Array | null,
   ): NativePreparedLocalOpTx;
+  /** Null, with nothing written, when the node is already in the tree. */
+  prepareLocalInsertIfAbsent(
+    replica: Uint8Array,
+    parent: Uint8Array,
+    node: Uint8Array,
+    placement: string,
+    after: Uint8Array | null,
+    payload: Uint8Array | null,
+  ): NativePreparedLocalOpTx | null;
   localMove(
     replica: Uint8Array,
     node: Uint8Array,

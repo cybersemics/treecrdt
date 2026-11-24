@@ -698,6 +698,43 @@ impl PgBackend {
         Ok(NativePreparedLocalOpTx { tx: Some(tx) })
     }
 
+    /// `prepare_local_insert` for a create-only insert: null, with nothing written, when the node
+    /// is already in the tree.
+    #[napi]
+    pub fn prepare_local_insert_if_absent(
+        &self,
+        replica: Buffer,
+        parent: Buffer,
+        node: Buffer,
+        placement: String,
+        after: Option<Buffer>,
+        payload: Option<Buffer>,
+    ) -> napi::Result<Option<NativePreparedLocalOpTx>> {
+        let client = connect(&self.url)?;
+        let client = std::rc::Rc::new(std::cell::RefCell::new(client));
+
+        let replica = ReplicaId(replica.to_vec());
+        let parent = bytes16_to_node(&parent).map_err(map_core_err)?;
+        let node = bytes16_to_node(&node).map_err(map_core_err)?;
+        let after_id = match after {
+            None => None,
+            Some(b) => Some(bytes16_to_node(&b).map_err(map_core_err)?),
+        };
+
+        let tx = treecrdt_postgres::prepare_local_insert_if_absent_tx(
+            &client,
+            &self.doc_id,
+            &replica,
+            parent,
+            node,
+            &placement,
+            after_id,
+            payload.map(|p| p.to_vec()),
+        )
+        .map_err(map_core_err)?;
+        Ok(tx.map(|tx| NativePreparedLocalOpTx { tx: Some(tx) }))
+    }
+
     #[napi]
     pub fn local_move(
         &self,

@@ -565,6 +565,14 @@ export type BoundTreecrdtEngineLocal = {
     payload: Uint8Array | null,
     opts?: LocalWriteOptions,
   ) => Promise<Operation>;
+  /** See `TreecrdtEngineLocal.insertIfAbsent`. */
+  insertIfAbsent: (
+    parent: string,
+    node: string,
+    placement: TreecrdtSqlitePlacement,
+    payload: Uint8Array | null,
+    opts?: LocalWriteOptions,
+  ) => Promise<Operation | null>;
   move: (
     node: string,
     newParent: string,
@@ -588,6 +596,20 @@ export type TreecrdtEngineLocal = {
     payload: Uint8Array | null,
     opts?: LocalWriteOptions,
   ) => Promise<Operation>;
+  /**
+   * Inserts `node` with a create-only insert (`kind.ifAbsent`), which stays a no-op on every
+   * replica where another op placed the node first, so an automatic create never moves a node
+   * someone placed. Resolves to null and writes nothing when the node is already in the tree:
+   * ROOT, TRASH, or attached anywhere, deleted included.
+   */
+  insertIfAbsent: (
+    replica: ReplicaId,
+    parent: string,
+    node: string,
+    placement: TreecrdtSqlitePlacement,
+    payload: Uint8Array | null,
+    opts?: LocalWriteOptions,
+  ) => Promise<Operation | null>;
   move: (
     replica: ReplicaId,
     node: string,
@@ -621,6 +643,8 @@ export function createBoundTreecrdtEngineLocal(
   return {
     insert: (parent, node, placement, payload, opts) =>
       local.insert(replica, parent, node, placement, payload, mergeOptions(opts)),
+    insertIfAbsent: (parent, node, placement, payload, opts) =>
+      local.insertIfAbsent(replica, parent, node, placement, payload, mergeOptions(opts)),
     move: (node, newParent, placement, opts) =>
       local.move(replica, node, newParent, placement, mergeOptions(opts)),
     delete: (node, opts) => local.delete(replica, node, mergeOptions(opts)),

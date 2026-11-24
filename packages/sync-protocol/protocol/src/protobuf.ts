@@ -195,6 +195,7 @@ function toProtoOperation(op: Operation) {
         node: create(NodeIdSchema, { bytes: nodeIdToBytes16Impl(op.kind.node) }),
         orderKey: op.kind.orderKey,
         ...(op.kind.payload !== undefined ? { payload: op.kind.payload } : {}),
+        ifAbsent: op.kind.ifAbsent === true,
       } satisfies MessageInitShape<typeof InsertOpSchema>;
 
       return create(OperationSchema, {
@@ -294,6 +295,7 @@ function fromProtoOperation(op: any): Operation {
           node: nodeIdFromBytes16(nodeBytes),
           orderKey,
           ...(payloadBytes !== undefined ? { payload: payloadBytes } : {}),
+          ...(op.kind.value?.ifAbsent === true ? { ifAbsent: true } : {}),
         },
       };
     }

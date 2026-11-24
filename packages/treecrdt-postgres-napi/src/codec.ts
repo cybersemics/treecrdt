@@ -62,6 +62,7 @@ export function nativeToOperation(row: NativeOp): Operation {
           node,
           orderKey,
           ...(payload != null ? { payload } : {}),
+          ...(row.ifAbsent ? { ifAbsent: true } : {}),
         },
       };
     }
@@ -127,6 +128,7 @@ export function operationToNativeWithSerializers(
         node: Buffer.from(serializeNodeId(op.kind.node)),
         orderKey: Buffer.from(op.kind.orderKey),
         ...(op.kind.payload !== undefined ? { payload: Buffer.from(op.kind.payload) } : {}),
+        ...(op.kind.ifAbsent ? { ifAbsent: true } : {}),
       };
     case 'move':
       return {
@@ -174,6 +176,7 @@ export function nativeOpToSqliteRow(row: NativeOp): Record<string, unknown> {
     order_key: row.orderKey ?? null,
     payload: row.payload ?? null,
     known_state: row.knownState ?? null,
+    ...(row.ifAbsent ? { if_absent: true } : {}),
   };
 }
 

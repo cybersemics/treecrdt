@@ -281,3 +281,31 @@ test('signature policy only allows knownState on deletes', async () => {
   const tombstone = operation({ type: 'tombstone', node });
   expect((await encodeTreecrdtOpSigInput({ docId: 'doc', op: tombstone })).at(-1)).toBe(0);
 });
+
+test('the signature binds the create-only flag of an insert', async () => {
+  const privateKey = ed25519Utils.randomSecretKey();
+  const publicKey = await getPublicKey(privateKey);
+  const kind = {
+    type: 'insert',
+    parent: '00000000000000000000000000000000',
+    node,
+    orderKey: new Uint8Array([1]),
+  } as const;
+  const plain = operation(kind);
+  const createOnly = operation({ ...kind, ifAbsent: true });
+
+  // The flag is the insert's last field, before the absent knownState tag.
+  const plainInput = await encodeTreecrdtOpSigInput({ docId: 'doc', op: plain });
+  const createOnlyInput = await encodeTreecrdtOpSigInput({ docId: 'doc', op: createOnly });
+  expect(plainInput.slice(-2)).toEqual(Uint8Array.of(0, 0));
+  expect(createOnlyInput.slice(-2)).toEqual(Uint8Array.of(1, 0));
+  expect(createOnlyInput.slice(0, -2)).toEqual(plainInput.slice(0, -2));
+
+  const signature = await signTreecrdtOp({ docId: 'doc', op: createOnly, privateKey });
+  await expect(
+    verifyTreecrdtOp({ docId: 'doc', op: createOnly, signature, publicKey }),
+  ).resolves.toBe(true);
+  await expect(verifyTreecrdtOp({ docId: 'doc', op: plain, signature, publicKey })).resolves.toBe(
+    false,
+  );
+});

@@ -138,6 +138,27 @@ test('round-trips typed move and tombstone operations through existing read rows
   ]);
 });
 
+test('keeps the flag of a create-only insert, which leaves a placed node where it is', async () => {
+  const otherParent = '2'.padStart(32, '0');
+  await adapter.appendOps!(
+    [
+      insert,
+      {
+        meta: { id: { replica, counter: 2 }, lamport: 2 },
+        kind: { ...insert.kind, parent: otherParent, ifAbsent: true },
+      },
+    ],
+    nodeIdToBytes16,
+    replicaIdToBytes,
+  );
+  expect(await adapter.treeParent(nodeIdToBytes16(node))).toEqual(
+    nodeIdToBytes16(insert.kind.parent),
+  );
+  const [plain, createOnly] = await adapter.opsSince(0);
+  expect(plain).not.toHaveProperty('if_absent');
+  expect(createOnly).toMatchObject({ kind: 'insert', parent: otherParent, if_absent: true });
+});
+
 test('copies each replica when the serializer reuses a buffer', async () => {
   const buffer = new Uint8Array(32);
   const second = {

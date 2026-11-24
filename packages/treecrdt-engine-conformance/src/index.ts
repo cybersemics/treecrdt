@@ -164,6 +164,18 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioLocalPlacementAt,
     },
     {
+      name: 'local ops: insertIfAbsent creates a node only where it is absent',
+      run: scenarioLocalInsertIfAbsent,
+    },
+    {
+      name: 'create-only inserts: concurrent creates and a move converge on the move',
+      run: scenarioCreateOnlyCreatesAndMoveConverge,
+    },
+    {
+      name: 'create-only inserts: creates at one exact key agree',
+      run: scenarioCreateOnlyCreatesAtExactKeyAgree,
+    },
+    {
       name: 'local ops: materialization changes include writeId',
       run: scenarioLocalOpsMaterializationWriteId,
     },
@@ -326,6 +338,14 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
     {
       name: 'persistence: payload persists across reopen',
       run: scenarioPersistencePayloadReopen,
+    },
+    {
+      name: 'persistence: create-only inserts stay create-only across reopen and replay',
+      run: scenarioPersistenceCreateOnlyReopen,
+    },
+    {
+      name: 'sync auth: signed create-only inserts keep their flag',
+      run: scenarioSyncAuthCreateOnlyInserts,
     },
   ];
 }
@@ -492,6 +512,7 @@ function makeInsertOp(opts: {
   node: string;
   orderKey: Uint8Array;
   payload?: Uint8Array;
+  ifAbsent?: true;
 }): Operation {
   return {
     meta: { id: { replica: opts.replica, counter: opts.counter }, lamport: opts.lamport },
@@ -501,6 +522,7 @@ function makeInsertOp(opts: {
       node: opts.node,
       orderKey: opts.orderKey,
       ...(opts.payload ? { payload: opts.payload } : {}),
+      ...(opts.ifAbsent ? { ifAbsent: true } : {}),
     },
   };
 }
@@ -726,6 +748,208 @@ async function scenarioLocalPlacementAt(ctx: TreecrdtEngineConformanceContext): 
   }
   assertArrayEqual(await children(), [b, a, d, c], 'children after rejected keys');
   assertEqual((await engine.ops.all()).length, 5, 'ops.all length');
+}
+
+/** The inserts of `node` among `ops`. */
+function insertsOf(ops: Operation[], node: string): Operation[] {
+  return ops.filter((op) => op.kind.type === 'insert' && op.kind.node === node);
+}
+
+function isCreateOnly(op: Operation | null): boolean {
+  return op?.kind.type === 'insert' && op.kind.ifAbsent === true;
+}
+
+async function scenarioLocalInsertIfAbsent(ctx: TreecrdtEngineConformanceContext): Promise<void> {
+  const { engine } = ctx;
+  const replica = replicaFromLabel('r1');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const [a, b, c, gone] = [1, 2, 3, 4].map(nodeIdFromInt);
+  const children = async () => (await engine.tree.root.children()).map((node) => node.id);
+
+  const events: MaterializationEvent[] = [];
+  const unsubscribe = engine.onMaterialized((event) => events.push(event));
+  try {
+    const createA = await engine.local.insertIfAbsent(
+      replica,
+      root,
+      a,
+      { type: 'last' },
+      encoder.encode('a'),
+    );
+    assert(isCreateOnly(createA), 'an absent node gets a create-only insert');
+    assert(
+      events.some((event) =>
+        event.changes.some((change) => change.kind === 'insert' && change.node === a),
+      ),
+      'the create reports an insert',
+    );
+
+    // A node in the tree, live or deleted, gets nothing: no op, no counter, no event.
+    await engine.local.insert(replica, root, b, { type: 'last' }, null);
+    await engine.local.insert(replica, root, gone, { type: 'last' }, null);
+    const lastCounter = (await engine.local.delete(replica, gone)).meta.id.counter;
+    const opCount = (await engine.ops.all()).length;
+    events.length = 0;
+    for (const [parent, node] of [
+      [b, a],
+      [root, gone],
+    ] as const) {
+      const op = await engine.local.insertIfAbsent(
+        replica,
+        parent,
+        node,
+        { type: 'first' },
+        encoder.encode('x'),
+      );
+      assertEqual(op, null, `no insert for ${node}, which is in the tree`);
+    }
+    assertEqual(events.length, 0, 'nodes in the tree report nothing');
+    assertEqual((await engine.ops.all()).length, opCount, 'nodes in the tree write no op');
+    assertArrayEqual(await children(), [a, b], 'nothing moved or restored');
+    assertBytesEqual(await engine.tree.node(a).payload(), encoder.encode('a'), 'payload kept');
+
+    // Auth sees only a create that is written, and the bound API creates the same way.
+    const authorized: Operation[] = [];
+    const bound = engine.local.forReplica(replica, {
+      authSession: { authorizeLocalOps: async (ops) => void authorized.push(...ops) },
+    });
+    assertEqual(await bound.insertIfAbsent(root, a, { type: 'last' }, null), null, 'bound: a');
+    const createC = await bound.insertIfAbsent(root, c, { type: 'after', after: a }, null);
+    assert(isCreateOnly(createC), 'bound: c gets a create-only insert');
+    assertEqual(createC?.meta.id.counter, lastCounter + 1, 'skipped creates take no counter');
+    assertEqual(authorized.length, 1, 'only the written create is authorized');
+    assert(isCreateOnly(authorized[0] ?? null), 'auth sees the flag');
+    assertArrayEqual(await children(), [a, c, b], 'c placed after a');
+
+    const stored = await engine.ops.all();
+    assert(insertsOf(stored, c).every(isCreateOnly), 'ops keep the flag');
+    assert(!insertsOf(stored, b).some(isCreateOnly), 'a plain insert has no flag');
+  } finally {
+    unsubscribe();
+  }
+}
+
+async function scenarioCreateOnlyCreatesAndMoveConverge(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const a = ctx.engine;
+  const b = await ctx.createEngine({ docId: ctx.docId, name: 'peer-b' });
+  const rA = replicaFromLabel('rA');
+  const rB = replicaFromLabel('rB');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const [parent, sibling, node] = [40, 41, 42].map(nodeIdFromInt);
+
+  await a.local.insert(rA, root, parent, { type: 'last' }, null);
+  await a.local.insert(rA, parent, sibling, { type: 'last' }, null);
+  await b.ops.appendMany(await a.ops.all());
+  // B's clock runs ahead, so its create sorts after A's move.
+  for (const n of [43, 44, 45]) {
+    await b.local.insert(rB, root, nodeIdFromInt(n), { type: 'last' }, null);
+  }
+
+  // Each device creates the node at its own key, unaware of the other, and A moves it.
+  const createA = await a.local.insertIfAbsent(
+    rA,
+    parent,
+    node,
+    { type: 'first' },
+    encoder.encode('a'),
+  );
+  const moveA = await a.local.move(rA, node, root, { type: 'first' });
+  const createB = await b.local.insertIfAbsent(
+    rB,
+    parent,
+    node,
+    { type: 'last' },
+    encoder.encode('b'),
+  );
+  assert(createA && createB, 'both devices create the node');
+  assert(bytesToHex(keyOf(createA)) !== bytesToHex(keyOf(createB)), 'at different keys');
+  assert(createB.meta.lamport > moveA.meta.lamport, "B's create sorts after A's move");
+
+  // A applies B's create after its move. B gets A's earlier ops, so it replays its own stored
+  // create, which must stay a no-op there too.
+  await a.ops.appendMany(await b.ops.all());
+  const events = await captureMaterializationEvents(b, async () =>
+    b.ops.appendMany(await a.ops.all()),
+  );
+  assert(
+    events.some((event) =>
+      event.changes.some(
+        (change) => change.kind === 'move' && change.node === node && change.parentAfter === root,
+      ),
+    ),
+    'B reports the move of the node it showed',
+  );
+
+  const rootChildren = await a.tree.root.children();
+  for (const [name, engine] of [
+    ['A', a],
+    ['B', b],
+  ] as const) {
+    assertEqual((await engine.tree.node(node).parent())?.id, root, `${name}: the move wins`);
+    assertArrayEqual(
+      (await engine.tree.node(parent).children()).map((child) => child.id),
+      [sibling],
+      `${name}: no create puts the node back`,
+    );
+    assertBytesEqual(
+      await engine.tree.node(node).payload(),
+      encoder.encode('a'),
+      `${name}: the later create sets no payload`,
+    );
+    assertArrayEqual(
+      (await engine.tree.root.children()).map((child) => child.id),
+      rootChildren.map((child) => child.id),
+      `${name}: converged`,
+    );
+    const creates = insertsOf(await engine.ops.all(), node);
+    assertEqual(creates.length, 2, `${name}: both creates stored`);
+    assert(creates.every(isCreateOnly), `${name}: both creates keep the flag`);
+  }
+}
+
+async function scenarioCreateOnlyCreatesAtExactKeyAgree(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const a = ctx.engine;
+  const b = await ctx.createEngine({ docId: ctx.docId, name: 'peer-b' });
+  const rA = replicaFromLabel('rA');
+  const rB = replicaFromLabel('rB');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const node = nodeIdFromInt(61);
+  // A key both devices derive the same way.
+  const at = { type: 'at', key: Uint8Array.of(0, 7) } as const;
+
+  let createA: Operation | null;
+  try {
+    createA = await a.local.insertIfAbsent(rA, root, node, at, encoder.encode('a'));
+  } catch (error) {
+    if (!String(error).includes("does not support placement 'at'")) throw error;
+    return ctx.skip('engine has no at placement');
+  }
+  const createB = await b.local.insertIfAbsent(rB, root, node, at, encoder.encode('b'));
+  assert(isCreateOnly(createA) && isCreateOnly(createB), 'both devices create the node');
+  await a.ops.appendMany(await b.ops.all());
+  await b.ops.appendMany(await a.ops.all());
+
+  for (const [name, engine] of [
+    ['A', a],
+    ['B', b],
+  ] as const) {
+    const row = (await engine.tree.dump()).find((r) => r.node === node);
+    assertEqual(row?.parent, root, `${name}: under the derived parent`);
+    assertBytesEqual(row?.orderKey ?? null, at.key, `${name}: at the derived key`);
+    // A's create sorts first, and B's changes nothing.
+    assertBytesEqual(
+      await engine.tree.node(node).payload(),
+      encoder.encode('a'),
+      `${name}: payload of the first create`,
+    );
+  }
 }
 
 async function scenarioLocalOpsMaterializationWriteId(
@@ -2475,6 +2699,57 @@ async function scenarioPersistencePayloadReopen(
   assert(kinds.has('payload'), 'expected payload op after reopen');
 }
 
+async function scenarioPersistenceCreateOnlyReopen(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  if (!ctx.createPersistentEngine) return;
+
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const [p1, p2, node] = [51, 52, 53].map(nodeIdFromInt);
+  const children = async (engine: TreecrdtEngine, parent: string) =>
+    (await engine.tree.node(parent).children()).map((child) => child.id);
+
+  const e1 = await ctx.createPersistentEngine({ docId: ctx.docId, name: 'db' });
+  await e1.local.insert(replica, root, p1, { type: 'last' }, null);
+  await e1.local.insert(replica, root, p2, { type: 'last' }, null);
+  await e1.local.insertIfAbsent(replica, p1, node, { type: 'last' }, null);
+  // Another device's create of the node sorts later, so it changes nothing.
+  await e1.ops.append(
+    makeInsertOp({
+      replica: replicaFromLabel('r2'),
+      counter: 1,
+      lamport: 4,
+      parent: p2,
+      node,
+      orderKey: orderKeyFromPosition(0),
+      payload: Uint8Array.of(2),
+      ifAbsent: true,
+    }),
+  );
+  await e1.close();
+
+  const e2 = await ctx.createPersistentEngine({ docId: ctx.docId, name: 'db' });
+  const creates = insertsOf(await e2.ops.all(), node);
+  assertEqual(creates.length, 2, 'both creates stored');
+  assert(creates.every(isCreateOnly), 'both creates keep the flag after reopen');
+
+  // An op that sorts before every stored op makes the engine replay them all.
+  await e2.ops.append(
+    makeInsertOp({
+      replica: replicaFromLabel('r0'),
+      counter: 1,
+      lamport: 1,
+      parent: root,
+      node: nodeIdFromInt(54),
+      orderKey: orderKeyFromPosition(0),
+    }),
+  );
+  assertArrayEqual(await children(e2, p1), [node], 'the first create still places the node');
+  assertArrayEqual(await children(e2, p2), [], 'the later create still changes nothing');
+  assertBytesEqual(await e2.tree.node(node).payload(), null, 'not even the payload');
+}
+
 function makeCapabilityTokenV1(opts: {
   issuerPrivateKey: Uint8Array;
   subjectPublicKey: Uint8Array;
@@ -3306,6 +3581,99 @@ async function scenarioSyncAuthExcludedRootNotSynced(
         );
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+  } finally {
+    detach();
+  }
+}
+
+async function scenarioSyncAuthCreateOnlyInserts(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const docId = ctx.docId;
+  const a = ctx.engine;
+  const b = await ctx.createEngine({ docId, name: 'peer-b' });
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const node = nodeIdFromInt(1);
+
+  const issuerSk = randomEd25519SecretKey();
+  const issuerPk = await getEd25519PublicKey(issuerSk);
+  const createSession = async () => {
+    const privateKey = randomEd25519SecretKey();
+    const publicKey = await getEd25519PublicKey(privateKey);
+    const token = makeCapabilityTokenV1({
+      issuerPrivateKey: issuerSk,
+      subjectPublicKey: publicKey,
+      docId,
+    });
+    const session = createTreecrdtAuthSession({
+      docId,
+      trust: { issuerPublicKeys: [issuerPk] },
+      local: { privateKey, publicKey, capabilityTokens: [token] },
+      requireProofRef: true,
+    });
+    await session.ready;
+    return { publicKey, session };
+  };
+  const [authA, authB] = await Promise.all([createSession(), createSession()]);
+
+  // Both devices create the node; the create that sorts second changes nothing.
+  const createA = await a.local.insertIfAbsent(
+    authA.publicKey,
+    root,
+    node,
+    { type: 'last' },
+    encoder.encode('a'),
+    { authSession: authA.session },
+  );
+  const createB = await b.local.insertIfAbsent(
+    authB.publicKey,
+    root,
+    node,
+    { type: 'last' },
+    encoder.encode('b'),
+    { authSession: authB.session },
+  );
+  assert(createA && createB, 'both devices create the node');
+  assertEqual(createA.meta.lamport, createB.meta.lamport, 'both creates are first writes');
+  // Equal lamports, so the replica ids order the creates.
+  const first = bytesToHex(authA.publicKey) < bytesToHex(authB.publicKey) ? 'a' : 'b';
+
+  const backendA = createEngineSyncBackend(a);
+  const backendB = createEngineSyncBackend(b);
+  const { peerA, transportA, detach } = createInMemoryConnectedPeers({
+    backendA,
+    backendB,
+    codec: treecrdtSyncV0ProtobufCodec,
+    peerAOptions: { auth: authA.session.syncAuth },
+    peerBOptions: { auth: authB.session.syncAuth },
+  });
+  try {
+    // Signatures cover the flag, so each create verifies only if the wire carried it.
+    await peerA.syncOnce(
+      transportA,
+      { all: {} },
+      { maxCodewords: 10_000, codewordsPerMessage: 256 },
+    );
+    await Promise.all([backendA.flush(), backendB.flush()]);
+    for (const [name, engine] of [
+      ['A', a],
+      ['B', b],
+    ] as const) {
+      await waitUntil(async () => insertsOf(await engine.ops.all(), node).length === 2, {
+        timeoutMs: 15_000,
+        message: `${name}: expected the other device's create`,
+      });
+      assert(
+        insertsOf(await engine.ops.all(), node).every(isCreateOnly),
+        `${name}: both creates keep the flag`,
+      );
+      assertBytesEqual(
+        await engine.tree.node(node).payload(),
+        encoder.encode(first),
+        `${name}: payload of the first create`,
+      );
     }
   } finally {
     detach();

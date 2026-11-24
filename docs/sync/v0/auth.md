@@ -204,6 +204,7 @@ Kind tags and fields:
   - parent(16) || node(16) || u32_be(len(order_key)) || order_key_bytes
   - payload_flag(u8): 0 or 1
   - if payload_flag=1: u32_be(len(payload)) || payload_bytes
+  - if_absent(u8): 1 for a create-only insert, else 0
 - Move: tag=2
   - node(16) || new_parent(16) || u32_be(len(order_key)) || order_key_bytes
 - Delete: tag=3

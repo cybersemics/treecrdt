@@ -210,4 +210,55 @@ export function defineSyncBackendContract(
       await harness.close?.();
     }
   });
+
+  test(`${label}: children(parent) lists a create-only insert only where it placed its node`, async () => {
+    const harness = await createHarness();
+    try {
+      const docId = `doc-create-only-${randomUUID()}`;
+      const backend = await harness.openBackend(docId);
+      const replica = replicaFromLabel('c');
+      const placed = nodeIdFromInt(110);
+      const created = nodeIdFromInt(111);
+
+      await backend.applyOps([
+        makeOp(replica, 1, 1, {
+          type: 'insert',
+          parent: root,
+          node: placed,
+          orderKey: orderKeyFromPosition(0),
+        }),
+        // The node is already placed, so this create changes nothing, its payload included.
+        makeOp(replica, 2, 2, {
+          type: 'insert',
+          parent: root,
+          node: placed,
+          orderKey: orderKeyFromPosition(1),
+          payload: new Uint8Array([1]),
+          ifAbsent: true,
+        }),
+        makeOp(replica, 3, 3, {
+          type: 'insert',
+          parent: root,
+          node: created,
+          orderKey: orderKeyFromPosition(2),
+          payload: new Uint8Array([2]),
+          ifAbsent: true,
+        }),
+      ]);
+
+      const refsOf = async (parent: string) =>
+        (await backend.listOpRefs({ children: { parent: nodeIdToBytes16(parent) } })).map(
+          bytesToHex,
+        );
+      const refOf = (counter: bigint) => bytesToHex(deriveOpRefV0(docId, { replica, counter }));
+
+      expect(await refsOf(root)).toEqual(expect.arrayContaining([refOf(1n), refOf(3n)]));
+      expect(await refsOf(root)).not.toContain(refOf(2n));
+      // A scope root's payload writer is listed with its children: never the create that did nothing.
+      expect(await refsOf(placed)).not.toContain(refOf(2n));
+      expect(await refsOf(created)).toContain(refOf(3n));
+    } finally {
+      await harness.close?.();
+    }
+  });
 }

@@ -1707,6 +1707,8 @@ function createServerFixtureCacheKey(bench: ReturnType<typeof buildSyncBenchCase
         updateFixtureHashWithString(hash, op.kind.node);
         updateFixtureHashWithBytes(hash, op.kind.orderKey);
         updateFixtureHashWithBytes(hash, op.kind.payload);
+        // Only when set, so fixtures without create-only inserts keep their keys.
+        if (op.kind.ifAbsent) updateFixtureHashWithString(hash, 'ifAbsent');
         break;
       case 'move':
         updateFixtureHashWithString(hash, op.kind.node);
