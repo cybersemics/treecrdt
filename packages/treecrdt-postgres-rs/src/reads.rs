@@ -111,15 +111,19 @@ pub fn list_op_refs_children_with_parent_payload(
         }
     }
 
-    // A create-only insert that wrote its payload left a payload row, so one found here changed
-    // nothing.
+    // A create-only insert writes its payload only where it places its node, so, best effort, one
+    // that an insert or move of the node precedes is left out.
     let fallback_stmt = ctx.stmt(
         &mut c,
-        "SELECT op_ref \
-         FROM treecrdt_ops \
-         WHERE doc_id = $1 AND node = $2 \
-           AND (kind = 'payload' OR (kind = 'insert' AND payload IS NOT NULL AND NOT if_absent)) \
-         ORDER BY lamport DESC, replica DESC, counter DESC \
+        "SELECT o.op_ref \
+         FROM treecrdt_ops o \
+         WHERE o.doc_id = $1 AND o.node = $2 \
+           AND (o.kind = 'payload' OR (o.kind = 'insert' AND o.payload IS NOT NULL AND (NOT o.if_absent OR NOT EXISTS ( \
+             SELECT 1 FROM treecrdt_ops e \
+             WHERE e.doc_id = o.doc_id AND e.node = o.node AND e.kind IN ('insert', 'move') \
+               AND (e.lamport < o.lamport OR (e.lamport = o.lamport \
+                 AND (e.replica < o.replica OR (e.replica = o.replica AND e.counter < o.counter)))))))) \
+         ORDER BY o.lamport DESC, o.replica DESC, o.counter DESC \
          LIMIT 1",
     )?;
     let fallback_rows = c
