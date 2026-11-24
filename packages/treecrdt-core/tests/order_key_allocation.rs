@@ -1,9 +1,10 @@
 use proptest::prelude::*;
 use treecrdt_core::order_key::allocate_between;
+use treecrdt_core::NodeId;
 
 fn allocate(left: Option<&[u8]>, right: Option<&[u8]>, counter: u64) -> Vec<u8> {
     let seed = [b"replica".as_slice(), &counter.to_be_bytes()].concat();
-    let key = allocate_between(left, right, &seed).unwrap();
+    let key = allocate_between(left, right, &seed, NodeId(counter.into())).unwrap();
     assert!(left.is_none_or(|left| key.as_slice() > left));
     assert!(right.is_none_or(|right| key.as_slice() < right));
     key
@@ -13,7 +14,9 @@ fn assert_keys_short(case: &str, first: &[u8], mut next: impl FnMut(&[u8], u64) 
     let mut key = first.to_vec();
     for counter in 1..=10_000 {
         key = next(&key, counter);
-        assert!(key.len() <= 16, "{case}: {} bytes", key.len());
+        // Every key ends with an 18-byte node suffix; inserts after one anchor also copy the
+        // anchor's suffix.
+        assert!(key.len() <= 16 + 2 * 18, "{case}: {} bytes", key.len());
     }
 }
 
@@ -48,24 +51,29 @@ fn order_key() -> impl Strategy<Value = Vec<u8>> {
 
 proptest! {
     #[test]
-    fn allocates_strictly_between_bounds(
+    fn allocates_distinct_keys_strictly_between_bounds(
         a in order_key(),
         b in order_key(),
         nest in any::<bool>(),
         open_left in any::<bool>(),
         open_right in any::<bool>(),
         seed in any::<[u8; 8]>(),
+        nodes in any::<[u128; 2]>(),
     ) {
         let b = if nest { [a.as_slice(), &b].concat() } else { b };
-        prop_assume!(a != b);
+        prop_assume!(a != b && nodes[0] != nodes[1]);
         let (low, high) = if a < b { (a, b) } else { (b, a) };
         let left = (!open_left).then_some(low.as_slice());
         let right = (!open_right).then_some(high.as_slice());
 
-        let key = allocate_between(left, right, &seed).unwrap();
+        // With one seed both nodes get the same position, as concurrent placements in one gap can.
+        let keys = nodes.map(|node| allocate_between(left, right, &seed, NodeId(node)).unwrap());
 
-        prop_assert!(key.len().is_multiple_of(2) && key[key.len() - 2..] != [0, 0]);
-        prop_assert!(left.is_none_or(|left| key.as_slice() > left));
-        prop_assert!(right.is_none_or(|right| key.as_slice() < right));
+        prop_assert_ne!(&keys[0], &keys[1]);
+        for key in &keys {
+            prop_assert!(key.len().is_multiple_of(2) && key[key.len() - 2..] != [0, 0]);
+            prop_assert!(left.is_none_or(|left| key.as_slice() > left));
+            prop_assert!(right.is_none_or(|right| key.as_slice() < right));
+        }
     }
 }

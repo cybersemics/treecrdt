@@ -818,7 +818,7 @@ where
             (None, right)
         };
 
-        crate::order_key::allocate_between(left.as_deref(), right.as_deref(), seed)
+        crate::order_key::allocate_between(left.as_deref(), right.as_deref(), seed, node)
     }
 
     fn next_counter(&mut self) -> u64 {

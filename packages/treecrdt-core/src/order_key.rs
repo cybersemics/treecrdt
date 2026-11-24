@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use crate::ids::NodeId;
 
 const ORDER_KEY_DOMAIN: &[u8] = b"treecrdt/order_key/v0";
 const DIGIT_BYTES: usize = 2;
@@ -64,13 +65,23 @@ fn choose_in_range(seed: &[u8], depth: usize, lo: u16, hi: u16) -> u16 {
     lo + n
 }
 
-/// Allocate a stable ordering key strictly between `left` and `right` (lexicographic order).
+/// Allocate `node`'s ordering key strictly between `left` and `right` (lexicographic order).
 ///
 /// Keys are encoded as a variable-length sequence of big-endian `u16` digits, compared
 /// lexicographically. The generator is LSEQ-inspired: it prefers allocating within a bounded
 /// interval near one side to reduce expected key growth in repeated "insert between the same
 /// neighbors" workloads.
-pub fn allocate_between(left: Option<&[u8]>, right: Option<&[u8]>, seed: &[u8]) -> Result<Vec<u8>> {
+///
+/// Concurrent placements in one gap can draw the same position, so the key ends with `node`'s id,
+/// which keeps their keys distinct, and a final `1` digit, which leaves room below the key. The
+/// position is already below `right` at one of its digits (when `right` ends in a non-zero digit,
+/// as allocated keys do), so the suffix keeps the key below `right`.
+pub fn allocate_between(
+    left: Option<&[u8]>,
+    right: Option<&[u8]>,
+    seed: &[u8],
+    node: NodeId,
+) -> Result<Vec<u8>> {
     let left_digits = decode_digits(left.unwrap_or_default())?;
     let mut right_digits = decode_digits(right.unwrap_or_default())?;
 
@@ -113,5 +124,8 @@ pub fn allocate_between(left: Option<&[u8]>, right: Option<&[u8]>, seed: &[u8]) 
         depth += 1;
     }
 
-    Ok(encode_digits(&out))
+    let mut key = encode_digits(&out);
+    key.extend_from_slice(&node.0.to_be_bytes());
+    key.extend_from_slice(&1u16.to_be_bytes());
+    Ok(key)
 }

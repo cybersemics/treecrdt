@@ -542,7 +542,8 @@ fn local_insert_returns_appended_insert_op() {
         s.extend_from_slice(&1u64.to_be_bytes());
         s
     };
-    let expected = allocate_between(None, None, &seed).expect("allocate_between");
+    let expected =
+        allocate_between(None, None, &seed, bytes_to_node_id(&node)).expect("allocate_between");
     assert_eq!(op.order_key.as_ref().unwrap(), &expected);
 
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM ops", [], |row| row.get(0)).unwrap();
@@ -787,7 +788,7 @@ fn local_insert_after_is_deterministic_for_single_gap() {
             .unwrap();
     }
 
-    // after(A) between 1 and 3 => 2 (deterministic)
+    // after(A) between 1 and 3 => 2 (deterministic), then C's id and a final 1
     let json: String = conn
         .query_row(
             "SELECT treecrdt_local_insert(?1, ?2, ?3, 'after', ?4, NULL)",
@@ -801,7 +802,7 @@ fn local_insert_after_is_deterministic_for_single_gap() {
     assert_eq!(op.kind, "insert");
     assert_eq!(
         op.order_key.as_ref().unwrap(),
-        &(2u16).to_be_bytes().to_vec()
+        &[&2u16.to_be_bytes(), node_c.as_slice(), &1u16.to_be_bytes()].concat()
     );
 }
 
@@ -836,7 +837,12 @@ fn local_insert_last_is_deterministic_for_single_gap() {
     assert_eq!(op.kind, "insert");
     assert_eq!(
         op.order_key.as_ref().unwrap(),
-        &(0xfffeu16).to_be_bytes().to_vec()
+        &[
+            &0xfffeu16.to_be_bytes(),
+            node_b.as_slice(),
+            &1u16.to_be_bytes()
+        ]
+        .concat()
     );
 
     let parent_arr = <[u8; 16]>::try_from(parent.as_slice()).unwrap();
@@ -927,7 +933,8 @@ fn local_move_allocates_key_excluding_self() {
         s.extend_from_slice(&4u64.to_be_bytes());
         s
     };
-    let expected = allocate_between(Some(&key_a), Some(&key_c), &seed).expect("allocate_between");
+    let expected = allocate_between(Some(&key_a), Some(&key_c), &seed, bytes_to_node_id(&node_b))
+        .expect("allocate_between");
     assert_eq!(op.order_key.as_ref().unwrap(), &expected);
 
     let (head_lamport, head_replica, head_counter, head_seq) = read_tree_meta(&conn);
