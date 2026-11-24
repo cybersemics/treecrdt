@@ -4,8 +4,8 @@ use super::op_index::SqliteParentOpIndex;
 use super::op_storage::SqliteOpStorage;
 use super::payload_store::SqlitePayloadStore;
 use super::util::{
-    read_blob, read_blob16, read_optional_blob16, read_required_blob, read_text,
-    sqlite_err_from_core, sqlite_result_json,
+    read_blob, read_blob16, read_optional_blob, read_optional_blob16, read_required_blob,
+    read_text, sqlite_err_from_core, sqlite_result_json,
 };
 use super::*;
 use treecrdt_core::{
@@ -329,10 +329,11 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
         return;
     }
 
-    if argc != 6 {
+    if argc != 6 && argc != 8 {
         sqlite_result_error(
             ctx,
-            b"treecrdt_local_insert expects 6 args (replica,parent,node,placement,after,payload)\0"
+            b"treecrdt_local_insert expects 6 args (replica,parent,node,placement,after,payload) \
+              or 8 (...,left,right)\0"
                 .as_ptr() as *const c_char,
         );
         return;
@@ -382,6 +383,8 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
         }
     };
     let payload = read_blob(args[5]);
+    // Placement 'between' reads its bounds from the trailing args; NULL is an open end.
+    let bounds = (argc == 8).then(|| (read_optional_blob(args[6]), read_optional_blob(args[7])));
 
     let db = sqlite_context_db_handle(ctx);
     let doc_id = match load_doc_id(db) {
@@ -403,12 +406,23 @@ pub(super) unsafe extern "C" fn treecrdt_local_insert(
     let parent_id = NodeId(u128::from_be_bytes(parent));
     let node_id = NodeId(u128::from_be_bytes(node));
     let after_id = after.map(|id| NodeId(u128::from_be_bytes(id)));
-    let placement = match LocalPlacement::from_parts(placement.as_str(), after_id) {
-        Ok(v) => v,
-        Err(err) => {
-            sqlite_result_error_code(ctx, sqlite_err_from_core(err));
+    let placement = match (placement.as_str(), bounds) {
+        ("between", Some((left, right))) => LocalPlacement::Between { left, right },
+        ("between", None) => {
+            sqlite_result_error(
+                ctx,
+                b"treecrdt_local_insert: placement between needs left and right args\0".as_ptr()
+                    as *const c_char,
+            );
             return;
         }
+        (placement, _) => match LocalPlacement::from_parts(placement, after_id) {
+            Ok(v) => v,
+            Err(err) => {
+                sqlite_result_error_code(ctx, sqlite_err_from_core(err));
+                return;
+            }
+        },
     };
     let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_insert", |crdt| {
         crdt.prepare_local_insert(parent_id, node_id, placement, payload.clone())
@@ -433,10 +447,11 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
         return;
     }
 
-    if argc != 5 {
+    if argc != 5 && argc != 7 {
         sqlite_result_error(
             ctx,
-            b"treecrdt_local_move expects 5 args (replica,node,new_parent,placement,after)\0"
+            b"treecrdt_local_move expects 5 args (replica,node,new_parent,placement,after) \
+              or 7 (...,left,right)\0"
                 .as_ptr() as *const c_char,
         );
         return;
@@ -485,6 +500,8 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
             return;
         }
     };
+    // Placement 'between' reads its bounds from the trailing args; NULL is an open end.
+    let bounds = (argc == 7).then(|| (read_optional_blob(args[5]), read_optional_blob(args[6])));
 
     let db = sqlite_context_db_handle(ctx);
     let doc_id = match load_doc_id(db) {
@@ -506,12 +523,23 @@ pub(super) unsafe extern "C" fn treecrdt_local_move(
     let node_id = NodeId(u128::from_be_bytes(node));
     let new_parent_id = NodeId(u128::from_be_bytes(new_parent));
     let after_id = after.map(|id| NodeId(u128::from_be_bytes(id)));
-    let placement = match LocalPlacement::from_parts(placement.as_str(), after_id) {
-        Ok(v) => v,
-        Err(err) => {
-            sqlite_result_error_code(ctx, sqlite_err_from_core(err));
+    let placement = match (placement.as_str(), bounds) {
+        ("between", Some((left, right))) => LocalPlacement::Between { left, right },
+        ("between", None) => {
+            sqlite_result_error(
+                ctx,
+                b"treecrdt_local_move: placement between needs left and right args\0".as_ptr()
+                    as *const c_char,
+            );
             return;
         }
+        (placement, _) => match LocalPlacement::from_parts(placement, after_id) {
+            Ok(v) => v,
+            Err(err) => {
+                sqlite_result_error_code(ctx, sqlite_err_from_core(err));
+                return;
+            }
+        },
     };
     let out = match run_local_core_op(db, doc_id, replica, "treecrdt_local_move", |crdt| {
         crdt.prepare_local_move(node_id, new_parent_id, placement)

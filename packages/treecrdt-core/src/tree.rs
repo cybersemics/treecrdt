@@ -119,12 +119,11 @@ where
         ) == std::cmp::Ordering::Greater
     }
 
-    fn next_op_meta(&mut self) -> (ReplicaId, u64, Lamport, Vec<u8>) {
+    fn next_op_meta(&mut self) -> (ReplicaId, u64, Lamport) {
         let replica = self.replica_id.clone();
         let counter = self.next_counter();
         let lamport = self.clock.tick();
-        let seed = Self::seed(&replica, counter);
-        (replica, counter, lamport, seed)
+        (replica, counter, lamport)
     }
 
     pub fn resolve_after_for_placement(
@@ -150,6 +149,9 @@ where
                 }
                 Ok(children.last().copied())
             }
+            LocalPlacement::Between { .. } => Err(Error::InvalidOperation(
+                "placement=between places by key, not after a sibling".into(),
+            )),
         }
     }
 
@@ -171,10 +173,9 @@ where
         placement: LocalPlacement,
         payload: Option<Vec<u8>>,
     ) -> Result<PreparedLocalOp> {
-        let after = self.resolve_after_for_placement(parent, placement, None)?;
+        let order_key = self.allocate_order_key(parent, node, placement, None)?;
         let payload_after = payload.clone();
-        let (replica, counter, lamport, seed) = self.next_op_meta();
-        let order_key = self.allocate_child_key_after(parent, node, after, &seed)?;
+        let (replica, counter, lamport) = self.next_op_meta();
         let op = Operation::insert_with_optional_payload(
             &replica, counter, lamport, parent, node, order_key, payload,
         );
@@ -210,9 +211,8 @@ where
         placement: LocalPlacement,
     ) -> Result<PreparedLocalOp> {
         let old_parent = self.parent(node)?;
-        let after = self.resolve_after_for_placement(new_parent, placement, Some(node))?;
-        let (replica, counter, lamport, seed) = self.next_op_meta();
-        let order_key = self.allocate_child_key_after(new_parent, node, after, &seed)?;
+        let order_key = self.allocate_order_key(new_parent, node, placement, Some(node))?;
+        let (replica, counter, lamport) = self.next_op_meta();
         let op = Operation::move_node(&replica, counter, lamport, node, new_parent, order_key);
 
         let mut parent_hints = vec![new_parent];
@@ -249,7 +249,7 @@ where
 
     pub fn prepare_local_delete(&mut self, node: NodeId) -> Result<PreparedLocalOp> {
         let old_parent = self.parent(node)?;
-        let (replica, counter, lamport, _seed) = self.next_op_meta();
+        let (replica, counter, lamport) = self.next_op_meta();
         let known_state = Some(self.subtree_version_vector(node)?);
         let op = Operation::delete(&replica, counter, lamport, node, known_state);
         Ok(PreparedLocalOp {
@@ -282,7 +282,7 @@ where
     ) -> Result<PreparedLocalOp> {
         let parent = self.parent(node)?;
         let payload_after = payload.clone();
-        let (replica, counter, lamport, _seed) = self.next_op_meta();
+        let (replica, counter, lamport) = self.next_op_meta();
         let op = if let Some(payload) = payload {
             Operation::set_payload(&replica, counter, lamport, node, payload)
         } else {
@@ -782,6 +782,71 @@ where
         out.extend_from_slice(replica.as_bytes());
         out.extend_from_slice(&counter.to_be_bytes());
         out
+    }
+
+    /// Allocates the order key of the next local op from that op's seed, before the op takes its
+    /// counter, so a placement that fails uses up no counter and leaves the clock alone.
+    fn allocate_order_key(
+        &self,
+        parent: NodeId,
+        node: NodeId,
+        placement: LocalPlacement,
+        exclude: Option<NodeId>,
+    ) -> Result<Vec<u8>> {
+        let seed = Self::seed(&self.replica_id, self.counter + 1);
+        match placement {
+            // Trashed nodes have no order: allocate_child_key_after gives the other placements an
+            // empty key there too.
+            LocalPlacement::Between { .. } if parent == NodeId::TRASH => Ok(Vec::new()),
+            LocalPlacement::Between { left, right } => {
+                Self::allocate_key_between(node, left.as_deref(), right.as_deref(), &seed)
+            }
+            placement => {
+                let after = self.resolve_after_for_placement(parent, placement, exclude)?;
+                self.allocate_child_key_after(parent, node, after, &seed)
+            }
+        }
+    }
+
+    /// Allocates a key strictly between caller-given bounds. They need only be whole digits in
+    /// order, not canonical keys: a caller may pass a prefix of keys, which can end in a zero digit.
+    ///
+    /// The node id and a final 1 digit follow the allocated key. Concurrent placements in one gap
+    /// often allocate the same key, and nothing could later go between two equal keys; the 1 keeps
+    /// the key canonical when the id ends in a zero digit.
+    fn allocate_key_between(
+        node: NodeId,
+        left: Option<&[u8]>,
+        right: Option<&[u8]>,
+        seed: &[u8],
+    ) -> Result<Vec<u8>> {
+        let invalid =
+            |reason: &str| Error::InvalidOperation(format!("placement=between: {reason}"));
+        if [left, right].into_iter().flatten().any(|bound| !bound.len().is_multiple_of(2)) {
+            return Err(invalid(
+                "bounds must have even length (u16 big-endian digits)",
+            ));
+        }
+        if left.zip(right).is_some_and(|(left, right)| left >= right) {
+            return Err(invalid("left must be below right"));
+        }
+        // Only keys ending in a zero digit lie between `left` and `left` followed by zero digits.
+        if let Some(rest) = right.and_then(|right| right.strip_prefix(left.unwrap_or_default())) {
+            if rest.iter().all(|byte| *byte == 0) {
+                return Err(invalid("no key fits between left and right"));
+            }
+        }
+
+        let mut key = crate::order_key::allocate_between(left, right, seed)?;
+        key.extend_from_slice(&node.0.to_be_bytes());
+        key.extend_from_slice(&1u16.to_be_bytes());
+        // The checks above leave room for the key; this guards against an allocator change.
+        if left.is_some_and(|left| key.as_slice() <= left)
+            || right.is_some_and(|right| key.as_slice() >= right)
+        {
+            return Err(invalid("allocated key is outside the bounds"));
+        }
+        Ok(key)
     }
 
     fn allocate_child_key_after(

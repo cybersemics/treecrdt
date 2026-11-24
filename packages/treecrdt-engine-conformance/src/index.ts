@@ -156,6 +156,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioLocalInsertWithPayload,
     },
     {
+      name: 'local ops: placement between puts nodes between two order keys',
+      run: scenarioLocalPlacementBetween,
+    },
+    {
       name: 'local ops: materialization changes include writeId',
       run: scenarioLocalOpsMaterializationWriteId,
     },
@@ -622,6 +626,55 @@ async function scenarioLocalInsertWithPayload(
   assertEqual(first.kind.type, 'insert', 'ops.all first kind');
   if (first.kind.type !== 'insert') throw new Error(`expected insert op, got ${first.kind.type}`);
   assertBytesEqual(first.kind.payload ?? null, payload, 'ops.all insert payload');
+}
+
+async function scenarioLocalPlacementBetween(ctx: TreecrdtEngineConformanceContext): Promise<void> {
+  const { engine } = ctx;
+  const replica = replicaFromLabel('r1');
+  const root = nodeIdFromInt(0);
+  const [a, b, c, d] = [1, 2, 3, 4].map(nodeIdFromInt);
+  const between = (left: Uint8Array | null, right: Uint8Array | null) =>
+    ({ type: 'between', left, right }) as const;
+  const key = (op: Operation): Uint8Array => {
+    if (op.kind.type !== 'insert' && op.kind.type !== 'move') {
+      throw new Error(`expected insert or move op, got ${op.kind.type}`);
+    }
+    return op.kind.orderKey;
+  };
+  const children = async () => (await engine.tree.root.children()).map((node) => node.id);
+  const rejects = (write: Promise<Operation>) =>
+    write.then(
+      () => false,
+      () => true,
+    );
+
+  let insertA: Operation;
+  try {
+    insertA = await engine.local.insert(replica, root, a, between(null, null), null);
+  } catch (error) {
+    if (!String(error).includes("does not support placement 'between'")) throw error;
+    return ctx.skip('engine has no between placement');
+  }
+  const insertB = await engine.local.insert(replica, root, b, between(key(insertA), null), null);
+  await engine.local.insert(replica, root, c, between(key(insertA), key(insertB)), null);
+  assertArrayEqual(await children(), [a, c, b], 'children after inserts between keys');
+
+  const moveB = await engine.local.move(replica, b, root, between(null, key(insertA)));
+  assertEqual(moveB.kind.type, 'move', 'local move kind');
+  assertArrayEqual(await children(), [b, a, c], 'children after a move between keys');
+
+  // An empty left bound is an open end, as null is.
+  await engine.local.insert(replica, root, d, between(new Uint8Array(0), key(moveB)), null);
+  assertArrayEqual(await children(), [d, b, a, c], 'children after an insert below a key');
+
+  // No key is between equal bounds or below an empty right bound. wa-sqlite binds an empty
+  // Uint8Array as NULL, which must not read as an open end and place the node last.
+  const equal = between(key(insertA), key(insertA));
+  assert(await rejects(engine.local.move(replica, c, root, equal)), 'equal bounds reject');
+  const emptyRight = between(null, new Uint8Array(0));
+  assert(await rejects(engine.local.move(replica, c, root, emptyRight)), 'an empty right rejects');
+  assertArrayEqual(await children(), [d, b, a, c], 'children after rejected placements');
+  assertEqual((await engine.ops.all()).length, 5, 'ops.all length');
 }
 
 async function scenarioLocalOpsMaterializationWriteId(

@@ -185,11 +185,17 @@ pub struct ApplyDelta {
     pub changes: Vec<MaterializationChange>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LocalPlacement {
     First,
     Last,
     After(NodeId),
+    /// A new key strictly between two order keys (`None`: an open end), which need not be the
+    /// keys of siblings. The key ends with the node id, so no two nodes placed this way share one.
+    Between {
+        left: Option<Vec<u8>>,
+        right: Option<Vec<u8>>,
+    },
 }
 
 impl LocalPlacement {
@@ -205,6 +211,9 @@ impl LocalPlacement {
                 };
                 Ok(Self::After(after_id))
             }
+            "between" => Err(Error::InvalidOperation(
+                "placement=between takes left and right bounds, not after".into(),
+            )),
             _ => Err(Error::InvalidOperation("invalid placement".into())),
         }
     }
