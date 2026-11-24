@@ -1,5 +1,49 @@
 # @treecrdt/sync-server-core
 
+## 0.1.9
+
+### Patch Changes
+
+- @treecrdt/sync-protocol@0.2.5
+
+## 0.1.8
+
+### Patch Changes
+
+- @treecrdt/sync-protocol@0.2.4
+
+## 0.1.7
+
+### Patch Changes
+
+- @treecrdt/sync-protocol@0.2.3
+
+## 0.1.6
+
+### Patch Changes
+
+- @treecrdt/sync-protocol@0.2.2
+
+## 0.1.5
+
+### Patch Changes
+
+- bde0313: Add leveled sync-server logs. `TREECRDT_LOG_LEVEL` selects `debug`, `info`, `warn`, `error`, or `silent`, and defaults to `info` even when `NODE_ENV` is unset. JSON is the default format, and `TREECRDT_LOG_PRETTY=true` opts into pretty lines. Debug logs include each sync message the server sends or receives. A failed Postgres LISTEN connection exits the CLI or shuts down the library server by default. Clean WebSocket closes, including closes without a status code, log as disconnects.
+
+## 0.1.4
+
+### Patch Changes
+
+- @treecrdt/sync-protocol@0.2.1
+
+## 0.1.3
+
+### Patch Changes
+
+- 2594f3d: Require every duplex transport to expose an idempotent `close` method and a read-only `closeSignal`, treat each transport object as one connection lifecycle, propagate malformed frames and WebSocket closure through sync sessions instead of leaving pending work unresolved, and scope protocol session routing to the originating transport. The high-level custom-transport factory now owns transport cleanup and no longer accepts a separate close callback.
+- Updated dependencies [2594f3d]
+  - @treecrdt/sync-protocol@0.2.0
+
 ## 0.1.2
 
 ### Patch Changes

@@ -1,4 +1,4 @@
-import { createOpfsVfs, type OpfsVfsKind } from './opfs.js';
+import { createOpfsVfs, OPFS_CONNECTION_PRAGMAS, type OpfsVfsKind } from './opfs.js';
 import { createDatabase } from './db.js';
 import type { Database } from './types.js';
 import { initializeTreecrdtExtension } from './extension.js';
@@ -19,7 +19,7 @@ export type OpenTreecrdtDbResult = {
 
 const OPFS_VFS_NAME = 'opfs';
 
-/** Open handle, register extension, and pin docId — no TreecrdtAdapter here. */
+/** Open handle, set OPFS pragmas, register extension, and pin docId — no TreecrdtAdapter here. */
 async function initializeOpenedDatabase(
   sqlite3: any,
   module: any,
@@ -29,6 +29,7 @@ async function initializeOpenedDatabase(
   let db: Database | undefined;
   try {
     db = createDatabase(sqlite3, handle);
+    if (opts.storage === 'opfs') await db.exec(OPFS_CONNECTION_PRAGMAS);
     await initializeTreecrdtExtension(module, handle, db, opts.docId);
     return db;
   } catch (error) {

@@ -1,8 +1,11 @@
 import { beforeEach, expect, test, vi } from 'vitest';
 
-vi.mock('../src/opfs.js', () => ({ createOpfsVfs: vi.fn() }));
+vi.mock('../src/opfs.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/opfs.js')>()),
+  createOpfsVfs: vi.fn(),
+}));
 
-import { createOpfsVfs } from '../src/opfs.js';
+import { createOpfsVfs, OPFS_CONNECTION_PRAGMAS } from '../src/opfs.js';
 import { openTreecrdtDbWithLoader } from '../src/open-core.js';
 import { createFakeModule, createFakeSqlite } from './fake-sqlite.js';
 
@@ -97,6 +100,11 @@ test('keeps the successful OPFS path single-pass and closes its database and VFS
   expect(sqlite3.open_v2).toHaveBeenCalledWith('/success.db', undefined, 'opfs');
   expect(sqlite3.vfs_register).toHaveBeenCalledWith(vfs, false);
   expect(load).toHaveBeenCalledOnce();
+  // Exclusive locking must precede the first read, or reopening a WAL database fails.
+  expect(sqlite3.exec.mock.calls[0]).toEqual([1, OPFS_CONNECTION_PRAGMAS]);
+  expect(sqlite3.exec.mock.invocationCallOrder[0]).toBeLessThan(
+    sqlite3.statements.mock.invocationCallOrder[0]!,
+  );
 
   await opened.db.close?.();
   await opened.db.close?.();

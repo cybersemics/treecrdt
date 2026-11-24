@@ -21,6 +21,7 @@ export type LifecycleState = {
   mode: string;
   runtime: string;
   storage: string;
+  journalMode: string | null;
   headLamport: number;
   rootChildren: string[];
   parentChildren: string[];
@@ -47,6 +48,7 @@ async function summarizeLifecycleState(client: TreecrdtClient): Promise<Lifecycl
     mode: client.mode,
     runtime: client.runtime,
     storage: client.storage,
+    journalMode: await client.runner.getText('PRAGMA journal_mode'),
     headLamport: await client.meta.headLamport(),
     rootChildren: (await client.tree.root.children()).map((node) => node.id),
     parentChildren: parentNode ? (await parentNode.children()).map((node) => node.id) : [],

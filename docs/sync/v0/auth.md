@@ -324,15 +324,12 @@ CREATE TABLE IF NOT EXISTS treecrdt_sync_op_auth (
 
 ### SQLite runner compatibility notes
 
-TreeCRDT’s JS SQLite adapters intentionally use a minimal `SqliteRunner` API (`exec` + `getText`). This has two practical
-implications for sidecar tables:
+TreeCRDT’s JS SQLite adapters intentionally use a minimal `SqliteRunner` API (`exec`, `run` and `getText`). This has two
+practical implications for sidecar tables:
 
-1) **DML via `getText`**: some runners implement `getText` using a “query” primitive (for example `better-sqlite3`’s
-   `.get()`), which fails for statements that return no rows. A portable pattern is to use `RETURNING` so the statement
-   yields a row:
-
-   - `INSERT ... RETURNING 1`
-   - `DELETE ... RETURNING 1`
+1) **DML via `run`**: `run(sql, params)` binds parameters and runs one statement without reading a result. Don’t send
+   writes through `getText`: some runners implement it with a “query” primitive (for example `better-sqlite3`’s
+   `.get()`), which fails for statements that return no rows.
 
 2) **BLOB reads via text**: if the bridge only returns strings, read `BLOB` columns with `hex(blob_col)` and decode on
    the JS side. For bulk reads, SQLite’s JSON1 functions are convenient (`json_object`, `json_group_array`).

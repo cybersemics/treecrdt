@@ -22,7 +22,9 @@ functions, then initializes the shared schema and document ID in one awaited wri
 transaction, preventing races between connections opening the same database.
 Omit `docId` only when schema initialization without a document ID is needed.
 `createTreecrdtClient()` performs initialization automatically. Rebuild the vendor
-WASM and adapter together.
+WASM and adapter together. Persistent OPFS databases are in WAL mode, which the
+OPFS VFSs support only with exclusive locking: a connection that opens one must run
+`PRAGMA locking_mode=EXCLUSIVE` before its first statement.
 
 ## Browser usage
 
@@ -35,7 +37,8 @@ import { createTreecrdtClient } from '@treecrdt/wa-sqlite';
 const memoryClient = await createTreecrdtClient({ docId: 'my-doc' });
 
 // Durable: OPFS storage in a dedicated worker. Throws when OPFS is unavailable
-// (e.g. missing cross-origin isolation) — there is no silent memory fallback.
+// (e.g. on an insecure origin) — there is no silent memory fallback. Cross-origin
+// isolation (COOP/COEP headers) is not required.
 const persistentClient = await createTreecrdtClient({ docId: 'my-doc', persistent: true });
 
 // Override the OPFS filename when an existing application owns the file naming scheme.
@@ -78,7 +81,76 @@ Storage, runtime, filename, and asset resolution are selected internally:
 
 `crossTab: true` throws when the browser does not support `SharedWorker`.
 
-Callers only see `TreecrdtClient` (`ops` / `tree` / `local` / `onMaterialized` / `close` / `drop`).
+Persistent databases use SQLite's WAL journal with exclusive locking, which roughly
+halves the cost of a single-operation commit. A database is held by one client until
+it closes: without `crossTab`, another client opening the same database, for example
+in a second tab, waits until the first client closes or its tab goes away. Use
+`crossTab: true` to share a persistent database between tabs. Tabs share a cross-tab
+worker only when they load the same worker script URL. Bundlers usually hash that URL
+by content, so after a deploy that changes the worker, a tab on the new build waits
+the same way until the old build's tabs close their clients or go away.
+
+Callers only see `TreecrdtClient` (`ops` / `tree` / `local` / `onMaterialized` / `onMaterializedDurable` / `close` / `drop`).
+
+### Reading many nodes at once
+
+`tree.read(ids)` reads many nodes in one worker call, all from the same state. Use it where you would otherwise read node by node through `tree.node(id)`:
+
+```ts
+const { headSeq, nodes } = await client.tree.read([a, b], { children: { payloads: true } });
+const node = nodes[a]; // null when `a` is deleted or unknown
+if (node) {
+  node.id; // canonical id
+  node.parent; // live parent id, or null
+  node.index; // position among the parent's live children
+  node.payload; // Uint8Array | null
+  node.children; // [{ id, payload }] in order; each payload only with children.payloads
+}
+```
+
+A loaded node holds, as values, what a `tree.node(id)` handle's methods would read, with ids in place of handles. Unlike a handle it does not change afterwards: `headSeq` is the head of the state the read saw, as `changedSince` reports it. Nodes are keyed by the ids as given.
+
+### Keeping derived data in step
+
+`onMaterializedDurable(name, listener)` is `onMaterialized` that remembers how far the listener got. Use it for anything derived from the tree that has to survive restarts, such as an index table:
+
+```ts
+const subscription = await client.onMaterializedDurable(
+  'search-index',
+  async (event) => {
+    for (const change of event.changes) await updateIndex(change);
+  },
+  { version: 1, reset: () => clearIndex() },
+);
+
+await client.local.insert(replica, parent, node, { type: 'last' }, payload);
+await subscription.settled(); // the index now includes the insert
+await subscription.close();
+```
+
+- The call resolves once the listener has caught up. With no usable position for `version`, `reset` runs first and every node is delivered.
+- Events arrive in order, one at a time and at least once. The listener may be async: the position moves only after it resolves, and a rejected call is delivered again with the next event or `settled()`.
+- `idle()` resolves once the deliveries queued so far have finished, whether or not they succeeded. Unlike `settled()`, it never starts a catch-up and never rejects, so waiting for a listener that keeps failing does not retry it.
+- After a gap, a change reports a node's current state instead of how it got there: a live node as `insert` (a root as `payload`), a removed one as `delete`. Apply each change as "make it so".
+- The position is stored in the client's database and saved after a catch-up, every `saveIntervalMs` (default 2000) while events flow, and on `close()`. `client.close()` closes open subscriptions first.
+
+`tree.changedSince(since)` is the read underneath, for callers that keep their own cursor. It returns nodes whose visible state changed after a `headSeq`, once each, with their current state. Changes are recorded in the same commit as the state. Save the cursor only after applying every returned page successfully, so a failed update can be retried after a crash or reload. `since = 0` reads every node.
+
+```ts
+let page = await client.tree.changedSince(loadCursor() ?? 0, { payloads: true, limit: 500 });
+for (;;) {
+  for (const node of page.nodes) updateIndex(node);
+  if (!page.next) break;
+  page = await client.tree.changedSince(page.next, { payloads: true, limit: 500 });
+}
+saveCursor(page.headSeq);
+```
+
+Each node comes with its current state, so applying it twice is harmless: if the app stops before `saveCursor`, the next catch-up repeats those updates. Don't hold a transaction open across the loop on the client's own database. Other writes on that connection would run inside it, and a rollback would discard ops whose events were already delivered. A cursor ahead of the database's `headSeq`, such as one saved before the database was dropped, is rejected; read from 0 to rebuild.
+
+Pages are not a frozen snapshot: a node changed again before its page is read is deferred to the next catch-up. Retain notifications received during paging and catch up again afterward; completing a pass does not guarantee the index is current with concurrent writes.
+
+`onMaterialized` remains the low-latency signal while the client is open; `changedSince` is what to rely on across restarts. Reading from an older `headSeq` scans the change table, which keeps recording cheap, so call it to catch up after a gap rather than after every write.
 
 See the [playground](../../examples/playground/README.md) for a full browser demo.
 

@@ -1,4 +1,9 @@
-import type { Operation, TreecrdtAdapter } from '@treecrdt/interface';
+import type {
+  Operation,
+  TreecrdtAdapter,
+  TreecrdtChangedSinceQuery,
+  TreecrdtReadRows,
+} from '@treecrdt/interface';
 import { nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type { MaterializationEvent, MaterializationOutcome } from '@treecrdt/interface/engine';
 import { createTreecrdtSqliteAdapter } from '@treecrdt/interface/sqlite';
@@ -42,6 +47,8 @@ export interface TreecrdtSessionOperations {
 export interface TreecrdtSessionTree {
   children: (parent: string, offset: number | null, limit: number | null) => Promise<unknown[]>;
   dump: () => Promise<unknown[]>;
+  changedSince: (query: TreecrdtChangedSinceQuery) => Promise<{ headSeq: number; rows: unknown[] }>;
+  read: (nodes: string[], childPayloads: boolean) => Promise<TreecrdtReadRows>;
   payload: (node: string) => Promise<Uint8Array | null>;
   nodeCount: () => Promise<number>;
   parent: (node: string) => Promise<Uint8Array | null>;
@@ -54,6 +61,7 @@ export interface TreecrdtSessionTree {
  */
 export interface TreecrdtSession {
   sqlExec: (sql: string) => Promise<void>;
+  sqlRun: (sql: string, params?: SqlParam[]) => Promise<void>;
   sqlGetText: (sql: string, params?: SqlParam[]) => Promise<string | null>;
   readonly operations: TreecrdtSessionOperations;
   readonly tree: TreecrdtSessionTree;
@@ -177,6 +185,8 @@ const createTreecrdtSession = (openDb: SessionOpenFn): TreecrdtSessionOwner => {
     children: (parent, offset, limit) =>
       run(async () => ensureApi().treeChildren(nodeIdToBytes16(parent), offset, limit)),
     dump: () => run(async () => ensureApi().treeDump()),
+    changedSince: (query) => run(async () => ensureApi().treeChangedSince!(query)),
+    read: (nodes, childPayloads) => run(async () => ensureApi().treeRead!(nodes, childPayloads)),
     payload: (node) =>
       run(async () => transferBinary(await ensureApi().treePayload(nodeIdToBytes16(node)))),
     nodeCount: () => run(async () => ensureApi().treeNodeCount()),
@@ -190,6 +200,7 @@ const createTreecrdtSession = (openDb: SessionOpenFn): TreecrdtSessionOwner => {
       run(async () => {
         await ensureDb().exec(sql);
       }),
+    sqlRun: (sql, params = []) => run(async () => ensureDb().run(sql, params)),
     sqlGetText: (sql, params = []) => run(async () => ensureDb().getText(sql, params)),
     operations,
     tree,

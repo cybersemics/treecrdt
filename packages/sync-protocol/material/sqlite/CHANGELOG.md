@@ -1,5 +1,70 @@
 # @treecrdt/sync-sqlite
 
+## 0.2.2
+
+### Patch Changes
+
+- Updated dependencies [33168cb]
+  - @treecrdt/interface@0.8.0
+  - @treecrdt/sync-protocol@0.2.5
+  - @treecrdt/auth@0.2.5
+
+## 0.2.1
+
+### Patch Changes
+
+- Updated dependencies [6b5d8df]
+  - @treecrdt/interface@0.7.0
+  - @treecrdt/sync-protocol@0.2.4
+  - @treecrdt/auth@0.2.4
+
+## 0.2.0
+
+### Minor Changes
+
+- 3c714fe: Add `run(sql, params)` to `SqliteRunner`. It runs one statement with bound parameters to completion and returns nothing, so parameterized writes no longer need `getText` with `RETURNING 1` appended. `client.runner` implements it, and TreeCRDT's own writes (`onMaterializedDurable` positions and the sync-sqlite stores) now use it. Custom runners must implement `run`.
+
+### Patch Changes
+
+- Updated dependencies [3c714fe]
+  - @treecrdt/interface@0.6.0
+  - @treecrdt/sync-protocol@0.2.3
+  - @treecrdt/auth@0.2.3
+
+## 0.1.5
+
+### Patch Changes
+
+- Updated dependencies [b2394a9]
+  - @treecrdt/interface@0.5.0
+  - @treecrdt/sync-protocol@0.2.2
+  - @treecrdt/auth@0.2.2
+
+## 0.1.4
+
+### Patch Changes
+
+- Updated dependencies [fc2c6e5]
+- Updated dependencies [a5d694f]
+  - @treecrdt/interface@0.4.0
+  - @treecrdt/sync-protocol@0.2.1
+  - @treecrdt/auth@0.2.1
+
+## 0.1.3
+
+### Patch Changes
+
+- Updated dependencies [917d930]
+- Updated dependencies [e1a6f4d]
+- Updated dependencies [e69c29b]
+- Updated dependencies [2594f3d]
+- Updated dependencies [4686794]
+- Updated dependencies [be09f09]
+- Updated dependencies [e829a41]
+  - @treecrdt/auth@0.2.0
+  - @treecrdt/interface@0.3.0
+  - @treecrdt/sync-protocol@0.2.0
+
 ## 0.1.2
 
 ### Patch Changes

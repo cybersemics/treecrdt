@@ -203,6 +203,16 @@ pub struct TreeRow {
     pub tombstone: bool,
 }
 
+/// Whether node `$2` of doc `$1` is visible: the root always is, any other node needs a live row.
+/// A macro so queries stay `&'static str` for the statement cache.
+macro_rules! node_visible {
+    () => {
+        "($2 = decode('00000000000000000000000000000000', 'hex') \
+         OR EXISTS (SELECT 1 FROM treecrdt_nodes AS visible \
+                    WHERE visible.doc_id = $1 AND visible.node = $2 AND visible.tombstone = FALSE))"
+    };
+}
+
 pub fn tree_children(
     client: &Rc<RefCell<Client>>,
     doc_id: &str,
@@ -225,10 +235,12 @@ pub fn tree_children(
         Some(limit) => {
             let stmt = ctx.stmt(
                 &mut c,
-                "SELECT node FROM treecrdt_nodes \
-                 WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE \
-                 ORDER BY order_key, node \
-                 OFFSET $3 LIMIT $4",
+                concat!(
+                    "SELECT node FROM treecrdt_nodes \
+                     WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE AND ",
+                    node_visible!(),
+                    " ORDER BY order_key, node OFFSET $3 LIMIT $4"
+                ),
             )?;
             c.query(
                 &stmt,
@@ -244,10 +256,12 @@ pub fn tree_children(
         None if index.is_some() => {
             let stmt = ctx.stmt(
                 &mut c,
-                "SELECT node FROM treecrdt_nodes \
-                 WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE \
-                 ORDER BY order_key, node \
-                 OFFSET $3",
+                concat!(
+                    "SELECT node FROM treecrdt_nodes \
+                     WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE AND ",
+                    node_visible!(),
+                    " ORDER BY order_key, node OFFSET $3"
+                ),
             )?;
             c.query(
                 &stmt,
@@ -258,9 +272,12 @@ pub fn tree_children(
         None => {
             let stmt = ctx.stmt(
                 &mut c,
-                "SELECT node FROM treecrdt_nodes \
-                 WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE \
-                 ORDER BY order_key, node",
+                concat!(
+                    "SELECT node FROM treecrdt_nodes \
+                     WHERE doc_id = $1 AND parent = $2 AND tombstone = FALSE AND ",
+                    node_visible!(),
+                    " ORDER BY order_key, node"
+                ),
             )?;
             c.query(&stmt, &[&doc_id, &parent_bytes.as_slice()]).map_err(storage_debug)?
         }
@@ -316,7 +333,12 @@ pub fn tree_payload(
     let mut c = client.borrow_mut();
     let stmt = ctx.stmt(
         &mut c,
-        "SELECT payload FROM treecrdt_payload WHERE doc_id = $1 AND node = $2 LIMIT 1",
+        concat!(
+            "SELECT payload FROM treecrdt_payload \
+             WHERE doc_id = $1 AND node = $2 AND ",
+            node_visible!(),
+            " LIMIT 1"
+        ),
     )?;
     let rows = c.query(&stmt, &[&doc_id, &node_bytes.as_slice()]).map_err(storage_debug)?;
     let Some(row) = rows.first() else {

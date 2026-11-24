@@ -1,4 +1,8 @@
-import type { MaterializationEvent, TreecrdtEngine } from '@treecrdt/interface/engine';
+import type {
+  MaterializationEvent,
+  TreecrdtChangedNode,
+  TreecrdtEngine,
+} from '@treecrdt/interface/engine';
 import type { Operation, ReplicaId } from '@treecrdt/interface';
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
@@ -41,6 +45,8 @@ export type TreecrdtEngineConformanceContext = {
   engine: TreecrdtEngine;
   createEngine: (opts: { docId: string; name?: string }) => Promise<TreecrdtEngine>;
   createPersistentEngine?: (opts: { docId: string; name: string }) => Promise<TreecrdtEngine>;
+  /** Ends a scenario the engine can't run; call as `return ctx.skip(reason)`. */
+  skip: (reason: string) => void;
 };
 
 export type TreecrdtEngineConformanceScenario = {
@@ -52,6 +58,11 @@ export type TreecrdtEngineConformanceRunner = {
   docIdPrefix: string;
   openEngine: (opts: { docId: string; name?: string }) => Promise<TreecrdtEngine>;
   openPersistentEngine?: (opts: { docId: string; name: string }) => Promise<TreecrdtEngine>;
+  /**
+   * Skips scenarios this engine can't run, e.g. with vitest's `ctx.skip`. Pass it only for an
+   * engine that lacks a feature on purpose; without it, such a scenario fails.
+   */
+  skipUnsupported?: (reason: string) => void;
   cleanup?: () => Promise<void> | void;
 };
 
@@ -121,6 +132,12 @@ export async function runTreecrdtEngineConformanceScenario(
       engine,
       createEngine: openEngine,
       createPersistentEngine: openPersistentEngine,
+      skip: (reason) => {
+        if (!runner.skipUnsupported) {
+          throw new Error(`${scenario.name}: ${reason} (pass skipUnsupported to skip it)`);
+        }
+        runner.skipUnsupported(reason);
+      },
     });
   } finally {
     await closeTrackedConformanceEngines(engines);
@@ -159,6 +176,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
       run: scenarioMaterializationEventDefensiveRestore,
     },
     {
+      name: 'local ops: a write under a deleted parent reports its restore',
+      run: scenarioLocalWriteReportsRestoredParent,
+    },
+    {
       name: 'tree: children slice pagination',
       run: scenarioChildrenSlicePagination,
     },
@@ -173,6 +194,58 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
     {
       name: 'tree: get/root lazy Node navigation',
       run: scenarioTreeGetRootLazyNavigation,
+    },
+    {
+      name: 'tree: node(id) reads without an existence check',
+      run: scenarioTreeNodeHandle,
+    },
+    {
+      name: 'tree: a handle kept across a delete stops reading the node',
+      run: scenarioHandleKeptAcrossDelete,
+    },
+    {
+      name: 'tree: read matches per-node reads',
+      run: scenarioTreeReadMatchesNodeReads,
+    },
+    {
+      name: 'tree: changedSince reports each changed node once',
+      run: scenarioChangedSinceReportsChangedNodes,
+    },
+    {
+      name: 'tree: changedSince pages under a fixed head',
+      run: scenarioChangedSincePagesUnderFixedHead,
+    },
+    {
+      name: 'tree: changedSince skips ops without visible changes',
+      run: scenarioChangedSinceSkipsInvisibleOps,
+    },
+    {
+      name: 'tree: changedSince resumes from a saved headSeq after reopening',
+      run: scenarioChangedSinceResumesAfterReopen,
+    },
+    {
+      name: 'tree: changedSince matches state diffs across replicas',
+      run: scenarioChangedSinceMatchesStateDiff,
+    },
+    {
+      name: 'onMaterializedDurable: resumes where it stopped after reopening',
+      run: scenarioDurableResumesAfterReopen,
+    },
+    {
+      name: 'onMaterializedDurable: delivers a failed change again',
+      run: scenarioDurableRedeliversAfterFailure,
+    },
+    {
+      name: 'onMaterializedDurable: idle waits for queued deliveries without retrying',
+      run: scenarioDurableIdleDoesNotRetry,
+    },
+    {
+      name: 'onMaterializedDurable: a new version resets and receives every node',
+      run: scenarioDurableResetsForNewVersion,
+    },
+    {
+      name: 'onMaterializedDurable: reports a node moved during a paged catch-up',
+      run: scenarioDurableReportsNodeMovedWhilePaging,
     },
     {
       name: 'oprefs_all + ops.get: preserve order and reject missing refs',
@@ -217,6 +290,10 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
     {
       name: 'sync auth: excluded root is not synced to scoped peer',
       run: scenarioSyncAuthExcludedRootNotSynced,
+    },
+    {
+      name: 'sqlite runner: run binds parameters',
+      run: scenarioSqliteRunnerRunBindsParameters,
     },
     {
       name: 'auth: sqlite subtree evaluator allow/deny/unknown',
@@ -374,6 +451,7 @@ function engineRunnerOrNull(engine: TreecrdtEngine): SqliteRunner | null {
   const candidate = (engine as any)?.runner as Partial<SqliteRunner> | undefined;
   if (!candidate) return null;
   if (typeof candidate.exec !== 'function') return null;
+  if (typeof candidate.run !== 'function') return null;
   if (typeof candidate.getText !== 'function') return null;
   return candidate as SqliteRunner;
 }
@@ -832,7 +910,7 @@ async function scenarioMaterializationEventDefensiveRestore(
     'receiver preserves parent',
   );
   assertArrayEqual(
-    ((await (await b.tree.get(parent))?.children()) ?? []).map((node) => node.id),
+    (await b.tree.node(parent).children()).map((node) => node.id),
     [child],
     'receiver preserves unseen child',
   );
@@ -853,10 +931,73 @@ async function scenarioMaterializationEventDefensiveRestore(
     'restored parent should be visible',
   );
   assertArrayEqual(
-    ((await (await a.tree.get(parent))?.children()) ?? []).map((node) => node.id),
+    (await a.tree.node(parent).children()).map((node) => node.id),
     [child],
     'child should remain visible',
   );
+}
+
+async function scenarioLocalWriteReportsRestoredParent(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  const replica = replicaFromLabel('r-local-restore');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  // Restored by an insert under it, a move into it and a payload on its child, in that order.
+  const parents = [nodeIdFromInt(80), nodeIdFromInt(81), nodeIdFromInt(82)];
+  const child = nodeIdFromInt(83);
+  const moved = nodeIdFromInt(84);
+  for (const parent of parents) {
+    await engine.local.insert(replica, root, parent, { type: 'last' }, encoder.encode(parent));
+  }
+  await engine.local.insert(replica, parents[2]!, child, { type: 'last' }, null);
+  await engine.local.insert(replica, root, moved, { type: 'last' }, null);
+  for (const parent of parents) await engine.local.delete(replica, parent);
+  const cursor = engine.tree.changedSince ? (await readAllChangedSince(engine, 0)).headSeq : 0;
+  const durable: MaterializationEvent[] = [];
+  const subscription = await engine.onMaterializedDurable?.(
+    'index',
+    (event) => void durable.push(event),
+  );
+  durable.length = 0;
+
+  // The deletes didn't know about these writes, so each restores its parent, as it does on peers.
+  const events = await captureMaterializationEvents(engine, async () => {
+    await engine.local.insert(replica, parents[0]!, nodeIdFromInt(85), { type: 'last' }, null);
+    await engine.local.move(replica, moved, parents[1]!, { type: 'last' });
+    await engine.local.payload(replica, child, Uint8Array.of(1));
+  });
+  await subscription?.settled();
+
+  const delivered: [string, MaterializationEvent[]][] = [['onMaterialized', events]];
+  if (subscription) delivered.push(['onMaterializedDurable', durable]);
+  for (const [label, received] of delivered) {
+    for (const parent of parents) {
+      const changes = received.flatMap((event) => event.changes).filter((c) => c.node === parent);
+      assertArrayEqual(
+        changes.map((change) => change.kind),
+        ['restore'],
+        `${label} reports the restored parent`,
+      );
+      const change = changes[0]!;
+      assertEqual('parentAfter' in change ? change.parentAfter : null, root, `${label} parent`);
+      assertBytesEqual(
+        'payload' in change ? change.payload : null,
+        encoder.encode(parent),
+        `${label} payload`,
+      );
+    }
+  }
+  if (engine.tree.changedSince) {
+    const { nodes } = await readAllChangedSince(engine, cursor);
+    for (const parent of parents) {
+      assert(
+        nodes.some((n) => n.node === parent && !n.tombstone),
+        'changedSince lists the restored parent',
+      );
+    }
+  }
 }
 
 async function scenarioChildrenSlicePagination(
@@ -1006,7 +1147,7 @@ async function scenarioMaterializedSmokeWithOpRefs(
     'tree.children(root)',
   );
   assertArrayEqual(
-    ((await (await engine.tree.get(n1))?.children()) ?? []).map((node) => node.id),
+    (await engine.tree.node(n1).children()).map((node) => node.id),
     [n2],
     'tree.children(n1)',
   );
@@ -1018,8 +1159,8 @@ async function scenarioMaterializedSmokeWithOpRefs(
   assertEqual(byId.get(n2)?.parent ?? null, n1, 'tree.dump n2 parent');
 
   assertEqual((await engine.tree.root.parent())?.id ?? null, null, 'tree.parent(root)');
-  assertEqual((await (await engine.tree.get(n1))?.parent())?.id ?? null, root, 'tree.parent(n1)');
-  assertEqual((await (await engine.tree.get(n2))?.parent())?.id ?? null, n1, 'tree.parent(n2)');
+  assertEqual((await engine.tree.node(n1).parent())?.id ?? null, root, 'tree.parent(n1)');
+  assertEqual((await engine.tree.node(n2).parent())?.id ?? null, n1, 'tree.parent(n2)');
 
   assertEqual((await engine.tree.get(root)) !== undefined, true, 'tree.exists(root)');
   assertEqual((await engine.tree.get(n1)) !== undefined, true, 'tree.exists(n1)');
@@ -1046,6 +1187,622 @@ async function scenarioMaterializedSmokeWithOpRefs(
     opsN1.map((op) => op.kind.type),
     ['move'],
     'opsByOpRefs(n1) kinds',
+  );
+}
+
+async function scenarioTreeReadMatchesNodeReads(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  if (!engine.tree.read) return ctx.skip('engine has no tree.read');
+  const replica = replicaFromLabel('r-read');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const [a, b, c, d, e, f, gone] = [80, 81, 82, 83, 84, 85, 86].map(nodeIdFromInt);
+
+  await engine.local.payload(replica, root, encoder.encode('root'));
+  await engine.local.insert(replica, root, a, { type: 'last' }, encoder.encode('a'));
+  await engine.local.insert(replica, root, b, { type: 'first' }, encoder.encode('b'));
+  await engine.local.insert(replica, a, c, { type: 'last' }, encoder.encode('c'));
+  await engine.local.insert(replica, a, d, { type: 'first' }, null);
+  await engine.local.insert(replica, a, e, { type: 'after', after: d }, encoder.encode('e'));
+  await engine.local.insert(replica, a, gone, { type: 'last' }, encoder.encode('gone'));
+  await engine.local.insert(replica, b, f, { type: 'last' }, encoder.encode('f'));
+  await engine.local.payload(replica, e, new Uint8Array());
+  await engine.local.delete(replica, gone);
+  // Leaves f under a deleted parent.
+  await engine.local.delete(replica, b);
+
+  // Also reads a by its decimal id, and an id that was never inserted.
+  const ids = [root, a, String(parseInt(a, 16)), b, c, d, e, f, gone, nodeIdFromInt(89)];
+  const { headSeq, nodes } = await engine.tree.read(ids, { children: { payloads: true } });
+  if (engine.tree.changedSince) {
+    const head = (await engine.tree.changedSince(0, { limit: 1 })).headSeq;
+    assertEqual(headSeq, head, 'read reports the head changedSince reports');
+  }
+  /** Serializes a read with its bytes as hex, so reads compare by value. */
+  const json = (node: unknown) =>
+    JSON.stringify(node, function (this: Record<string, unknown>, key, value) {
+      const raw = this[key];
+      return raw instanceof Uint8Array ? bytesToHex(raw) : value;
+    });
+  for (const id of ids) {
+    const handle = engine.tree.node(id);
+    const parent = await handle.parent();
+    const siblings = parent ? (await parent.children()).map((sibling) => sibling.id) : [];
+    const children = await handle.children();
+    const want =
+      id === root || (await engine.tree.get(id))
+        ? {
+            id: handle.id,
+            parent: parent?.id ?? null,
+            index: parent ? siblings.indexOf(handle.id) : 0,
+            payload: await handle.payload(),
+            children: await Promise.all(
+              children.map(async (child) => ({ id: child.id, payload: await child.payload() })),
+            ),
+          }
+        : null;
+    assertEqual(json(nodes[id] ?? null), json(want), `read(${id}) matches node(${id})'s reads`);
+  }
+  assert(
+    (await engine.tree.read([a])).nodes[a]!.children.every((child) => !('payload' in child)),
+    'children carry payloads only when requested',
+  );
+}
+
+/** Reads every page of a `changedSince` read; all pages must share the first page's head. */
+async function readAllChangedSince(
+  engine: TreecrdtEngine,
+  since: number,
+  opts: { limit?: number; payloads?: boolean } = {},
+): Promise<{ headSeq: number; nodes: TreecrdtChangedNode[] }> {
+  const changedSince = engine.tree.changedSince!;
+  let page = await changedSince(since, opts);
+  const nodes = [...page.nodes];
+  while (page.next) {
+    const headSeq = page.headSeq;
+    page = await changedSince(page.next, opts);
+    assertEqual(page.headSeq, headSeq, 'changedSince pages share one headSeq');
+    nodes.push(...page.nodes);
+  }
+  return { headSeq: page.headSeq, nodes };
+}
+
+async function scenarioChangedSinceReportsChangedNodes(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  if (!engine.tree.changedSince) return ctx.skip('engine has no tree.changedSince');
+  const replica = replicaFromLabel('r-changed');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const seed = nodeIdFromInt(1);
+  const a = nodeIdFromInt(2);
+  const b = nodeIdFromInt(3);
+  const c = nodeIdFromInt(4);
+
+  await engine.local.insert(replica, root, seed, { type: 'last' }, null);
+  const start = (await readAllChangedSince(engine, 0)).headSeq;
+  await engine.local.insert(replica, root, a, { type: 'last' }, encoder.encode('a1'));
+  await engine.local.insert(replica, root, b, { type: 'last' }, null);
+  await engine.local.payload(replica, a, encoder.encode('a2'));
+
+  const first = await readAllChangedSince(engine, start, { payloads: true });
+  assertArrayEqual(
+    first.nodes.map((n) => n.node).sort(),
+    [a, b],
+    'each changed node is listed once',
+  );
+  const rowA = first.nodes.find((n) => n.node === a)!;
+  assertEqual(rowA.parent, root, 'changed node parent');
+  assertEqual(rowA.tombstone, false, 'changed node tombstone');
+  assertBytesEqual(rowA.payload ?? null, encoder.encode('a2'), 'changed node latest payload');
+
+  const idle = await readAllChangedSince(engine, first.headSeq);
+  assertEqual(idle.nodes.length, 0, 'nothing changed after the returned headSeq');
+  assertEqual(idle.headSeq, first.headSeq, 'headSeq is stable without writes');
+
+  let threw = false;
+  try {
+    await engine.tree.changedSince(first.headSeq + 1);
+  } catch {
+    threw = true;
+  }
+  assert(threw, 'a since ahead of headSeq is rejected');
+
+  await engine.local.insert(replica, a, c, { type: 'last' }, null);
+  await engine.local.move(replica, b, a, { type: 'first' });
+  await engine.local.delete(replica, c);
+  const second = await readAllChangedSince(engine, first.headSeq);
+  const byId = new Map(second.nodes.map((n) => [n.node, n]));
+  assertEqual(byId.get(b)?.parent ?? null, a, 'moved node reports its new parent');
+  assertEqual(byId.get(c)?.tombstone, true, 'deleted node is reported as a tombstone');
+  assert(
+    second.nodes.every((n) => n.payload === undefined),
+    'payloads are omitted unless requested',
+  );
+
+  const full = await readAllChangedSince(engine, 0, { payloads: true });
+  assertArrayEqual(
+    full.nodes.map((n) => n.node).sort(),
+    [root, seed, a, b, c],
+    'a full read lists every materialized node',
+  );
+  assertEqual(
+    full.nodes.find((n) => n.node === c)?.payload ?? null,
+    null,
+    'deleted nodes carry no payload',
+  );
+}
+
+async function scenarioChangedSincePagesUnderFixedHead(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  if (!engine.tree.changedSince) return ctx.skip('engine has no tree.changedSince');
+  const replica = replicaFromLabel('r-pages');
+  const root = nodeIdFromInt(0);
+  const seed = nodeIdFromInt(40);
+  const nodes = [41, 42, 43, 44, 45].map(nodeIdFromInt);
+  const late = nodeIdFromInt(50);
+
+  await engine.local.insert(replica, root, seed, { type: 'last' }, null);
+  const start = (await readAllChangedSince(engine, 0)).headSeq;
+  for (const node of nodes) await engine.local.insert(replica, root, node, { type: 'last' }, null);
+
+  let page = await engine.tree.changedSince(start, { limit: 2 });
+  const headSeq = page.headSeq;
+  assert(page.nodes.length <= 2, 'first page honours the limit');
+  assert(page.next, 'a read with more changes than the limit has a continuation');
+  const seen = page.nodes.map((n) => n.node);
+  // Nodes written during paging may be reported now or deferred to the next read, never lost.
+  const payload = new TextEncoder().encode('updated during paging');
+  await engine.local.payload(replica, nodes[2]!, payload);
+  await engine.local.delete(replica, nodes[3]!);
+  await engine.local.insert(replica, root, late, { type: 'last' }, null);
+  while (page.next) {
+    page = await engine.tree.changedSince(page.next, { limit: 2 });
+    assertEqual(page.headSeq, headSeq, 'writes during paging do not advance the read head');
+    seen.push(...page.nodes.map((n) => n.node));
+  }
+  assertEqual(new Set(seen).size, seen.length, 'a paged read lists each node at most once');
+  assert(
+    seen.every((node) => node === late || nodes.includes(node)),
+    'a paged read lists only nodes changed after since',
+  );
+  for (const node of [nodes[0]!, nodes[1]!, nodes[4]!]) {
+    assert(seen.includes(node), `a paged read lists ${node}, which paging left unchanged`);
+  }
+
+  const next = await readAllChangedSince(engine, page.headSeq, { payloads: true });
+  const nextById = new Map(next.nodes.map((n) => [n.node, n]));
+  for (const node of [nodes[2]!, nodes[3]!, late]) {
+    assert(nextById.has(node), `the next read lists ${node}, which changed during paging`);
+  }
+  assertBytesEqual(
+    nextById.get(nodes[2]!)!.payload ?? null,
+    payload,
+    'the next read has the latest payload',
+  );
+  assertEqual(nextById.get(nodes[3]!)!.tombstone, true, 'the next read reports the deletion');
+
+  const full = await readAllChangedSince(engine, 0, { limit: 3 });
+  assertArrayEqual(
+    full.nodes.map((n) => n.node).sort(),
+    [root, seed, ...nodes, late].sort(),
+    'a paged full read lists every node once',
+  );
+}
+
+async function scenarioChangedSinceSkipsInvisibleOps(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  if (!engine.tree.changedSince) return ctx.skip('engine has no tree.changedSince');
+  const local = replicaFromLabel('r-local');
+  const remote = replicaFromLabel('r-remote');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const node = nodeIdFromInt(60);
+
+  await engine.local.insert(local, root, node, { type: 'last' }, encoder.encode('v1'));
+  await engine.local.payload(local, node, encoder.encode('v2'));
+  const before = await readAllChangedSince(engine, 0);
+
+  // Older than the current winner: stored, but nothing visible changes.
+  await engine.ops.append(
+    makePayloadOp({
+      replica: remote,
+      counter: 1,
+      lamport: 1,
+      node,
+      payload: encoder.encode('stale'),
+    }),
+  );
+  const after = await readAllChangedSince(engine, before.headSeq);
+  assertEqual(after.nodes.length, 0, 'an op that changes nothing visible reports no nodes');
+  assert(after.headSeq > before.headSeq, 'headSeq still advances past the stored op');
+}
+
+async function scenarioChangedSinceResumesAfterReopen(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  if (!ctx.createPersistentEngine) return;
+  const replica = replicaFromLabel('r-reopen');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const read = nodeIdFromInt(70);
+  const unread = nodeIdFromInt(71);
+
+  const e1 = await ctx.createPersistentEngine({ docId: ctx.docId, name: 'db' });
+  if (!e1.tree.changedSince) return ctx.skip('engine has no tree.changedSince');
+  await e1.local.insert(replica, root, read, { type: 'last' }, null);
+  await e1.local.insert(replica, root, unread, { type: 'last' }, encoder.encode('read'));
+  const cursor = (await readAllChangedSince(e1, 0)).headSeq;
+  await e1.local.payload(replica, unread, encoder.encode('unread'));
+  await e1.close();
+
+  const e2 = await ctx.createPersistentEngine({ docId: ctx.docId, name: 'db' });
+  const after = await readAllChangedSince(e2, cursor, { payloads: true });
+  assertArrayEqual(
+    after.nodes.map((n) => n.node),
+    [unread],
+    'a reopened database reports only changes after the saved headSeq',
+  );
+  assertBytesEqual(
+    after.nodes[0]!.payload ?? null,
+    encoder.encode('unread'),
+    'the reopened change has its latest payload',
+  );
+}
+
+async function scenarioChangedSinceMatchesStateDiff(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const a = ctx.engine;
+  if (!a.tree.changedSince) return ctx.skip('engine has no tree.changedSince');
+  const b = await ctx.createEngine({ docId: ctx.docId, name: 'peer-b' });
+  const replicas = new Map([
+    [a, replicaFromLabel('rA')],
+    [b, replicaFromLabel('rB')],
+  ]);
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  let nextNode = 100;
+  // Deterministic xorshift32, so a failing round reproduces.
+  let seed = 0x9e3779b9;
+  const random = () => {
+    seed ^= seed << 13;
+    seed ^= seed >>> 17;
+    seed ^= seed << 5;
+    return (seed >>> 0) / 0x1_0000_0000;
+  };
+  const pick = <T>(items: T[]): T => items[Math.floor(random() * items.length)]!;
+  const describe = (
+    parent: string | null,
+    orderKey: Uint8Array | null,
+    tombstone: boolean,
+    payload: Uint8Array | null | undefined,
+  ) =>
+    JSON.stringify([
+      parent,
+      orderKey && bytesToHex(orderKey),
+      tombstone,
+      payload ? bytesToHex(payload) : null,
+    ]);
+
+  /** Visible state per node, read without `changedSince`. */
+  const snapshot = async (engine: TreecrdtEngine) => {
+    const out = new Map<string, string>();
+    for (const row of await engine.tree.dump()) {
+      const payload = row.tombstone ? null : await engine.tree.node(row.node).payload();
+      out.set(row.node, describe(row.parent, row.orderKey, row.tombstone, payload));
+    }
+    return out;
+  };
+
+  const step = async (engine: TreecrdtEngine) => {
+    const replica = replicas.get(engine)!;
+    const live = (await engine.tree.dump()).filter((row) => !row.tombstone).map((row) => row.node);
+    const others = live.filter((node) => node !== root);
+    const roll = random();
+    if (roll < 0.4 || others.length < 2) {
+      const node = nodeIdFromInt(nextNode++);
+      await engine.local.insert(replica, pick(live), node, { type: 'last' }, encoder.encode(node));
+    } else if (roll < 0.65) {
+      await engine.local.payload(
+        replica,
+        pick(others),
+        encoder.encode(`p${Math.floor(random() * 4)}`),
+      );
+    } else if (roll < 0.9) {
+      // A move under the node itself or a descendant doesn't throw; it is stored, tree unchanged.
+      await engine.local.move(replica, pick(others), pick(live), { type: 'first' });
+    } else {
+      await engine.local.delete(replica, pick(others));
+    }
+  };
+
+  let cursor = (await readAllChangedSince(a, 0)).headSeq;
+  let before = await snapshot(a);
+  for (let round = 0; round < 10; round += 1) {
+    for (let i = 0; i < 4; i += 1) {
+      await step(a);
+      await step(b);
+    }
+    // Whole-log exchanges deliver the peer's ops late and out of order relative to local writes.
+    if (random() < 0.7) await a.ops.appendMany(await b.ops.all());
+    if (random() < 0.5) await b.ops.appendMany(await a.ops.all());
+
+    const read = await readAllChangedSince(a, cursor, {
+      payloads: true,
+      ...(random() < 0.5 ? { limit: 3 } : {}),
+    });
+    const after = await snapshot(a);
+    const reported = new Map(read.nodes.map((n) => [n.node, n]));
+    for (const node of new Set([...before.keys(), ...after.keys()])) {
+      if (before.get(node) === after.get(node)) continue;
+      assert(reported.has(node), `round ${round}: changedSince must report changed node ${node}`);
+    }
+    for (const [node, changed] of reported) {
+      const expected = after.get(node);
+      if (expected === undefined) {
+        assert(changed.tombstone, `round ${round}: a node without a row is reported as gone`);
+        continue;
+      }
+      assertEqual(
+        describe(changed.parent, changed.orderKey, changed.tombstone, changed.payload),
+        expected,
+        `round ${round}: reported state of ${node}`,
+      );
+    }
+    cursor = read.headSeq;
+    before = after;
+  }
+}
+
+/** Changes delivered to a durable listener, in order, as `kind:node`. */
+function durableLog(events: MaterializationEvent[]): string[] {
+  return events.flatMap((event) => event.changes.map((change) => `${change.kind}:${change.node}`));
+}
+
+async function scenarioDurableResumesAfterReopen(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  if (!ctx.createPersistentEngine) return;
+  const replica = replicaFromLabel('r-durable');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const live = nodeIdFromInt(80);
+  const missed = nodeIdFromInt(81);
+
+  const e1 = await ctx.createPersistentEngine({ docId: ctx.docId, name: 'db' });
+  if (!e1.onMaterializedDurable) return ctx.skip('engine has no onMaterializedDurable');
+  const first: MaterializationEvent[] = [];
+  const s1 = await e1.onMaterializedDurable('index', (event) => void first.push(event));
+  first.length = 0;
+  await e1.local.insert(replica, root, live, { type: 'last' }, null);
+  await s1.settled();
+  assertArrayEqual(durableLog(first), [`insert:${live}`], 'a live event is delivered');
+  await s1.close();
+  await e1.local.insert(replica, root, missed, { type: 'last' }, encoder.encode('missed'));
+  await e1.close();
+
+  const e2 = await ctx.createPersistentEngine({ docId: ctx.docId, name: 'db' });
+  const second: MaterializationEvent[] = [];
+  await e2.onMaterializedDurable!('index', (event) => void second.push(event));
+  assertArrayEqual(
+    durableLog(second),
+    [`insert:${missed}`],
+    'reopening delivers only what the subscription missed',
+  );
+  const change = second[0]!.changes[0]!;
+  assertBytesEqual(
+    'payload' in change ? change.payload : null,
+    encoder.encode('missed'),
+    'a missed node is reported with its current payload',
+  );
+}
+
+async function scenarioDurableRedeliversAfterFailure(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engine.onMaterializedDurable) return ctx.skip('engine has no onMaterializedDurable');
+  const replica = replicaFromLabel('r-durable');
+  const root = nodeIdFromInt(0);
+  const node = nodeIdFromInt(83);
+  // A position of 0 reads every node, so start from a database that already has one.
+  await engine.local.insert(replica, root, nodeIdFromInt(85), { type: 'last' }, null);
+
+  const delivered: MaterializationEvent[] = [];
+  const errors: unknown[] = [];
+  let failing = false;
+  const subscription = await engine.onMaterializedDurable(
+    'index',
+    (event) => {
+      if (failing) throw new Error('listener failed');
+      delivered.push(event);
+    },
+    { onError: (error) => errors.push(error) },
+  );
+  delivered.length = 0;
+
+  failing = true;
+  await engine.local.insert(replica, root, node, { type: 'last' }, null);
+  const failure = await subscription.settled().then(
+    () => null,
+    (error) => error,
+  );
+  assert(failure, 'settled rejects while the listener fails');
+  assertEqual(errors.length, 1, 'the failed event reaches onError');
+
+  failing = false;
+  await subscription.settled();
+  assertArrayEqual(durableLog(delivered), [`insert:${node}`], 'the failed change is delivered');
+}
+
+async function scenarioDurableIdleDoesNotRetry(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engine.onMaterializedDurable) return ctx.skip('engine has no onMaterializedDurable');
+  const replica = replicaFromLabel('r-durable');
+  const root = nodeIdFromInt(0);
+
+  let calls = 0;
+  let failing = false;
+  const errors: unknown[] = [];
+  const subscription = await engine.onMaterializedDurable(
+    'index',
+    async () => {
+      if (!failing) return;
+      // Fail after the write has resolved, so idle() has to wait for the delivery.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      calls += 1;
+      throw new Error('listener failed');
+    },
+    { onError: (error) => errors.push(error) },
+  );
+
+  failing = true;
+  await engine.local.insert(replica, root, nodeIdFromInt(86), { type: 'last' }, null);
+  await subscription.idle();
+  assertEqual(calls, 1, 'idle waits for the queued delivery');
+  assertEqual(errors.length, 1, 'its failure reaches onError');
+
+  await subscription.idle();
+  assertEqual(calls, 1, 'idle does not deliver the failed change again');
+}
+
+async function scenarioDurableResetsForNewVersion(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engine.onMaterializedDurable) return ctx.skip('engine has no onMaterializedDurable');
+  const replica = replicaFromLabel('r-durable');
+  const node = nodeIdFromInt(84);
+  await engine.local.insert(replica, nodeIdFromInt(0), node, { type: 'last' }, null);
+
+  let resets = 0;
+  /** Subscribes, closes, and returns what the subscription received while opening. */
+  const open = async (version: number): Promise<string[]> => {
+    const events: MaterializationEvent[] = [];
+    const subscription = await engine.onMaterializedDurable!(
+      'index',
+      (event) => void events.push(event),
+      { version, reset: () => void (resets += 1) },
+    );
+    await subscription.close();
+    return durableLog(events);
+  };
+
+  assert((await open(1)).includes(`insert:${node}`), 'a first subscription receives every node');
+  assertEqual((await open(1)).length, 0, 'the same version keeps its position');
+  assertEqual(resets, 1, 'only the first subscription resets');
+  assert((await open(2)).includes(`insert:${node}`), 'a new version receives every node again');
+  assertEqual(resets, 2, 'a new version resets');
+}
+
+async function scenarioDurableReportsNodeMovedWhilePaging(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engine.onMaterializedDurable) return ctx.skip('engine has no onMaterializedDurable');
+  const replica = replicaFromLabel('r-durable');
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(90);
+  // Pages are read in node order, so the last node is still unread when the first page arrives.
+  const moved = nodeIdFromInt(95);
+  await engine.local.insert(replica, root, parent, { type: 'last' }, null);
+  for (let i = 91; i <= 95; i += 1) {
+    await engine.local.insert(replica, root, nodeIdFromInt(i), { type: 'last' }, null);
+  }
+
+  const events: MaterializationEvent[] = [];
+  let movedDuringRead = false;
+  await engine.onMaterializedDurable(
+    'index',
+    async (event) => {
+      events.push(event);
+      if (movedDuringRead) return;
+      movedDuringRead = true;
+      await engine.local.move(replica, moved, parent, { type: 'last' });
+    },
+    { limit: 2 },
+  );
+
+  const last = events
+    .flatMap((event) => event.changes)
+    .filter((change) => change.node === moved)
+    .pop();
+  assert(
+    last?.kind === 'insert' && last.parentAfter === parent,
+    'a node moved during a paged read is reported under its new parent',
+  );
+}
+
+async function scenarioTreeNodeHandle(ctx: TreecrdtEngineConformanceContext): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r-node');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(90);
+  const child = nodeIdFromInt(91);
+
+  assertEqual(engine.tree.node('0').id, engine.tree.root.id, 'node(root alias) is the root');
+  await engine.local.insert(replica, root, parent, { type: 'last' }, encoder.encode('parent'));
+  await engine.local.insert(replica, parent, child, { type: 'last' }, encoder.encode('child'));
+
+  const handle = engine.tree.node(parent);
+  assertEqual(handle.id, parent, 'node(id) canonical id');
+  assertBytesEqual(await handle.payload(), encoder.encode('parent'), 'node(id) payload');
+  assertEqual((await handle.parent())?.id, root, 'node(id) parent');
+  assertArrayEqual(
+    (await handle.children()).map((n) => n.id),
+    [child],
+    'node(id) children',
+  );
+
+  // node(id) skips get()'s existence check, so its reads must hide what the tree hides.
+  await engine.local.delete(replica, parent);
+  const hiddenHandles = {
+    'node(deleted)': engine.tree.node(parent),
+    'node(missing)': engine.tree.node(nodeIdFromInt(92)),
+  };
+  for (const [label, hidden] of Object.entries(hiddenHandles)) {
+    assertEqual(await hidden.payload(), null, `${label} has no payload`);
+    assertEqual(await hidden.parent(), undefined, `${label} has no parent`);
+    assertArrayEqual(
+      (await hidden.children()).map((n) => n.id),
+      [],
+      `${label} has no children`,
+    );
+  }
+}
+
+async function scenarioHandleKeptAcrossDelete(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const engine = ctx.engine;
+  const replica = replicaFromLabel('r-held');
+  const root = nodeIdFromInt(0);
+  const parent = nodeIdFromInt(93);
+  const child = nodeIdFromInt(94);
+  await engine.local.insert(replica, root, parent, { type: 'last' }, new TextEncoder().encode('p'));
+  await engine.local.insert(replica, parent, child, { type: 'last' }, null);
+
+  const held = await engine.tree.get(parent);
+  assert(held, 'get(parent)');
+  await engine.local.delete(replica, parent);
+
+  // Only get() used to check visibility, so this handle kept reading the deleted node.
+  assertEqual(await held.payload(), null, 'a held handle reads no payload after the delete');
+  assertArrayEqual(
+    (await held.children()).map((n) => n.id),
+    [],
+    'a held handle lists no children after the delete',
   );
 }
 
@@ -1442,7 +2199,7 @@ async function scenarioDefensiveDeleteReactiveInsert(
     'parent restored after subtree insert',
   );
   assertArrayEqual(
-    ((await (await engine.tree.get(parent))?.children()) ?? []).map((node) => node.id),
+    (await engine.tree.node(parent).children()).map((node) => node.id),
     [child],
     'child visible under restored parent',
   );
@@ -1502,7 +2259,7 @@ async function scenarioDefensiveDeleteOutOfOrderChildInsert(
     'parent restored after out-of-order child insert',
   );
   assertArrayEqual(
-    ((await (await engine.tree.get(parent))?.children()) ?? []).map((node) => node.id),
+    (await engine.tree.node(parent).children()).map((node) => node.id),
     [child],
     'child visible under restored parent',
   );
@@ -1558,7 +2315,7 @@ async function scenarioPersistencePayloadReopen(
     'children after reopen (payload)',
   );
 
-  const payload = (await (await e2.tree.get(n1))?.payload()) ?? null;
+  const payload = await e2.tree.node(n1).payload();
   assert(payload !== null, 'tree.getPayload should return payload for node with payload');
   assertEqual(
     new TextDecoder().decode(payload),
@@ -1768,7 +2525,7 @@ async function scenarioSyncAuthSignedOps(ctx: TreecrdtEngineConformanceContext):
     // A deletes the parent without seeing B's concurrent child insertion.
     await b.local.insert(bPk, parent, child, { type: 'last' }, null, { authSession: sessionB });
     assertArrayEqual(
-      ((await (await a.tree.get(parent))?.children()) ?? []).map((node) => node.id),
+      (await a.tree.node(parent).children()).map((node) => node.id),
       [],
       'deleter has not seen the child',
     );
@@ -1808,7 +2565,7 @@ async function scenarioSyncAuthSignedOps(ctx: TreecrdtEngineConformanceContext):
         `${name} restores parent`,
       );
       assertArrayEqual(
-        ((await (await engine.tree.get(parent))?.children()) ?? []).map((node) => node.id),
+        (await engine.tree.node(parent).children()).map((node) => node.id),
         [child],
         `${name} preserves unseen child`,
       );
@@ -1896,6 +2653,26 @@ async function scenarioSyncAuthScopedTokenRejectsAllFilter(
   } finally {
     detach();
   }
+}
+
+async function scenarioSqliteRunnerRunBindsParameters(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const runner = engineRunnerOrNull(ctx.engine);
+  if (!runner) return ctx.skip('engine has no SQLite runner');
+
+  await runner.exec('CREATE TABLE run_params (i INTEGER, t TEXT, b BLOB, n)');
+  await runner.run('INSERT INTO run_params (i, t, b, n) VALUES (?1, ?2, ?3, ?4)', [
+    7,
+    'text',
+    new Uint8Array([1, 2, 255]),
+    null,
+  ]);
+  assertEqual(
+    await runner.getText('SELECT json_array(i, t, hex(b), typeof(n)) FROM run_params'),
+    '[7,"text","0102FF","null"]',
+    'run binds each parameter',
+  );
 }
 
 async function scenarioAuthSqliteSubtreeEvaluator(
@@ -2266,7 +3043,7 @@ async function scenarioSyncAuthRestartRelayReServesSignedOps(
     'receiver sees subtree root after relay restart',
   );
   assertArrayEqual(
-    ((await (await c.tree.get(subtreeRoot))?.children()) ?? []).map((node) => node.id),
+    (await c.tree.node(subtreeRoot).children()).map((node) => node.id),
     [child],
     'receiver sees child under subtree after relay restart',
   );

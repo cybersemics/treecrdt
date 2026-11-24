@@ -1,0 +1,57 @@
+# @treecrdt/wasm
+
+## 0.1.5
+
+### Patch Changes
+
+- Updated dependencies [33168cb]
+  - @treecrdt/interface@0.8.0
+
+## 0.1.4
+
+### Patch Changes
+
+- Updated dependencies [6b5d8df]
+  - @treecrdt/interface@0.7.0
+
+## 0.1.3
+
+### Patch Changes
+
+- Updated dependencies [3c714fe]
+  - @treecrdt/interface@0.6.0
+
+## 0.1.2
+
+### Patch Changes
+
+- Updated dependencies [b2394a9]
+  - @treecrdt/interface@0.5.0
+
+## 0.1.1
+
+### Patch Changes
+
+- Updated dependencies [fc2c6e5]
+- Updated dependencies [a5d694f]
+  - @treecrdt/interface@0.4.0
+
+## 0.1.0
+
+### Minor Changes
+
+- 992283a: Use canonical VersionVector v0 bytes across storage and sync. The new `@treecrdt/wasm/codec` entry
+  point lazily loads the shared Rust implementation and exposes synchronous codec methods once ready.
+  Recreate development databases that contain the unreleased JSON format.
+
+### Patch Changes
+
+- 5b816c5: Apply out-of-order payload-only batches without replaying retained history, preserving per-node conflict resolution and the latest operation head.
+- 1f1ef27: Apply operation batches through one WASM call, replaying retained history at most once. Decode and validate the complete batch before applying any operations.
+- 78d132c: Pass operation objects and binary fields directly into WASM instead of encoding inputs as JSON and hex. Preserve the adapter API, operation-read format, and canonical version-vector bytes.
+- Updated dependencies [e1a6f4d]
+- Updated dependencies [e69c29b]
+- Updated dependencies [4686794]
+- Updated dependencies [be09f09]
+- Updated dependencies [e829a41]
+  - @treecrdt/interface@0.3.0

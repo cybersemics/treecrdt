@@ -1,5 +1,73 @@
 # @treecrdt/auth
 
+## 0.2.5
+
+### Patch Changes
+
+- Updated dependencies [33168cb]
+  - @treecrdt/interface@0.8.0
+  - @treecrdt/sync-protocol@0.2.5
+  - @treecrdt/wasm@0.1.5
+
+## 0.2.4
+
+### Patch Changes
+
+- Updated dependencies [6b5d8df]
+  - @treecrdt/interface@0.7.0
+  - @treecrdt/sync-protocol@0.2.4
+  - @treecrdt/wasm@0.1.4
+
+## 0.2.3
+
+### Patch Changes
+
+- Updated dependencies [3c714fe]
+  - @treecrdt/interface@0.6.0
+  - @treecrdt/sync-protocol@0.2.3
+  - @treecrdt/wasm@0.1.3
+
+## 0.2.2
+
+### Patch Changes
+
+- Updated dependencies [b2394a9]
+  - @treecrdt/interface@0.5.0
+  - @treecrdt/sync-protocol@0.2.2
+  - @treecrdt/wasm@0.1.2
+
+## 0.2.1
+
+### Patch Changes
+
+- Updated dependencies [fc2c6e5]
+- Updated dependencies [a5d694f]
+  - @treecrdt/interface@0.4.0
+  - @treecrdt/sync-protocol@0.2.1
+  - @treecrdt/wasm@0.1.1
+
+## 0.2.0
+
+### Minor Changes
+
+- 917d930: Bind defensive-delete `knownState` into operation signatures to prevent undetected tampering.
+
+### Patch Changes
+
+- Updated dependencies [992283a]
+- Updated dependencies [e1a6f4d]
+- Updated dependencies [5b816c5]
+- Updated dependencies [e69c29b]
+- Updated dependencies [2594f3d]
+- Updated dependencies [4686794]
+- Updated dependencies [be09f09]
+- Updated dependencies [e829a41]
+- Updated dependencies [1f1ef27]
+- Updated dependencies [78d132c]
+  - @treecrdt/wasm@0.1.0
+  - @treecrdt/interface@0.3.0
+  - @treecrdt/sync-protocol@0.2.0
+
 ## 0.1.2
 
 ### Patch Changes

@@ -13,25 +13,16 @@ function hasOpfsGetDirectory(): boolean {
 }
 
 /**
- * Feature check for OPFS + cross-origin isolation (window or worker context).
+ * Feature check for OPFS (window or worker context). Cross-origin isolation is
+ * not required: the OPFS VFSs use neither SharedArrayBuffer nor Atomics.
  * createSyncAccessHandle is only available in Web Workers, so it cannot be
  * detected from here; the OPFS VFS runs in a worker and fails at init if
  * unsupported.
  */
 export function detectOpfsSupport(): OpfsSupport {
-  const hasOpfs = hasOpfsGetDirectory();
-  const isolated =
-    (globalThis as typeof globalThis & { crossOriginIsolated?: boolean }).crossOriginIsolated ===
-    true;
-  const ok = hasOpfs && isolated;
-  return ok
+  return hasOpfsGetDirectory()
     ? { available: true }
-    : {
-        available: false,
-        reason: !hasOpfs
-          ? 'navigator.storage.getDirectory unavailable'
-          : 'cross-origin isolation required',
-      };
+    : { available: false, reason: 'navigator.storage.getDirectory unavailable' };
 }
 
 /**
@@ -144,6 +135,14 @@ export type OpfsVfsOptions = {
   kind?: OpfsVfsKind;
 };
 
+/**
+ * Run first on every OPFS connection: exclusive-mode WAL roughly halves single-op commit cost.
+ * Neither OPFS VFS implements shared memory, so SQLite allows WAL only with exclusive locking set
+ * before the first read. The connection then holds the file until it closes; other connections
+ * wait. WAL persists in the file header, so every later connection must lock exclusively too.
+ */
+export const OPFS_CONNECTION_PRAGMAS = 'PRAGMA locking_mode=EXCLUSIVE; PRAGMA journal_mode=WAL';
+
 const OPFS_MAX_PATHNAME = 512;
 
 function withOpfsPathCapacity(vfs: any): any {
@@ -211,6 +210,7 @@ export async function openWithStorage(
       : await sqlite3.open_v2(file);
     handle = openedHandle;
     const db = createDatabase(sqlite3, openedHandle);
+    if (storage === 'opfs') await db.exec(OPFS_CONNECTION_PRAGMAS);
     await initializeTreecrdtExtension(module, openedHandle, db);
     let closePromise: Promise<void> | undefined;
     return {

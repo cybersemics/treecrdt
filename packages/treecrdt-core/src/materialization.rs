@@ -860,6 +860,44 @@ fn replay_frontier_in_memory<S: Storage>(
     ))
 }
 
+/// Replay records requested moves, including ones rejected by cycle checks. Report the
+/// transition from the previously published parent to the actual final parent instead.
+fn correct_replayed_moves(
+    outcome: &mut MaterializationOutcome,
+    mut parents: impl FnMut(NodeId) -> Result<(Option<NodeId>, Option<NodeId>)>,
+) -> Result<()> {
+    for mut change in std::mem::take(&mut outcome.changes) {
+        if let MaterializationChange::Move {
+            node,
+            parent_before,
+            parent_after,
+            source,
+        } = &mut change
+        {
+            let (before, after) = parents(*node)?;
+            let before = before.filter(|parent| *parent != NodeId::TRASH);
+            let Some(after) = after else {
+                if before.is_some() {
+                    outcome.changes.push(MaterializationChange::Delete {
+                        node: *node,
+                        parent_before: before,
+                        source: None,
+                    });
+                }
+                continue;
+            };
+            // A correction caused by rejecting a formerly applied move is not that move.
+            if *parent_after != after {
+                *source = None;
+            }
+            *parent_before = before;
+            *parent_after = after;
+        }
+        outcome.changes.push(change);
+    }
+    Ok(())
+}
+
 /// Try a direct rewind/replay catch-up for append-time out-of-order suffixes.
 ///
 /// This rewinds the already-materialized suffix directly on the backend stores, truncates suffix
@@ -934,6 +972,15 @@ where
         mut index,
     } = stores;
 
+    let mut parents_before = HashMap::new();
+    for op in &full_suffix_ops {
+        if let crate::ops::OperationKind::Move { node, .. } = &op.kind {
+            if let std::collections::hash_map::Entry::Vacant(entry) = parents_before.entry(*node) {
+                entry.insert(nodes.parent(*node)?);
+            }
+        }
+    }
+
     index.truncate_from(truncate_from)?;
     rewind_existing_suffix_in_place(&mut nodes, &mut payloads, storage, &existing_suffix_ops)?;
 
@@ -945,7 +992,10 @@ where
     for op in full_suffix_ops {
         replay.apply_sorted(&mut crdt, &mut index, op)?;
     }
-    let run = replay.finish();
+    let mut run = replay.finish();
+    correct_replayed_moves(&mut run.outcome, |node| {
+        Ok((parents_before[&node], crdt.node_store().parent(node)?))
+    })?;
 
     flush_nodes(crdt.node_store_mut())?;
     flush_index(&mut index)?;
@@ -1089,7 +1139,7 @@ where
         mut index,
     } = stores;
 
-    let (mut rebuilt, prefix_seq, replay_outcome) =
+    let (mut rebuilt, prefix_seq, mut replay_outcome) =
         replay_frontier_in_memory(&storage, frontier, &replica_id)?;
     let mut affected_nodes = replay_outcome.affected_nodes();
     let mut seen_nodes: HashSet<NodeId> = affected_nodes.iter().copied().collect();
@@ -1104,6 +1154,9 @@ where
     }
     affected_nodes.sort();
     affected_nodes.dedup();
+    correct_replayed_moves(&mut replay_outcome, |node| {
+        Ok((nodes.parent(node)?, rebuilt.crdt.node_store().parent(node)?))
+    })?;
     let patch_changes = patch_final_state_in_place(
         &mut rebuilt,
         prefix_seq,
@@ -1115,6 +1168,19 @@ where
 
     flush_nodes(&mut nodes)?;
     flush_index(&mut index)?;
+
+    // Replay and row repair can both report the same visibility transition. These are
+    // duplicate observations, not two toggles for the coalescer to cancel out. Prefer
+    // repair's fields, which describe the previously persisted and final states.
+    let visibility_key = |change: &MaterializationChange| match change {
+        MaterializationChange::Delete { node, .. } => Some((*node, false)),
+        MaterializationChange::Restore { node, .. } => Some((*node, true)),
+        _ => None,
+    };
+    let repaired_visibility: HashSet<_> = patch_changes.iter().filter_map(visibility_key).collect();
+    replay_outcome.changes.retain(|change| {
+        visibility_key(change).is_none_or(|key| !repaired_visibility.contains(&key))
+    });
 
     Ok(CatchUpResult {
         head: rebuilt

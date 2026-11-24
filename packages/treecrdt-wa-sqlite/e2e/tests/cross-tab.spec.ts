@@ -75,11 +75,13 @@ test('shared OPFS clients propagate materialization events across tabs', async (
       mode: 'worker',
       runtime: 'shared-worker',
       storage: 'opfs',
+      journalMode: 'wal',
     });
     expect(summaryB).toEqual({
       mode: 'worker',
       runtime: 'shared-worker',
       storage: 'opfs',
+      journalMode: 'wal',
     });
 
     const root = '0'.repeat(32);

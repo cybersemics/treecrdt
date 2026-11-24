@@ -2,6 +2,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   createTreecrdtSqliteAdapter,
+  createTreecrdtSqliteChangedSince,
+  createTreecrdtSqliteMaterializationCursors,
+  createTreecrdtSqliteRead,
   createTreecrdtSqliteWriter,
   decodeSqliteNodeIds,
   decodeSqliteOpRefs,
@@ -19,11 +22,17 @@ import {
 } from '@treecrdt/interface/ids';
 import type { Operation, ReplicaId, TreecrdtAdapter } from '@treecrdt/interface';
 import {
+  createDurableMaterialization,
   createMaterializationDispatcher,
   createTreecrdtEngineLocal,
   createTreecrdtTreeNodes,
 } from '@treecrdt/interface/engine';
-import type { LocalWriteOptions, TreecrdtEngine, WriteOptions } from '@treecrdt/interface/engine';
+import type {
+  LocalWriteOptions,
+  TreecrdtEngine,
+  TreecrdtEngineTree,
+  WriteOptions,
+} from '@treecrdt/interface/engine';
 import {
   createTreecrdtSqliteAuthApi,
   type TreecrdtSqliteAuthApi,
@@ -97,6 +106,9 @@ function createRunner(db: any): SqliteRunner {
 
   const runner: SqliteRunner = {
     exec: (sql) => db.exec(sql),
+    run: (sql, params = []) => {
+      prepare(sql).run(toBindings(params));
+    },
     getText: (sql, params = []) => {
       const row = prepare(sql).get(toBindings(params));
       if (row === undefined || row === null) return null;
@@ -126,7 +138,14 @@ export function createSqliteNodeApi(db: any, opts: { maxBulkOps?: number } = {})
 export function createTreecrdtClient(
   db: any,
   opts: { docId?: string; maxBulkOps?: number } = {},
-): Promise<TreecrdtEngine & { runner: SqliteRunner; auth: TreecrdtSqliteAuthApi }> {
+): Promise<
+  TreecrdtEngine &
+    Required<Pick<TreecrdtEngine, 'onMaterializedDurable'>> & {
+      runner: SqliteRunner;
+      auth: TreecrdtSqliteAuthApi;
+      tree: Required<Pick<TreecrdtEngineTree, 'changedSince' | 'read'>>;
+    }
+> {
   const runner = createRunner(db);
   const materialized = createMaterializationDispatcher();
   const adapter = createTreecrdtSqliteAdapter(runner, {
@@ -134,6 +153,14 @@ export function createTreecrdtClient(
     onMaterialized: materialized.emitEvent,
   });
   const docId = opts.docId ?? 'treecrdt';
+  const changedSince = createTreecrdtSqliteChangedSince((query) =>
+    adapter.treeChangedSince!(query),
+  );
+  const durable = createDurableMaterialization({
+    changedSince,
+    onMaterialized: materialized.onMaterialized,
+    cursors: createTreecrdtSqliteMaterializationCursors(runner),
+  });
 
   const ready = Promise.resolve(adapter.setDocId(docId));
 
@@ -242,13 +269,20 @@ export function createTreecrdtClient(
       }),
       dump: treeDumpImpl,
       nodeCount: treeNodeCountImpl,
+      changedSince,
+      read: createTreecrdtSqliteRead((nodes, childPayloads) =>
+        adapter.treeRead!(nodes, childPayloads),
+      ),
     },
     meta: { headLamport: headLamportImpl, replicaMaxCounter: replicaMaxCounterImpl },
     auth: createTreecrdtSqliteAuthApi({ runner, docId }),
     local,
     onMaterialized: materialized.onMaterialized,
+    onMaterializedDurable: durable.onMaterializedDurable,
     runner,
     close: async () => {
+      // Durable subscriptions save their position while the database is still open.
+      await durable.close().catch(() => undefined);
       if (typeof db?.close === 'function') db.close();
     },
   }));

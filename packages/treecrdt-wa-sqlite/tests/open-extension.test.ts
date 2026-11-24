@@ -1,6 +1,9 @@
 import { beforeEach, expect, test, vi } from 'vitest';
 
-vi.mock('../src/opfs.js', () => ({ createOpfsVfs: vi.fn() }));
+vi.mock('../src/opfs.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/opfs.js')>()),
+  createOpfsVfs: vi.fn(),
+}));
 
 import { createOpfsVfs } from '../src/opfs.js';
 import { openTreecrdtDbWithLoader } from '../src/open-core.js';

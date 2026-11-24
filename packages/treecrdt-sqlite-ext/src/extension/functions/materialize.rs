@@ -368,6 +368,10 @@ fn catch_up_materialized_from_frontier(db: *mut sqlite3) -> Result<Materializati
         sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
         return Err(head_rc.err().unwrap_or(SQLITE_ERROR as c_int));
     }
+    if let Err(rc) = record_changed_nodes(db, &catch_up.outcome) {
+        sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
+        return Err(rc);
+    }
 
     let commit_rc = sqlite_exec(db, commit.as_ptr(), None, null_mut(), null_mut());
     if commit_rc != SQLITE_OK as c_int {
@@ -472,6 +476,10 @@ pub(super) fn append_ops_impl(
         },
         |_| SQLITE_ERROR as c_int,
     )?;
+    if let Err(rc) = record_changed_nodes(db, &apply_result.outcome) {
+        sqlite_exec(db, rollback.as_ptr(), None, null_mut(), null_mut());
+        return Err(rc);
+    }
 
     let commit_rc = sqlite_exec(db, commit.as_ptr(), None, null_mut(), null_mut());
     if commit_rc != SQLITE_OK as c_int {

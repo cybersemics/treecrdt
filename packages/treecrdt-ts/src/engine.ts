@@ -125,6 +125,198 @@ export function addMaterializationWriteId(
   };
 }
 
+/** Listener for `onMaterializedDurable`. The next event waits for the returned promise. */
+export type DurableMaterializationListener = (event: MaterializationEvent) => void | Promise<void>;
+
+export type DurableMaterializationOptions = {
+  /** Bump when what the listener derives changes; another version's position is discarded. */
+  version?: number;
+  /** Clears what the listener derives. Called before every node is delivered from the start. */
+  reset?: () => void | Promise<void>;
+  /** Maximum changes per event while catching up. Default 500. */
+  limit?: number;
+  /** Milliseconds between saves of the position while events flow. Default 2000; 0 saves always. */
+  saveIntervalMs?: number;
+  /** Receives a failed delivery. Without it, a failure only shows in `settled()`. */
+  onError?: (error: unknown) => void;
+};
+
+export type DurableMaterializationSubscription = {
+  /** Resolves once everything materialized before the call is delivered; rejects if that fails. */
+  settled: () => Promise<void>;
+  /**
+   * Resolves once the deliveries queued before the call have finished, whether or not they
+   * succeeded. Unlike `settled()`, it never starts a catch-up and never rejects.
+   */
+  idle: () => Promise<void>;
+  /** Stops delivery, waits for the listener and saves the position. */
+  close: () => Promise<void>;
+};
+
+export type MaterializationCursor = { version: number; headSeq: number };
+
+/** Where `onMaterializedDurable` keeps each subscription's position. */
+export type MaterializationCursorStore = {
+  load: (name: string) => Promise<MaterializationCursor | null>;
+  save: (name: string, cursor: MaterializationCursor) => Promise<void>;
+};
+
+/** Reports a node's current state as a change, for a listener that missed how it got there. */
+function changeFromState(node: TreecrdtChangedNode): Change {
+  if (node.tombstone) return { kind: 'delete', node: node.node, parentBefore: null };
+  const payload = node.payload ?? null;
+  // Only a root has no parent, and a root is never inserted.
+  if (node.parent === null) return { kind: 'payload', node: node.node, payload };
+  return { kind: 'insert', node: node.node, parentAfter: node.parent, payload };
+}
+
+/**
+ * Builds `onMaterializedDurable` over an engine's `changedSince` and `onMaterialized`. The returned
+ * `close` closes every open subscription; call it before the engine closes.
+ */
+export function createDurableMaterialization(deps: {
+  changedSince: NonNullable<TreecrdtEngineTree['changedSince']>;
+  onMaterialized: TreecrdtEngine['onMaterialized'];
+  cursors: MaterializationCursorStore;
+}): {
+  onMaterializedDurable: NonNullable<TreecrdtEngine['onMaterializedDurable']>;
+  close: () => Promise<void>;
+} {
+  const open = new Map<string, () => Promise<void>>();
+
+  const onMaterializedDurable: NonNullable<TreecrdtEngine['onMaterializedDurable']> = async (
+    name,
+    listener,
+    opts = {},
+  ) => {
+    if (open.has(name)) throw new Error(`onMaterializedDurable: "${name}" is already open`);
+    const { version = 0, limit = 500, saveIntervalMs = 2000 } = opts;
+
+    /** Every change up to here has been delivered. */
+    let cursor = 0;
+    /** Head of the last `changedSince` read. No change at or below it can still be missing. */
+    let verified = 0;
+    let saved: number | null = null;
+    let savedAt = 0;
+    /** The next delivery must read from the cursor: nothing was read yet, or a delivery failed. */
+    let stale = true;
+    let resetPending = false;
+    /** Opening failed, so deliveries queued behind it must not reach the listener. */
+    let abandoned = false;
+    let closing: Promise<void> | null = null;
+    let unsubscribe = () => {};
+    let tail: Promise<void> = Promise.resolve();
+
+    const save = async () => {
+      savedAt = Date.now();
+      if (cursor === saved) return;
+      const headSeq = cursor;
+      await deps.cursors.save(name, { version, headSeq });
+      saved = headSeq;
+    };
+
+    const catchUp = async () => {
+      if (resetPending) {
+        await opts.reset?.();
+        resetPending = false;
+      }
+      for (;;) {
+        let page = await deps.changedSince(cursor, { payloads: true, limit });
+        const paged = page.next !== null;
+        for (;;) {
+          if (page.nodes.length > 0) {
+            await listener({ headSeq: page.headSeq, changes: page.nodes.map(changeFromState) });
+          }
+          if (!page.next) break;
+          page = await deps.changedSince(page.next, { payloads: true, limit });
+        }
+        cursor = verified = page.headSeq;
+        // A node that changes during a paged read is left out of it, so read again from its end.
+        if (!paged) break;
+      }
+      stale = false;
+      await save();
+    };
+
+    /** Runs deliveries one at a time. A failure rejects the returned promise, not the queue. */
+    const enqueue = (work: () => Promise<void>): Promise<void> => {
+      const run = tail.then(async () => {
+        if (abandoned) return;
+        try {
+          await work();
+        } catch (error) {
+          stale = true;
+          throw error;
+        }
+      });
+      tail = run.catch(() => undefined);
+      return run;
+    };
+
+    const deliver = (event: MaterializationEvent) =>
+      enqueue(async () => {
+        if (stale) return catchUp();
+        // Already covered by a read, or the event just delivered arriving again.
+        if (event.headSeq <= verified || event.headSeq === cursor) return;
+        if (event.headSeq < cursor) {
+          // A later event overtook this one, so the cursor no longer says what was delivered.
+          cursor = verified;
+          return catchUp();
+        }
+        await listener(event);
+        cursor = event.headSeq;
+        if (Date.now() - savedAt >= saveIntervalMs) await save();
+      });
+
+    const close = () =>
+      (closing ??= (async () => {
+        unsubscribe();
+        try {
+          let pending: Promise<void>;
+          do {
+            pending = tail;
+            await pending;
+          } while (pending !== tail);
+          await save();
+        } finally {
+          open.delete(name);
+        }
+      })());
+
+    open.set(name, close);
+    try {
+      const stored = await deps.cursors.load(name);
+      const head = (await deps.changedSince(0, { limit: 1 })).headSeq;
+      // A position ahead of the database belongs to a tree that has since been rebuilt.
+      if (stored?.version === version && stored.headSeq <= head) cursor = saved = stored.headSeq;
+      else resetPending = true;
+      // Subscribe before reading, so an event that arrives during the read waits behind it.
+      unsubscribe = deps.onMaterialized((event) => {
+        deliver(event).catch((error) => opts.onError?.(error));
+      });
+      await enqueue(catchUp);
+    } catch (error) {
+      abandoned = true;
+      unsubscribe();
+      open.delete(name);
+      throw error;
+    }
+
+    return {
+      settled: () => (closing ? tail : enqueue(async () => (stale ? catchUp() : undefined))),
+      idle: () => tail,
+      close,
+    };
+  };
+
+  return {
+    onMaterializedDurable,
+    close: async () => {
+      await Promise.all([...open.values()].map((close) => close()));
+    },
+  };
+}
+
 export type WriteOptions = {
   writeId?: string;
 };
@@ -205,21 +397,115 @@ export type TreecrdtNode = {
 export type TreecrdtNodePrimitives = {
   exists: (node: string) => Promise<boolean>;
   parent: (node: string) => Promise<string | null>;
+  /** Null when the node has no payload or is not visible. */
   payload: (node: string) => Promise<Uint8Array | null>;
   /**
-   * Live children in stable order. `(null, null)` = all; `(offset, null)` = suffix from offset;
-   * `(offset, limit)` = fixed-size window. Empty windows are handled in the engine (no I/O).
+   * Live children in stable order, none when the parent is not visible. `(null, null)` = all;
+   * `(offset, null)` = suffix from offset; `(offset, limit)` = fixed-size window. Empty windows are
+   * handled in the engine (no I/O).
    */
   children: (parent: string, offset: number | null, limit: number | null) => Promise<string[]>;
+};
+
+/** Current state of a node returned by `changedSince`. */
+export type TreecrdtChangedNode = {
+  /** Canonical 16-byte NodeId encoded as 32 lowercase hex characters. */
+  node: string;
+  parent: string | null;
+  orderKey: Uint8Array | null;
+  tombstone: boolean;
+  /** Current payload, present only when requested; null for deleted nodes. */
+  payload?: Uint8Array | null;
+};
+
+/** Continues a paged `changedSince` read. Treat as opaque. */
+export type TreecrdtChangedSinceCursor = {
+  since: number;
+  until: number;
+  afterNode: string;
+};
+
+export type TreecrdtChangedSinceOptions = {
+  /** Maximum nodes per page; omitted reads every changed node at once. */
+  limit?: number;
+  payloads?: boolean;
+};
+
+export type TreecrdtChangedSincePage = {
+  /** Resume checkpoint after all pages are applied; not a snapshot revision. */
+  headSeq: number;
+  nodes: TreecrdtChangedNode[];
+  next: TreecrdtChangedSinceCursor | null;
+};
+
+export type TreecrdtReadOptions = {
+  children?: {
+    /** Also read each child's payload. */
+    payloads?: boolean;
+  };
+};
+
+/** A visible node as `read` returns it: what a `TreecrdtNode` handle's methods would read, as values. */
+export type TreecrdtReadNode = {
+  /** Canonical 16-byte NodeId encoded as 32 lowercase hex characters. */
+  id: string;
+  /** Live parent; null for ROOT and for a node whose parent is not visible. */
+  parent: string | null;
+  /** Position among the parent's live children; 0 without a parent. */
+  index: number;
+  /** Null when the node has no payload. */
+  payload: Uint8Array | null;
+  /** Live children in order. A child carries its payload only with `children: { payloads: true }`. */
+  children: { id: string; payload?: Uint8Array | null }[];
+};
+
+export type TreecrdtReadResult = {
+  /** Head of the state the read saw, as `changedSince` reports it. */
+  headSeq: number;
+  /** Keyed by each id as given. Null when the node is not visible. */
+  nodes: Record<string, TreecrdtReadNode | null>;
 };
 
 export type TreecrdtEngineTree = {
   /** Resolves ROOT aliases to `root`; undefined when any other node is absent. */
   get: (node: string) => Promise<TreecrdtNode | undefined>;
+  /**
+   * Handle for `node` without checking that it exists, so each read is one query. A node that is
+   * not visible reads as empty: no payload, no children and no parent.
+   */
+  node: (node: string) => TreecrdtNode;
   /** Always-available ROOT handle; does not check existence. */
   root: TreecrdtNode;
   dump: () => Promise<SqliteTreeRow[]>;
   nodeCount: () => Promise<number>;
+  /**
+   * Nodes whose visible state changed after `since` (a `headSeq`), each once, with its current state.
+   *
+   * `since = 0` reads every materialized node. Store the returned `headSeq` after all pages are applied
+   * successfully and pass it as `since` to resume: changes are recorded in the same commit as the state.
+   * Pages read current state, not a frozen snapshot. A node changed during paging may be deferred to
+   * the next catch-up, even if it also changed before this read. Retain notifications received during
+   * paging and catch up again afterward. Ops that change nothing visible still advance `headSeq`.
+   * Rejects a `since` or cursor ahead of the current `headSeq`, such as one saved against a different
+   * database; read from 0 to rebuild.
+   *
+   * Meant for catching up after a gap, such as startup or a failed update. In between, follow
+   * `onMaterialized` instead of calling it per write.
+   *
+   * Optional: implemented by the SQLite-backed engines.
+   */
+  changedSince?: (
+    since: number | TreecrdtChangedSinceCursor,
+    opts?: TreecrdtChangedSinceOptions,
+  ) => Promise<TreecrdtChangedSincePage>;
+  /**
+   * Reads many nodes in one query, so all of them come from the same state: each node's live
+   * parent, its position among its siblings, its payload and its live children in order. Each
+   * node reads as `node(id)`'s reads would. Use it where a caller would otherwise read node by node.
+   *
+   * Optional: implemented by the SQLite-backed engines.
+   */
+  read?: (ids: readonly string[], opts?: TreecrdtReadOptions) => Promise<TreecrdtReadResult>;
 };
 
 /**
@@ -228,7 +514,7 @@ export type TreecrdtEngineTree = {
  */
 export function createTreecrdtTreeNodes(
   primitives: TreecrdtNodePrimitives,
-): Pick<TreecrdtEngineTree, 'get' | 'root'> {
+): Pick<TreecrdtEngineTree, 'get' | 'node' | 'root'> {
   const createNode = (nodeId: string): TreecrdtNode => {
     const id = normalizeNodeId(nodeId);
     const node: TreecrdtNode = {
@@ -257,6 +543,10 @@ export function createTreecrdtTreeNodes(
       if (node.id === root.id) return root;
       if (!(await primitives.exists(node.id))) return undefined;
       return node;
+    },
+    node: (nodeId) => {
+      const node = createNode(nodeId);
+      return node.id === root.id ? root : node;
     },
     root,
   };
@@ -363,5 +653,21 @@ export type TreecrdtEngine = {
   meta: TreecrdtEngineMeta;
   local: TreecrdtEngineLocal;
   onMaterialized: (listener: MaterializationListener) => () => void;
+  /**
+   * `onMaterialized` that keeps its place under `name`: events arrive in order and at least once,
+   * each after the previous listener call has settled. Resolves once the listener has caught up.
+   *
+   * After a gap (opening, a rejected listener call, an event out of order) a change reports a
+   * node's current state: a live node as `insert` (`payload` for a root), a removed one as
+   * `delete`, with no `source`. So apply each change as "make it so". With no usable position,
+   * `opts.reset` runs first and every node is delivered.
+   *
+   * Optional: implemented by the SQLite-backed engines.
+   */
+  onMaterializedDurable?: (
+    name: string,
+    listener: DurableMaterializationListener,
+    opts?: DurableMaterializationOptions,
+  ) => Promise<DurableMaterializationSubscription>;
   close: () => Promise<void>;
 };

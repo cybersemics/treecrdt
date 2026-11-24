@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type BrowserContext, type Page } from '@playwright/test';
 
 type LifecycleHarness = NonNullable<Window['__treecrdtLifecycle']>;
 type LifecycleOptions = Parameters<LifecycleHarness['drop']>[0];
@@ -6,10 +6,23 @@ type LifecycleOptions = Parameters<LifecycleHarness['drop']>[0];
 const reloadCases: Array<{
   name: string;
   closeBeforeReload: boolean;
+  crossOriginIsolated: boolean;
 }> = [
-  { name: 'after explicit close', closeBeforeReload: true },
-  { name: 'without explicit close', closeBeforeReload: false },
+  { name: 'after explicit close', closeBeforeReload: true, crossOriginIsolated: true },
+  { name: 'without explicit close', closeBeforeReload: false, crossOriginIsolated: true },
+  { name: 'without cross-origin isolation', closeBeforeReload: false, crossOriginIsolated: false },
 ];
+
+/** The dev server sends COOP/COEP; strip them to load the app without cross-origin isolation. */
+async function serveWithoutCrossOriginIsolation(context: BrowserContext) {
+  await context.route('**/*', async (route) => {
+    const response = await route.fetch();
+    const headers = response.headers();
+    delete headers['cross-origin-opener-policy'];
+    delete headers['cross-origin-embedder-policy'];
+    await route.fulfill({ response, headers });
+  });
+}
 
 async function waitForHarness(page: Page) {
   await page.goto('/');
@@ -60,6 +73,7 @@ function expectLifecycleTree(state: Awaited<ReturnType<typeof read>>) {
     mode: 'worker',
     runtime: 'dedicated-worker',
     storage: 'opfs',
+    journalMode: 'wal',
     headLamport: 2,
     parentExists: true,
     childExists: true,
@@ -75,18 +89,22 @@ function expectLifecycleTree(state: Awaited<ReturnType<typeof read>>) {
 test.describe('browser OPFS lifecycle', () => {
   for (const reloadCase of reloadCases) {
     test(`reopens the persistent store after browser reload ${reloadCase.name}`, async ({
+      context,
       page,
     }, testInfo) => {
       if (testInfo.project.name !== 'chromium-dev') test.skip();
       test.setTimeout(120_000);
       page.on('console', (msg) => console.log(`[page][${msg.type()}] ${msg.text()}`));
+      if (!reloadCase.crossOriginIsolated) await serveWithoutCrossOriginIsolation(context);
 
       const suffix = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
       const opts = { docId: `lifecycle-${suffix}` };
 
       await waitForHarness(page);
-      const opfsSupport = await support(page);
-      if (!opfsSupport.available) test.skip(true, `OPFS unavailable: ${opfsSupport.reason}`);
+      expect(await page.evaluate(() => window.crossOriginIsolated)).toBe(
+        reloadCase.crossOriginIsolated,
+      );
+      expect(await support(page)).toEqual({ available: true });
 
       try {
         expectLifecycleTree(
@@ -102,4 +120,35 @@ test.describe('browser OPFS lifecycle', () => {
       }
     });
   }
+
+  test('opens the persistent store in a second tab once the holding tab closes', async ({
+    context,
+  }, testInfo) => {
+    if (testInfo.project.name !== 'chromium-dev') test.skip();
+    test.setTimeout(120_000);
+
+    const suffix = `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+    const opts = { docId: `lifecycle-second-tab-${suffix}` };
+    const holder = await context.newPage();
+    const waiter = await context.newPage();
+
+    try {
+      await Promise.all([waitForHarness(holder), waitForHarness(waiter)]);
+      // The holder keeps its client open, and with it the exclusive lock on the database.
+      expectLifecycleTree(await write(holder, opts));
+
+      let readSettled = false;
+      const reading = read(waiter, opts).finally(() => {
+        readSettled = true;
+      });
+      await waiter.waitForTimeout(1_000);
+      expect(readSettled).toBe(false);
+
+      await holder.close();
+      expectLifecycleTree(await reading);
+    } finally {
+      await drop(waiter, opts).catch(() => {});
+      await Promise.allSettled([holder.close(), waiter.close()]);
+    }
+  });
 });

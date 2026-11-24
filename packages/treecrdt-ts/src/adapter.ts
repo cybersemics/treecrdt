@@ -4,6 +4,30 @@ import type { MaterializationOutcome } from './engine.js';
 export type SerializeNodeId = (id: string) => Uint8Array;
 export type SerializeReplica = (replica: Operation['meta']['id']['replica']) => Uint8Array;
 
+/** One page of a `changedSince` read in raw adapter form. */
+export type TreecrdtChangedSinceQuery = {
+  since: number;
+  /** Upper bound fixed by the first page; null reads the current head. */
+  until: number | null;
+  /** Last node of the previous page (16-byte id), or null on the first page. */
+  afterNode: Uint8Array | null;
+  /** Maximum rows; null returns all. */
+  limit: number | null;
+  payloads: boolean;
+};
+
+/** A `read` in raw adapter form, with hex byte fields. */
+export type TreecrdtReadRows = {
+  headSeq: number;
+  /** `[node, parent, payload]` per visible requested node; `''` or null for no parent or payload. */
+  nodes: [string, string | null, string | null][];
+  /**
+   * `[child, payload]` live children in order, keyed by each visible requested node and by each
+   * one's parent. A child's payload is null unless requested.
+   */
+  children: Record<string, [string, string | null][]>;
+};
+
 export interface TreecrdtAdapter {
   /**
    * Set the document id used for v0 sync (`op_ref` derivation).
@@ -34,7 +58,8 @@ export interface TreecrdtAdapter {
    */
   opsByOpRefs(opRefs: Uint8Array[]): Promise<unknown[]>;
   /**
-   * Fetch materialized live (non-tombstoned) children for a parent node (16-byte id).
+   * Fetch materialized live (non-tombstoned) children for a parent node (16-byte id), none when the
+   * parent itself is not visible.
    *
    * `(null, null)` returns all live children; `(offset, null)` returns a suffix; `(offset, limit)` a window.
    *
@@ -47,6 +72,19 @@ export interface TreecrdtAdapter {
    * Returns raw JSON-decoded rows (array of objects with byte fields).
    */
   treeDump(): Promise<unknown[]>;
+  /**
+   * Read nodes whose visible state changed in `(since, until]`, in paging order.
+   *
+   * Returns the read's `headSeq` and raw JSON-decoded rows
+   * `[node, parent, orderKey, tombstone, payload]` with hex byte fields.
+   */
+  treeChangedSince?(
+    query: TreecrdtChangedSinceQuery,
+  ): Promise<{ headSeq: number; rows: unknown[] }>;
+  /**
+   * Read nodes (canonical hex ids) and the children lists `read` needs, in one query.
+   */
+  treeRead?(nodes: string[], childPayloads: boolean): Promise<TreecrdtReadRows>;
   /**
    * Count non-tombstoned nodes in the materialized tree (excluding ROOT).
    */
@@ -64,7 +102,7 @@ export interface TreecrdtAdapter {
   /**
    * Fetch the payload for a node (16-byte id).
    *
-   * Returns the opaque byte payload or null if the node has no payload.
+   * Returns the opaque byte payload, or null if the node has no payload or is not visible.
    */
   treePayload(node: Uint8Array): Promise<Uint8Array | null>;
   /**
