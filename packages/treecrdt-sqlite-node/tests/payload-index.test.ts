@@ -2,6 +2,7 @@ import { expect, test, vi } from 'vitest';
 import type { MaterializationEvent } from '@treecrdt/interface/engine';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
 import { createTreecrdtPayloadIndex } from '@treecrdt/interface/payload-index';
+import { createTreecrdtView } from '@treecrdt/interface/views';
 import type { Operation } from '@treecrdt/interface';
 import {
   createTreecrdtClient,
@@ -261,9 +262,37 @@ perf(
     const lookup50 = await time(20, () => index.lookup(keys, { payloads: true }));
     const found50 = [...(await index.lookup(keys)).values()].reduce((sum, m) => sum + m.length, 0);
 
-    // A value edit, until onChange reports both keys.
+    const view = await createTreecrdtView(client, {
+      name: 'lexemes',
+      index,
+      rank: ({ payload }) => (payload as { created: number }).created,
+      data: ({ payload }) => (payload as { lastUpdated: number }).lastUpdated,
+      reference: 'parent',
+      replica,
+    });
+    /** View reads of 1 key, 50 keys and the 100-member group. */
+    const reads = async () => ({
+      key1: await time(20, () => view.members(['v1'])),
+      keys50: await time(20, () => view.members(keys)),
+      group100: await time(20, () => view.members(['big'])),
+    });
+    const unordered = await reads();
+    t = performance.now();
+    const placed = await view.place('big', big[big.length - 1]!.id, { before: big[0]!.id });
+    const firstOrdering = { ms: ms(t), ops: placed.length };
+    t = performance.now();
+    await view.place('big', big[10]!.id, { before: big[50]!.id });
+    const laterDrag = ms(t);
+    // One drag in each of the 50 groups orders them too.
+    for (const key of keys) {
+      const members = (await view.members([key])).get(key)!;
+      await view.place(key, members[members.length - 1]!.id, { before: members[0]!.id });
+    }
+    const ordered = await reads();
+
+    // A value edit, until the view's onChange reports both groups.
     let reported: () => void = () => {};
-    index.onChange((changed) => {
+    view.onChange((changed) => {
       if (changed.length === 2) reported();
     });
     const writer = client.local.forReplica(replica);
@@ -290,10 +319,17 @@ perf(
         lookupBig,
         lookup50,
         found50,
+        unordered,
+        firstOrdering,
+        laterDrag,
+        ordered,
         edit,
       }),
     );
     expect(big.length).toBe(100);
+    expect(placed.length).toBe(3);
+    expect((await view.members(['big'])).get('big')![0]!.id).toBe(big[big.length - 1]!.id);
+    await view.close();
     await index.close();
     await client.close();
   },

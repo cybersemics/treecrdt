@@ -28,6 +28,10 @@
     "./payload-index": {
       "import": "./dist/src/payload-index.js",
       "types": "./dist/src/payload-index.d.ts"
+    },
+    "./views": {
+      "import": "./dist/src/views.js",
+      "types": "./dist/src/views.d.ts"
     }
   },
   "files": [
