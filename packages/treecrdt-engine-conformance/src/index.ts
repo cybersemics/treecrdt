@@ -6,6 +6,11 @@ import type {
 import type { Operation, ReplicaId } from '@treecrdt/interface';
 import { bytesToHex, nodeIdToBytes16, replicaIdToBytes } from '@treecrdt/interface/ids';
 import type { SqliteRunner } from '@treecrdt/interface/sqlite';
+import {
+  createTreecrdtPayloadIndex,
+  type TreecrdtPayloadIndex,
+  type TreecrdtPayloadIndexOptions,
+} from '@treecrdt/interface/payload-index';
 import { loadVersionVectorCodec } from '@treecrdt/wasm/codec';
 
 import type { Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
@@ -318,6 +323,26 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
     {
       name: 'sqlite runner: run binds parameters',
       run: scenarioSqliteRunnerRunBindsParameters,
+    },
+    {
+      name: 'payload index: finds live nodes by a JSON field',
+      run: scenarioPayloadIndexLookup,
+    },
+    {
+      name: 'payload index: onChange reports the keys each write changes',
+      run: scenarioPayloadIndexOnChange,
+    },
+    {
+      name: 'payload index: onChange keeps lookups current through late batches and catch-up',
+      run: scenarioPayloadIndexKeepsLookupsCurrent,
+    },
+    {
+      name: 'payload index: indexes on two paths coexist',
+      run: scenarioPayloadIndexTwoPaths,
+    },
+    {
+      name: 'payload index: a reopened database keeps the index, and a new path rebuilds it',
+      run: scenarioPayloadIndexReopen,
     },
     {
       name: 'auth: sqlite subtree evaluator allow/deny/unknown',
@@ -3101,6 +3126,415 @@ async function scenarioSqliteRunnerRunBindsParameters(
     '[7,"text","0102FF","null"]',
     'run binds each parameter',
   );
+}
+
+/** Opens a payload index over `engine` that finds nodes by their payload's `lexeme`. */
+function openPayloadIndex(
+  engine: TreecrdtEngine,
+  options: Partial<TreecrdtPayloadIndexOptions> = {},
+): Promise<TreecrdtPayloadIndex> {
+  const runner = engineRunnerOrNull(engine);
+  if (!runner) throw new Error('payload indexes need a SQLite runner');
+  return createTreecrdtPayloadIndex(
+    { ...engine, runner },
+    { name: 'lexeme', path: '$.lexeme', ...options },
+  );
+}
+
+function jsonPayload(fields: Record<string, unknown>): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(fields));
+}
+
+/** Ids of the members of `key`. */
+async function memberIds(index: TreecrdtPayloadIndex, key: string): Promise<string[]> {
+  return ((await index.lookup([key])).get(key) ?? []).map((member) => member.id);
+}
+
+async function scenarioPayloadIndexLookup(ctx: TreecrdtEngineConformanceContext): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const replica = replicaFromLabel('r-index');
+  const remote = replicaFromLabel('r-index-remote');
+  const encoder = new TextEncoder();
+  const root = nodeIdFromInt(0);
+  const [a, b, c, d, e, f, g, late] = [1, 2, 3, 4, 5, 6, 7, 8].map(nodeIdFromInt);
+  const insert = (parent: string, node: string, payload: Uint8Array) =>
+    engine.local.insert(replica, parent, node, { type: 'last' }, payload);
+
+  await insert(root, a, jsonPayload({ lexeme: 'cat' }));
+  const index = await openPayloadIndex(engine);
+  await insert(a, b, jsonPayload({ value: 'Cat', lexeme: 'cat' }));
+  await insert(root, c, jsonPayload({ lexeme: 'dog' }));
+  // Payloads without a string at the path index nothing, and writing them works as before.
+  await insert(root, d, encoder.encode('not json'));
+  await insert(root, e, jsonPayload({ lexeme: 7 }));
+  await insert(root, f, jsonPayload({ other: 'cat' }));
+  await insert(root, g, new Uint8Array());
+  await engine.local.payload(replica, d, encoder.encode('{"lexeme":'));
+
+  const found = await index.lookup(['cat', 'dog', 'bird', 'cat'], { payloads: true });
+  assertArrayEqual([...found.keys()].sort(), ['cat', 'dog'], 'a key without members is absent');
+  const cats = found.get('cat')!;
+  assertArrayEqual(
+    cats.map((member) => member.id),
+    [a, b],
+    'a key lists the nodes whose payload holds it, by id, the one written first included',
+  );
+  assertArrayEqual(
+    cats.map((member) => String(member.parent)),
+    [root, a],
+    'each with its parent',
+  );
+  assertEqual(
+    JSON.stringify(cats[0]!.payload),
+    JSON.stringify({ lexeme: 'cat' }),
+    'and its payload, as JSON',
+  );
+  assert(!('payload' in (await index.lookup(['dog'])).get('dog')![0]!), 'when asked for');
+
+  await engine.local.delete(replica, b);
+  assertArrayEqual(await memberIds(index, 'cat'), [a], 'a deleted node leaves');
+  // A payload that arrives before its node's insert leaves a placeholder, which is not in the tree.
+  await engine.ops.appendMany([
+    makePayloadOp({
+      replica: remote,
+      counter: 2,
+      lamport: 2,
+      node: late,
+      payload: jsonPayload({ lexeme: 'cat' }),
+    }),
+  ]);
+  assertArrayEqual(await memberIds(index, 'cat'), [a], 'a node not in the tree yet is none');
+  await engine.ops.appendMany([
+    makeInsertOp({
+      replica: remote,
+      counter: 1,
+      lamport: 1,
+      parent: root,
+      node: late,
+      orderKey: orderKeyFromPosition(0),
+    }),
+  ]);
+  assertArrayEqual(await memberIds(index, 'cat'), [a, late], 'until its insert arrives');
+  await engine.local.payload(replica, root, jsonPayload({ lexeme: 'cat' }));
+  assertArrayEqual(await memberIds(index, 'cat'), [root, a, late], 'the root counts too');
+}
+
+async function scenarioPayloadIndexOnChange(ctx: TreecrdtEngineConformanceContext): Promise<void> {
+  const { engine } = ctx;
+  const runner = engineRunnerOrNull(engine);
+  if (!runner) return ctx.skip('engine has no SQLite runner');
+  const replica = replicaFromLabel('r-index');
+  const root = nodeIdFromInt(0);
+  const [a, b, c, late] = [1, 2, 3, 4].map(nodeIdFromInt);
+  const cat = jsonPayload({ lexeme: 'cat' });
+  const index = await openPayloadIndex(engine);
+  const reported: string[][] = [];
+  const events: MaterializationEvent[] = [];
+  index.onChange((keys, event) => {
+    reported.push(keys);
+    events.push(event);
+  });
+  /** Keys reported for the events of `write`. */
+  const changes = async (write: () => Promise<unknown>) => {
+    await index.idle();
+    reported.length = 0;
+    await write();
+    await index.idle();
+    return [...new Set(reported.flat())].sort();
+  };
+
+  assertArrayEqual(
+    await changes(() => engine.local.insert(replica, root, a, { type: 'last' }, cat)),
+    ['cat'],
+    'an insert reports its key',
+  );
+  await engine.local.insert(replica, root, b, { type: 'last' }, cat);
+  assertArrayEqual(
+    await changes(() => engine.local.payload(replica, a, jsonPayload({ lexeme: 'dog' }))),
+    ['cat', 'dog'],
+    'a new key reports the old one and the new one',
+  );
+  assertArrayEqual(
+    await changes(() => engine.local.payload(replica, a, jsonPayload({ lexeme: 'dog', edit: 1 }))),
+    [],
+    'an edit that keeps the key reports none',
+  );
+  assertEqual(reported.length, 1, 'though the listener gets the event');
+  assertEqual(events[events.length - 1]!.changes[0]!.node, a, 'which it is passed');
+  assertArrayEqual(
+    await changes(() => engine.local.payload(replica, a, new TextEncoder().encode('plain'))),
+    ['dog'],
+    'a payload that loses its key reports it',
+  );
+  assertArrayEqual(
+    await changes(() => engine.local.payload(replica, a, cat)),
+    ['cat'],
+    'as does one that gains a key',
+  );
+  assertArrayEqual(
+    await changes(() => engine.local.delete(replica, b)),
+    ['cat'],
+    'a deletion reports the key',
+  );
+  assertArrayEqual(
+    await changes(() => engine.local.move(replica, b, a, { type: 'last' })),
+    ['cat'],
+    'as does a move that restores the node',
+  );
+  assertArrayEqual(await memberIds(index, 'cat'), [a, b], 'which counts again');
+  assertArrayEqual(
+    await changes(() => engine.local.move(replica, b, root, { type: 'first' })),
+    ['cat'],
+    'a move reports its key, since a lookup returns the parent',
+  );
+  assertArrayEqual(
+    await changes(() => engine.local.insert(replica, root, c, { type: 'last' }, null)),
+    [],
+    'a node without a key reports none',
+  );
+  // A create-only insert sets a payload, until a late plain insert of its node voids it.
+  const created = makeInsertOp({
+    replica: replicaFromLabel('r-index-late'),
+    counter: 1,
+    lamport: 100,
+    parent: root,
+    node: late,
+    orderKey: orderKeyFromPosition(0),
+    payload: jsonPayload({ lexeme: 'owl' }),
+    ifAbsent: true,
+  });
+  assertArrayEqual(
+    await changes(() => engine.ops.appendMany([created])),
+    ['owl'],
+    'a create-only insert reports its key',
+  );
+  const placed = makeInsertOp({
+    replica: replicaFromLabel('r-index-early'),
+    counter: 1,
+    lamport: 1,
+    parent: root,
+    node: late,
+    orderKey: orderKeyFromPosition(0),
+  });
+  assert(
+    // The replay that the late op starts may report keys it rewrote but left alike.
+    (await changes(() => engine.ops.appendMany([placed]))).includes('owl'),
+    'as does the late insert that voids it',
+  );
+  assertArrayEqual(await memberIds(index, 'owl'), [], 'which leaves the node without the key');
+
+  await index.close();
+  assertEqual(
+    await runner.getText(
+      `SELECT count(*) FROM sqlite_temp_master WHERE name LIKE 'treecrdt_payload_index_lexeme%'`,
+    ),
+    '0',
+    'closing the last open drops the triggers and their log',
+  );
+  reported.length = 0;
+  await engine.local.payload(replica, c, cat);
+  await index.idle();
+  assertEqual(reported.length, 0, 'and stops reporting');
+}
+
+async function scenarioPayloadIndexKeepsLookupsCurrent(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const source = await ctx.createEngine({ docId: ctx.docId, name: 'source' });
+  const replica = replicaFromLabel('r-index-source');
+  const bulk = replicaFromLabel('r-index-bulk');
+  const root = nodeIdFromInt(0);
+  // Many keys of few members each, so a key a write fails to report stays stale.
+  const keys = Array.from({ length: 400 }, (_, i) => `k${i}`);
+  let seed = 7;
+  /** A deterministic choice below `n`. */
+  const pick = (n: number) => {
+    seed = (seed * 1103515245 + 12345) % 2 ** 31;
+    return seed % n;
+  };
+  const payloadFor = (i: number) =>
+    i % 6 === 5
+      ? new TextEncoder().encode(`plain ${i}`)
+      : jsonPayload({ lexeme: keys[i % keys.length], i });
+
+  // A first sync brings a batch larger than the clients' append chunks.
+  const nodes = Array.from({ length: 2600 }, (_, i) => nodeIdFromInt(1000 + i));
+  const first = nodes.map((node, i) =>
+    makeInsertOp({
+      replica: bulk,
+      counter: i + 1,
+      lamport: i + 1,
+      parent: i < 50 ? root : nodes[i % 50]!,
+      node,
+      orderKey: orderKeyFromPosition(Math.floor(i / 50)),
+      payload: payloadFor(i),
+    }),
+  );
+  await source.ops.appendMany(first);
+  for (let step = 0; step < 120; step += 1) {
+    const node = nodes[pick(120)]!;
+    const choice = pick(5);
+    if (choice === 0) await source.local.payload(replica, node, payloadFor(pick(3000)));
+    else if (choice === 1) await source.local.delete(replica, node);
+    else if (choice === 2) await source.local.move(replica, node, root, { type: 'first' });
+    else if (choice === 3) await source.local.payload(replica, node, null);
+    else {
+      const child = nodeIdFromInt(9000 + step);
+      await source.local.insert(replica, node, child, { type: 'last' }, payloadFor(step));
+    }
+  }
+
+  // An app that keeps each key's members and reads again the keys onChange reports.
+  const index = await openPayloadIndex(engine);
+  const read = async (from: TreecrdtPayloadIndex, list: string[]) => {
+    const found = await from.lookup(list);
+    return list.map((key) => JSON.stringify((found.get(key) ?? []).map((m) => [m.id, m.parent])));
+  };
+  const cache = new Map<string, string>();
+  const refresh = async (list: string[]) => {
+    const members = await read(index, list);
+    list.forEach((key, i) => cache.set(key, members[i]!));
+  };
+  await refresh(keys);
+  index.onChange((changed) => refresh(changed));
+
+  await engine.ops.appendMany(first);
+  // The source's own ops arrive shuffled, in batches and one by one, so replays rewrite state.
+  const bulkHex = bytesToHex(bulk);
+  const rest = (await source.ops.all()).filter(
+    (op) => bytesToHex(replicaIdToBytes(op.meta.id.replica)) !== bulkHex,
+  );
+  for (let i = rest.length - 1; i > 0; i -= 1) {
+    const j = pick(i + 1);
+    [rest[i], rest[j]] = [rest[j]!, rest[i]!];
+  }
+  for (let i = 0; i < rest.length; ) {
+    const batch = rest.slice(i, (i += 1 + pick(30)));
+    if (batch.length === 1) await engine.ops.append(batch[0]!);
+    else await engine.ops.appendMany(batch);
+  }
+  await index.idle();
+
+  const current = await read(index, keys);
+  const expected = await read(await openPayloadIndex(source), keys);
+  keys.forEach((key, i) => {
+    assertEqual(current[i], expected[i], `${key} converges with the source`);
+    assertEqual(cache.get(key), current[i], `the app's ${key} is current`);
+  });
+}
+
+async function scenarioPayloadIndexTwoPaths(ctx: TreecrdtEngineConformanceContext): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const replica = replicaFromLabel('r-index');
+  const root = nodeIdFromInt(0);
+  const [a, b] = [1, 2].map(nodeIdFromInt);
+  const lexemes = await openPayloadIndex(engine);
+  const tags = await openPayloadIndex(engine, { name: 'tag', path: '$.meta.tag' });
+  // Two opens of one index on one connection, as tabs sharing a worker.
+  const again = await openPayloadIndex(engine);
+  const reported = new Map<TreecrdtPayloadIndex, Set<string>>();
+  for (const index of [lexemes, tags, again]) {
+    reported.set(index, new Set());
+    index.onChange((keys) => keys.forEach((key) => reported.get(index)!.add(key)));
+  }
+  /** Keys `index` reported since the last call. */
+  const taken = async (index: TreecrdtPayloadIndex) => {
+    await index.idle();
+    const keys = [...reported.get(index)!].sort();
+    reported.get(index)!.clear();
+    return keys;
+  };
+
+  await engine.local.insert(
+    replica,
+    root,
+    a,
+    { type: 'last' },
+    jsonPayload({ lexeme: 'cat', meta: { tag: 'red' } }),
+  );
+  await engine.local.insert(
+    replica,
+    root,
+    b,
+    { type: 'last' },
+    jsonPayload({ lexeme: 'dog', meta: { tag: 'red' } }),
+  );
+  assertArrayEqual(await memberIds(lexemes, 'cat'), [a], 'each index reads its own path');
+  assertArrayEqual(await memberIds(tags, 'red'), [a, b], 'a nested one too');
+  assertArrayEqual(await taken(lexemes), ['cat', 'dog'], 'and reports its own keys');
+  assertArrayEqual(await taken(tags), ['red'], 'as does the other');
+  assertArrayEqual(await taken(again), ['cat', 'dog'], 'each open sees every change');
+  const conflict = await openPayloadIndex(engine, { path: '$.value' }).then(
+    () => '',
+    (error: Error) => error.message,
+  );
+  assert(conflict.includes('$.lexeme'), 'another path for a name that is open throws');
+  assert(
+    (
+      await engineRunnerOrNull(engine)!.getText(
+        `SELECT sql FROM sqlite_master WHERE name = 'treecrdt_payload_index_lexeme'`,
+      )
+    )?.includes(`'$.lexeme'`),
+    'and keeps the index of the open ones',
+  );
+
+  await tags.close();
+  await engine.local.payload(replica, a, jsonPayload({ lexeme: 'cow', meta: { tag: 'blue' } }));
+  assertArrayEqual(await memberIds(lexemes, 'cow'), [a], 'closing one leaves the other');
+  assertArrayEqual(await taken(lexemes), ['cat', 'cow'], 'reporting');
+  assertArrayEqual(await taken(again), ['cat', 'cow'], 'as does the other open');
+  await again.close();
+  await engine.local.payload(replica, b, jsonPayload({ lexeme: 'emu', meta: { tag: 'red' } }));
+  assertArrayEqual(await taken(lexemes), ['dog', 'emu'], 'which, closed, leaves the triggers');
+}
+
+async function scenarioPayloadIndexReopen(ctx: TreecrdtEngineConformanceContext): Promise<void> {
+  if (!ctx.createPersistentEngine) return;
+  const replica = replicaFromLabel('r-index');
+  const root = nodeIdFromInt(0);
+  const [a, b] = [1, 2].map(nodeIdFromInt);
+  /** The schema version of the main database, which every CREATE or DROP there bumps. */
+  const schemaVersion = (engine: TreecrdtEngine) =>
+    engineRunnerOrNull(engine)!.getText('PRAGMA main.schema_version');
+
+  const first = await ctx.createPersistentEngine({ docId: ctx.docId, name: 'db' });
+  if (!engineRunnerOrNull(first)) return ctx.skip('engine has no SQLite runner');
+  await first.local.insert(
+    replica,
+    root,
+    a,
+    { type: 'last' },
+    jsonPayload({ value: 'Cat', lexeme: 'cat' }),
+  );
+  await (await openPayloadIndex(first)).close();
+  await first.close();
+
+  const engine = await ctx.createPersistentEngine({ docId: ctx.docId, name: 'db' });
+  const before = await schemaVersion(engine);
+  const index = await openPayloadIndex(engine);
+  assertEqual(await schemaVersion(engine), before, 'reopening keeps the SQLite index');
+  const reported: string[] = [];
+  index.onChange((keys) => void reported.push(...keys));
+  await engine.local.insert(
+    replica,
+    root,
+    b,
+    { type: 'last' },
+    jsonPayload({ value: 'cat', lexeme: 'cat' }),
+  );
+  await index.idle();
+  assertArrayEqual(await memberIds(index, 'cat'), [a, b], 'which finds the members');
+  assertArrayEqual(reported, ['cat'], 'and reports changes again');
+  await index.close();
+
+  const byValue = await openPayloadIndex(engine, { path: '$.value' });
+  assert((await schemaVersion(engine)) !== before, 'another path builds the index again');
+  assertArrayEqual(await memberIds(byValue, 'Cat'), [a], 'on that path');
+  assertArrayEqual(await memberIds(byValue, 'cat'), [b], 'alone');
 }
 
 async function scenarioAuthSqliteSubtreeEvaluator(
