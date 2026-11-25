@@ -24,6 +24,10 @@
     "./engine": {
       "import": "./dist/src/engine.js",
       "types": "./dist/src/engine.d.ts"
+    },
+    "./payload-index": {
+      "import": "./dist/src/payload-index.js",
+      "types": "./dist/src/payload-index.d.ts"
     }
   },
   "files": [
@@ -36,6 +40,7 @@
     "test": "echo \"TODO: add tests\""
   },
   "dependencies": {
+    "@noble/hashes": "^1.8.0",
     "cborg": "^4.3.2"
   },
   "devDependencies": {
