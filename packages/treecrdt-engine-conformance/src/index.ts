@@ -11,6 +11,13 @@ import {
   type TreecrdtPayloadIndex,
   type TreecrdtPayloadIndexOptions,
 } from '@treecrdt/interface/payload-index';
+import {
+  createTreecrdtView,
+  VIEW_NODE_PREFIX,
+  type TreecrdtView,
+  type TreecrdtViewItem,
+  type TreecrdtViewOptions,
+} from '@treecrdt/interface/views';
 import { loadVersionVectorCodec } from '@treecrdt/wasm/codec';
 
 import type { Filter, OpRef, SyncBackend } from '@treecrdt/sync-protocol';
@@ -343,6 +350,94 @@ export function treecrdtEngineConformanceScenarios(): TreecrdtEngineConformanceS
     {
       name: 'payload index: a reopened database keeps the index, and a new path rebuilds it',
       run: scenarioPayloadIndexReopen,
+    },
+    {
+      name: 'views: an unordered group lists members by rank and stores nothing',
+      run: scenarioViewUnorderedGroup,
+    },
+    {
+      name: 'views: the first placement writes the view root, the group node and one reference',
+      run: scenarioViewFirstPlacementWritesOneReference,
+    },
+    {
+      name: 'views: members without a reference keep their spots, and drops go between them',
+      run: scenarioViewDropsAmongMembersWithoutReference,
+    },
+    {
+      name: 'views: the last spot stays below later ranks, and members that join write nothing',
+      run: scenarioViewLastSpotStaysBelowLaterRanks,
+    },
+    {
+      name: 'views: replicas that order a group at once keep both drags',
+      run: scenarioViewConcurrentOrderingKeepsBothDrags,
+    },
+    {
+      name: 'views: a placement succeeds when a peer orders the group meanwhile',
+      run: scenarioViewPlacementWhilePeerOrders,
+    },
+    {
+      name: 'views: a drag wins over devices nesting under the member, and nothing duplicates',
+      run: scenarioViewDragWinsOverNesting,
+    },
+    {
+      name: 'views: folders hold items and removing one keeps the order',
+      run: scenarioViewFolders,
+    },
+    {
+      name: 'views: a member holds other members',
+      run: scenarioViewMemberHoldsMembers,
+    },
+    {
+      name: 'views: a member that gets an item under it stays before the items dropped after it',
+      run: scenarioViewNestingKeepsDropsAfterMember,
+    },
+    {
+      name: 'views: a reference whose member left keeps its children and its place',
+      run: scenarioViewReferenceWithoutMember,
+    },
+    {
+      name: "views: reference 'parent' keeps the place of a member recreated in its context",
+      run: scenarioViewParentReferences,
+    },
+    {
+      name: 'views: concurrent moves of a reference into two folders keep the later one',
+      run: scenarioViewConcurrentMovesIntoFolders,
+    },
+    {
+      name: 'views: a drop into a member whose reference waits on its folder leaves it there',
+      run: scenarioViewDropIntoReferenceAheadOfItsFolder,
+    },
+    {
+      name: 'views: deleted members leave',
+      run: scenarioViewDeletedMembersLeave,
+    },
+    {
+      name: 'views: a node whose insert has not arrived is no member',
+      run: scenarioViewNodeAheadOfItsInsert,
+    },
+    {
+      name: 'views: a member whose reference was deleted lists at its default key',
+      run: scenarioViewDeletedReference,
+    },
+    {
+      name: 'views: a payload index on a new path regroups members, keeping the order',
+      run: scenarioViewNewIndexPathKeepsOrder,
+    },
+    {
+      name: 'views: onChange reports membership and structure changes',
+      run: scenarioViewOnChangeReportsGroups,
+    },
+    {
+      name: 'views: a member whose rank throws is skipped while it throws',
+      run: scenarioViewSkipsUnmappableNode,
+    },
+    {
+      name: 'views: view node ids are keyed by document',
+      run: scenarioViewNodeIdsAreKeyed,
+    },
+    {
+      name: 'views: writes are authorized like other local writes',
+      run: scenarioViewWritesAreAuthorized,
     },
     {
       name: 'auth: sqlite subtree evaluator allow/deny/unknown',
@@ -3535,6 +3630,960 @@ async function scenarioPayloadIndexReopen(ctx: TreecrdtEngineConformanceContext)
   assert((await schemaVersion(engine)) !== before, 'another path builds the index again');
   assertArrayEqual(await memberIds(byValue, 'Cat'), [a], 'on that path');
   assertArrayEqual(await memberIds(byValue, 'cat'), [b], 'alone');
+}
+
+/** A thought as the view scenarios store it, keyed by its lowercased value. */
+type ViewThought = { value: string; lexeme: string; created: number };
+
+function viewThought(value: string, created: number): Uint8Array {
+  return jsonPayload({ value, lexeme: value.toLowerCase(), created });
+}
+
+/** Opens a view that groups thoughts by lowercased value, ranked by when they were created. */
+function openThoughtView(
+  engine: TreecrdtEngine,
+  replica: ReplicaId,
+  options: Partial<TreecrdtViewOptions> = {},
+): Promise<TreecrdtView> {
+  const runner = engineRunnerOrNull(engine);
+  if (!runner) throw new Error('views need a SQLite runner');
+  return createTreecrdtView(
+    { ...engine, runner },
+    {
+      name: 'thoughts',
+      index: { name: 'thoughts', path: '$.lexeme' },
+      rank: ({ payload }) => (payload as ViewThought).created,
+      replica,
+      ...options,
+    },
+  );
+}
+
+/** Inserts each `[node, value, created]` last under `parent`. */
+async function insertThoughts(
+  engine: TreecrdtEngine,
+  replica: ReplicaId,
+  thoughts: [string, string, number][],
+  parent = nodeIdFromInt(0),
+): Promise<void> {
+  for (const [node, value, created] of thoughts) {
+    const payload = viewThought(value, created);
+    await engine.local.insert(replica, parent, node, { type: 'last' }, payload);
+  }
+}
+
+/** Nodes 1 to `count`, and the names a, b, c... that `viewTree` shows them by. */
+function lettered(count: number): [string[], Map<string, string>] {
+  const ids = Array.from({ length: count }, (_, i) => nodeIdFromInt(i + 1));
+  return [ids, new Map(ids.map((id, i) => [id, String.fromCharCode(97 + i)]))];
+}
+
+/** Members of `group` in display order. */
+async function viewOrder(view: TreecrdtView, group: string): Promise<string[]> {
+  return ((await view.members([group])).get(group) ?? []).map((member) => member.id);
+}
+
+/** Members of `group` that have a reference, in display order. */
+async function viewPlaced(view: TreecrdtView, group: string): Promise<string[]> {
+  const members = (await view.members([group])).get(group) ?? [];
+  return members.filter((member) => member.placed).map((member) => member.id);
+}
+
+/**
+ * `group` as text: members by name with their children in parentheses, folders by payload with
+ * theirs in brackets.
+ */
+async function viewTree(
+  view: TreecrdtView,
+  group: string,
+  names: Map<string, string>,
+): Promise<string> {
+  const decoder = new TextDecoder();
+  const text = (items: TreecrdtViewItem[]): string =>
+    items
+      .map((item) => {
+        if (item.kind === 'folder') {
+          return `${decoder.decode(item.payload ?? new Uint8Array())}[${text(item.children)}]`;
+        }
+        const name = names.get(item.id) ?? item.id;
+        return item.children.length > 0 ? `${name}(${text(item.children)})` : name;
+      })
+      .join(', ');
+  return text(await view.tree(group));
+}
+
+/** Gives every engine the ops of all of them. */
+async function exchangeOps(...engines: TreecrdtEngine[]): Promise<void> {
+  const all = await Promise.all(engines.map((engine) => engine.ops.all()));
+  for (const engine of engines) {
+    for (const ops of all) await engine.ops.appendMany(ops);
+  }
+}
+
+/** Whether `a` comes after `b` in the operation order: by lamport, then replica, then counter. */
+function opAfter(a: Operation, b: Operation): boolean {
+  if (a.meta.lamport !== b.meta.lamport) return a.meta.lamport > b.meta.lamport;
+  const replicaA = bytesToHex(replicaIdToBytes(a.meta.id.replica));
+  const replicaB = bytesToHex(replicaIdToBytes(b.meta.id.replica));
+  if (replicaA !== replicaB) return replicaA > replicaB;
+  return a.meta.id.counter > b.meta.id.counter;
+}
+
+async function scenarioViewUnorderedGroup(ctx: TreecrdtEngineConformanceContext): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const replica = replicaFromLabel('r-view');
+  const [[a, b, c, d, e], names] = lettered(5);
+  const view = await openThoughtView(engine, replica, {
+    data: ({ payload }) => ({ created: (payload as ViewThought).created }),
+  });
+  await insertThoughts(engine, replica, [
+    [c, 'cat', 30],
+    [a, 'Cat', 10],
+    [b, 'dog', 20],
+    [d, 'cat', 5],
+    [e, 'cat', 10],
+  ]);
+
+  assertArrayEqual(await viewOrder(view, 'cat'), [d, a, e, c], 'members sort by rank, then id');
+  assertArrayEqual(await viewOrder(view, 'dog'), [b], 'each node joins the groups of its keys');
+  const groups = await view.members(['cat', 'bird']);
+  assert(!groups.has('bird'), 'a group without members is absent');
+  assertEqual(
+    JSON.stringify(groups.get('cat')!.map((member) => [member.placed, member.data])),
+    JSON.stringify([5, 10, 10, 30].map((created) => [false, { created }])),
+    'members carry their data, and no reference places them',
+  );
+  assertEqual(await viewTree(view, 'cat', names), 'd, a, e, c', 'the tree is flat');
+  assertEqual((await engine.ops.all()).length, 5, 'the view writes nothing');
+}
+
+async function scenarioViewFirstPlacementWritesOneReference(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const replica = replicaFromLabel('r-view');
+  const [[a, b, c, d]] = lettered(4);
+  const view = await openThoughtView(engine, replica);
+  await insertThoughts(engine, replica, [
+    [a, 'cat', 10],
+    [b, 'cat', 20],
+    [c, 'cat', 30],
+    [d, 'cat', 40],
+  ]);
+
+  const first = await view.place('cat', d, { before: b });
+  assertEqual(first.length, 3, 'the view root, the group node and the reference of the drag');
+  assert(
+    first.every((op) => op.kind.node.startsWith(VIEW_NODE_PREFIX)),
+    'every node a view writes has the view prefix',
+  );
+  assert(first.slice(0, 2).every(isCreateOnly), 'the root and the group node are create-only');
+  assert(
+    first[2]!.kind.type === 'insert' && !isCreateOnly(first[2]!),
+    'the drag creates its reference with a plain insert',
+  );
+  assertArrayEqual(await viewOrder(view, 'cat'), [a, d, b, c], 'only the dragged member moves');
+  assertArrayEqual(await viewPlaced(view, 'cat'), [d], 'and only it has a reference');
+
+  // Two quick drags: the second is placed against the order the first left.
+  const [second, third] = await Promise.all([
+    view.place('cat', a),
+    view.place('cat', b, { before: a }),
+  ]);
+  assertArrayEqual(await viewOrder(view, 'cat'), [d, c, b, a], 'the second drag sees the first');
+  assert(second.length === 1 && third.length === 1, 'a drag of an ordered group writes one op');
+  const moved = await view.place('cat', a, { before: d });
+  assert(moved.length === 1 && moved[0]!.kind.type === 'move', 'a reference that exists moves');
+  assertArrayEqual(await viewOrder(view, 'cat'), [a, d, c, b], 'to where it was dropped');
+
+  const written = (await engine.ops.all()).length;
+  assertEqual((await view.place('cat', b)).length, 0, 'a member already last stays');
+  assertEqual(
+    (await view.place('cat', c, { before: b })).length,
+    0,
+    'a member already there stays',
+  );
+  assertEqual(
+    (await view.place('cat', c, { before: c })).length,
+    0,
+    'before itself is where it is',
+  );
+  await engine.local.payload(replica, d, viewThought('dog', 40));
+  assertEqual((await view.place('cat', d, { before: a })).length, 0, 'a member that left stays');
+  assertEqual(
+    (await view.place('cat', a, { before: c })).length,
+    0,
+    'a reference that shows nothing is not between two members',
+  );
+  assertEqual((await engine.ops.all()).length, written + 1, 'only the edit is written');
+}
+
+async function scenarioViewDropsAmongMembersWithoutReference(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const replica = replicaFromLabel('r-view');
+  const [[a, b, c, d, e, f], names] = lettered(6);
+  const view = await openThoughtView(engine, replica);
+  await insertThoughts(engine, replica, [
+    [a, 'cat', 10],
+    [b, 'cat', 20],
+    [c, 'cat', 30],
+    [d, 'cat', 40],
+    [e, 'cat', 50],
+  ]);
+  const tree = () => viewTree(view, 'cat', names);
+
+  await view.place('cat', e, { before: c });
+  assertEqual(await tree(), 'a, b, e, c, d', 'a drop between two members without a reference');
+  await view.place('cat', d, { before: a });
+  assertEqual(await tree(), 'd, a, b, e, c', 'before the first');
+  await view.place('cat', a, { before: c });
+  assertEqual(await tree(), 'd, b, e, a, c', 'between a reference and a member without one');
+  await view.place('cat', c, { before: e });
+  assertEqual(await tree(), 'd, b, c, e, a', 'between a member without one and a reference');
+  assertArrayEqual(await viewPlaced(view, 'cat'), [d, c, e, a], 'only dragged members have one');
+  await insertThoughts(engine, replica, [[f, 'cat', 15]]);
+  assertEqual(await tree(), 'd, f, b, c, e, a', 'a member that joins lists at its default spot');
+}
+
+async function scenarioViewLastSpotStaysBelowLaterRanks(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const replica = replicaFromLabel('r-view');
+  const encoder = new TextEncoder();
+  const [[a, b, c, d, e], names] = lettered(5);
+  const view = await openThoughtView(engine, replica);
+  await insertThoughts(engine, replica, [
+    [a, 'cat', 10],
+    [b, 'cat', 20],
+    [c, 'cat', 30],
+  ]);
+  await view.place('cat', a);
+  const folder = await view.createFolder('cat', { payload: encoder.encode('F') });
+  await view.place('cat', b, { parent: folder.id });
+  assertEqual(await viewTree(view, 'cat', names), 'c, a, F[b]', 'a and the folder go last');
+
+  const written = (await engine.ops.all()).length;
+  await insertThoughts(engine, replica, [
+    [d, 'cat', 40],
+    [e, 'cat', 50],
+  ]);
+  const tree = await viewTree(view, 'cat', names);
+  assertEqual(tree, 'c, a, F[b], d, e', 'members of later ranks list after them');
+  assertArrayEqual(await viewPlaced(view, 'cat'), [a, b], 'without a reference');
+  assertEqual((await engine.ops.all()).length, written + 2, 'and the view writes nothing');
+
+  const late = await ctx.createEngine({ docId: ctx.docId, name: 'peer-c' });
+  const lateView = await openThoughtView(late, replicaFromLabel('r-view-c'));
+  await exchangeOps(engine, late);
+  assertEqual(await viewTree(lateView, 'cat', names), tree, 'a replica that joins later agrees');
+  assertEqual(
+    (await late.ops.all()).length,
+    (await engine.ops.all()).length,
+    'having written none',
+  );
+}
+
+async function scenarioViewConcurrentOrderingKeepsBothDrags(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const peer = await ctx.createEngine({ docId: ctx.docId, name: 'peer-b' });
+  const [rA, rB] = [replicaFromLabel('r-view-a'), replicaFromLabel('r-view-b')];
+  const [[a, b, c, d, x]] = lettered(5);
+  const view = await openThoughtView(engine, rA);
+  const peerView = await openThoughtView(peer, rB);
+  await insertThoughts(engine, rA, [
+    [a, 'cat', 10],
+    [b, 'cat', 20],
+    [c, 'cat', 30],
+    [d, 'cat', 40],
+  ]);
+  await exchangeOps(engine, peer);
+  // B's clock runs ahead, so its create-only writes of the view root and the group sort after A's.
+  await insertThoughts(peer, rB, [[x, 'dog', 1]]);
+  for (let edit = 2; edit < 8; edit += 1) await peer.local.payload(rB, x, viewThought('dog', edit));
+
+  // Each replica orders the group with its own first drag, unaware of the other.
+  await view.place('cat', d, { before: a });
+  await peerView.place('cat', a);
+  assertArrayEqual(await viewOrder(view, 'cat'), [d, a, b, c], 'A drags d first');
+  assertArrayEqual(await viewOrder(peerView, 'cat'), [b, c, d, a], 'B drags a last');
+  await exchangeOps(engine, peer);
+  for (const [label, replicaView] of [
+    ['A', view],
+    ['B', peerView],
+  ] as const) {
+    assertArrayEqual(await viewOrder(replicaView, 'cat'), [d, b, c, a], `${label} keeps both`);
+    assertArrayEqual(await viewPlaced(replicaView, 'cat'), [d, a], `${label} has both references`);
+  }
+}
+
+async function scenarioViewPlacementWhilePeerOrders(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const peer = await ctx.createEngine({ docId: ctx.docId, name: 'peer-b' });
+  const replica = replicaFromLabel('r-view-a');
+  const [[a, b]] = lettered(2);
+  await insertThoughts(engine, replica, [
+    [a, 'cat', 10],
+    [b, 'cat', 20],
+  ]);
+  await exchangeOps(engine, peer);
+  const peerView = await openThoughtView(peer, replicaFromLabel('r-view-b'));
+  const peerOps = await peerView.place('cat', b, { before: a });
+
+  // The peer's view nodes arrive after the view found the group unordered, before it writes.
+  let arrived = false;
+  const local: TreecrdtEngine['local'] = {
+    ...engine.local,
+    forReplica: (...args) => {
+      const bound = engine.local.forReplica(...args);
+      return {
+        ...bound,
+        insertIfAbsent: async (...insertArgs) => {
+          if (!arrived) {
+            arrived = true;
+            await engine.ops.appendMany(peerOps);
+          }
+          return bound.insertIfAbsent(...insertArgs);
+        },
+      };
+    },
+  };
+  const view = await openThoughtView({ ...engine, local }, replica);
+  assertEqual(
+    (await view.place('cat', a)).length,
+    1,
+    'only the drag writes: the peer made the rest',
+  );
+  await exchangeOps(engine, peer);
+  assertArrayEqual(await viewOrder(view, 'cat'), [b, a], 'both drags apply');
+  assertArrayEqual(await viewOrder(peerView, 'cat'), [b, a], 'and the replicas converge');
+}
+
+async function scenarioViewDragWinsOverNesting(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const peerB = await ctx.createEngine({ docId: ctx.docId, name: 'peer-b' });
+  const peerC = await ctx.createEngine({ docId: ctx.docId, name: 'peer-c' });
+  const [rA, rB, rC] = ['r-view-a', 'r-view-b', 'r-view-c'].map(replicaFromLabel);
+  const [[a, b, c, d, x], names] = lettered(5);
+  const views = [
+    await openThoughtView(engine, rA),
+    await openThoughtView(peerB, rB),
+    await openThoughtView(peerC, rC),
+  ] as const;
+  await insertThoughts(engine, rA, [
+    [a, 'cat', 10],
+    [b, 'cat', 20],
+    [c, 'cat', 30],
+    [d, 'cat', 40],
+  ]);
+  await exchangeOps(engine, peerB, peerC);
+  // B's clock runs ahead, so its create-only insert of a's reference sorts after C's drag.
+  await insertThoughts(peerB, rB, [[x, 'dog', 1]]);
+  for (let edit = 2; edit < 8; edit += 1)
+    await peerB.local.payload(rB, x, viewThought('dog', edit));
+
+  // A and B each nest a member under a, which has no reference, while C drags a last.
+  const nestA = await views[0].place('cat', b, { parent: a });
+  const nestB = await views[1].place('cat', c, { parent: a });
+  const drag = await views[2].place('cat', a);
+  const reference = drag[2]!;
+  assert(
+    [nestA[2], nestB[2]].every((op) => isCreateOnly(op!) && op!.kind.node === reference.kind.node),
+    "nesting under a writes a's reference create-only first",
+  );
+  assert(
+    nestA[3]!.kind.type === 'insert' && nestA[3]!.kind.parent === reference.kind.node,
+    'then b',
+  );
+  assert(opAfter(nestB[2]!, reference), "B's sorts after C's drag");
+
+  await exchangeOps(engine, peerB, peerC);
+  const trees = await Promise.all(views.map((view) => viewTree(view, 'cat', names)));
+  assert(['d, a(b, c)', 'd, a(c, b)'].includes(trees[0]!), `the drag places a: ${trees[0]}`);
+  assert(
+    trees.every((tree) => tree === trees[0]),
+    'holding what A and B nested, on every replica',
+  );
+  assertEqual((await viewOrder(views[0], 'cat')).length, 4, 'and no member lists twice');
+}
+
+async function scenarioViewFolders(ctx: TreecrdtEngineConformanceContext): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const replica = replicaFromLabel('r-view');
+  const encoder = new TextEncoder();
+  const [[a, b, c, d, e], names] = lettered(5);
+  const view = await openThoughtView(engine, replica);
+  await insertThoughts(engine, replica, [
+    [a, 'cat', 10],
+    [b, 'cat', 20],
+    [c, 'cat', 30],
+    [d, 'cat', 40],
+  ]);
+  const tree = () => viewTree(view, 'cat', names);
+
+  const fruit = await view.createFolder('cat', { before: b, payload: encoder.encode('Fruit') });
+  assertEqual(fruit.ops.length, 3, 'the first folder writes the view root and the group node too');
+  assert(fruit.id.startsWith(VIEW_NODE_PREFIX), 'a folder id has the view prefix');
+  assertEqual(await tree(), 'a, Fruit[], b, c, d', 'a folder shows where it was made');
+  await view.place('cat', c, { parent: fruit.id });
+  assertEqual(await tree(), 'a, Fruit[c], b, d', 'a member moves into a folder');
+  await view.place('cat', b, { parent: null, before: c });
+  assertEqual(await tree(), 'a, Fruit[c], d, b', 'before an item outside the parent means last');
+  await view.place('cat', d, { parent: fruit.id, before: c });
+  assertEqual(await tree(), 'a, Fruit[d, c], b', 'before an item in it');
+  const red = await view.createFolder('cat', { parent: fruit.id, payload: encoder.encode('Red') });
+  assertEqual(red.ops.length, 1, 'a folder of an ordered group is one insert');
+  await view.place('cat', b, { parent: red.id });
+  assertEqual(await tree(), 'a, Fruit[d, c, Red[b]]', 'folders nest');
+  assertArrayEqual(await viewOrder(view, 'cat'), [a, d, c, b], 'members list depth first');
+  await view.place('cat', red.id, { before: fruit.id });
+  assertEqual(await tree(), 'a, Red[b], Fruit[d, c]', 'a folder moves with its items');
+
+  const removed = await view.removeFolder('cat', fruit.id);
+  assertEqual(removed.length, 3, 'removing a folder moves its items out, then deletes it');
+  assertEqual(await tree(), 'a, Red[b], d, c', 'its items take its place in order');
+  await view.removeFolder('cat', red.id);
+  assertEqual(await tree(), 'a, b, d, c', 'so the members keep their order');
+  assertEqual((await view.removeFolder('cat', red.id)).length, 0, 'a removed folder is gone');
+
+  const all = await view.createFolder('cat', { before: a, payload: encoder.encode('All') });
+  for (const item of [a, b, d, c]) await view.place('cat', item, { parent: all.id });
+  await view.removeFolder('cat', all.id);
+  await insertThoughts(engine, replica, [[e, 'cat', 50]]);
+  assertEqual(
+    await tree(),
+    'a, b, d, c, e',
+    'the items of a folder alone at the top level take its spot, below later ranks',
+  );
+}
+
+async function scenarioViewMemberHoldsMembers(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const replica = replicaFromLabel('r-view');
+  const [[a, b, c], names] = lettered(3);
+  const view = await openThoughtView(engine, replica);
+  await insertThoughts(engine, replica, [
+    [a, 'cat', 10],
+    [b, 'cat', 20],
+    [c, 'cat', 30],
+  ]);
+  const tree = () => viewTree(view, 'cat', names);
+
+  const [, group, under, nested] = await view.place('cat', c, { parent: a });
+  assert(
+    under?.kind.type === 'insert' && isCreateOnly(under) && under.kind.parent === group!.kind.node,
+    'a member without a reference gets one, create-only, before an item goes under it',
+  );
+  assert(nested?.kind.type === 'insert' && nested.kind.parent === under.kind.node, 'then c');
+  assertEqual(await tree(), 'a(c), b', 'a member goes under another, which keeps its spot');
+  assertArrayEqual(await viewOrder(view, 'cat'), [a, c, b], 'and lists right after it');
+  await view.place('cat', b, { parent: a, before: c });
+  assertEqual(await tree(), 'a(b, c)', 'before an item under it');
+  const inside = await view.place('cat', a, { parent: c }).then(
+    () => false,
+    () => true,
+  );
+  assert(inside, 'a member cannot go under its own item');
+  await view.place('cat', c);
+  assertEqual(await tree(), 'a(b), c', 'a nested member moves back out');
+}
+
+async function scenarioViewNestingKeepsDropsAfterMember(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const replica = replicaFromLabel('r-view');
+  const [ids, names] = lettered(14);
+  const [a, b] = ids;
+  const view = await openThoughtView(engine, replica);
+  await insertThoughts(
+    engine,
+    replica,
+    ids.map((id): [string, string, number] => [id, 'cat', 10]),
+  );
+
+  // Equal ranks and ids one apart leave no digit between the default keys of a and b, so drops
+  // right after a soon get keys that extend a's.
+  for (const id of ids.slice(2).reverse()) {
+    await view.place('cat', id, { before: (await viewOrder(view, 'cat'))[1] });
+  }
+  const dropped = 'c, d, e, f, g, h, i, j, k, l, m, n';
+  assertEqual(await viewTree(view, 'cat', names), `a, ${dropped}, b`, 'each drop goes after a');
+  await view.place('cat', b, { parent: a });
+  assertEqual(
+    await viewTree(view, 'cat', names),
+    `a(b), ${dropped}`,
+    'the reference written for a at its default key lists before them',
+  );
+}
+
+async function scenarioViewReferenceWithoutMember(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const replica = replicaFromLabel('r-view');
+  const [[a, b, c, d], names] = lettered(4);
+  const view = await openThoughtView(engine, replica);
+  await insertThoughts(engine, replica, [
+    [a, 'cat', 10],
+    [b, 'cat', 20],
+    [c, 'cat', 30],
+    [d, 'cat', 40],
+  ]);
+  const tree = () => viewTree(view, 'cat', names);
+
+  await view.place('cat', b, { parent: c });
+  assertEqual(await tree(), 'a, c(b), d', 'b goes under c');
+  await engine.local.payload(replica, c, viewThought('dog', 30));
+  assertEqual(await tree(), 'a, b, d', "c's reference shows its children in its place");
+  assertEqual((await view.place('cat', a, { before: b })).length, 0, 'a right before them stays');
+  assertEqual((await view.place('cat', b, { before: d })).length, 0, 'as does b right before d');
+  await view.place('cat', d, { before: b });
+  assertEqual(await tree(), 'a, d, b', 'an item placed among them joins them');
+  await view.place('cat', a);
+  assertEqual(await tree(), 'd, b, a', 'and they keep the place');
+  await engine.local.payload(replica, c, viewThought('cat', 30));
+  assertEqual(await tree(), 'c(d, b), a', 'c returns to it, holding them');
+}
+
+async function scenarioViewParentReferences(ctx: TreecrdtEngineConformanceContext): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const replica = replicaFromLabel('r-view');
+  // A favorite is a '=fav' child of the thought it favorites.
+  const [t1, t2, t3, f1, f2, f3, again] = [11, 12, 13, 21, 22, 23, 24].map(nodeIdFromInt);
+  const view = await openThoughtView(engine, replica, { reference: 'parent' });
+  await insertThoughts(engine, replica, [
+    [t1, 'apple', 1],
+    [t2, 'banana', 2],
+    [t3, 'cherry', 3],
+  ]);
+  for (const [thought, favorite, created] of [
+    [t1, f1, 10],
+    [t2, f2, 20],
+    [t3, f3, 30],
+  ] as const) {
+    await insertThoughts(engine, replica, [[favorite, '=fav', created]], thought);
+  }
+
+  await view.place('=fav', f3, { before: f1 });
+  assertArrayEqual(await viewOrder(view, '=fav'), [f3, f1, f2], 'f3 moves first');
+  await engine.local.delete(replica, f3);
+  assertArrayEqual(await viewOrder(view, '=fav'), [f1, f2], 'a deleted favorite leaves');
+  await insertThoughts(engine, replica, [[again, '=fav', 40]], t3);
+  assertArrayEqual(
+    await viewOrder(view, '=fav'),
+    [again, f1, f2],
+    'one created again under the same parent takes its place',
+  );
+  assertArrayEqual(await viewPlaced(view, '=fav'), [again], 'whose reference is already there');
+
+  await view.place('=fav', f2, { before: again });
+  assertArrayEqual(await viewOrder(view, '=fav'), [f2, again, f1], 'f2 moves first');
+  await engine.local.move(replica, f2, t1, { type: 'last' });
+  assertArrayEqual(
+    await viewOrder(view, '=fav'),
+    [again, f1, f2],
+    'a favorite that moves lists in its new context',
+  );
+  assertArrayEqual(await viewPlaced(view, '=fav'), [again], 'where it has no reference');
+}
+
+async function scenarioViewConcurrentMovesIntoFolders(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const peer = await ctx.createEngine({ docId: ctx.docId, name: 'peer-b' });
+  const replica = replicaFromLabel('r-view-a');
+  const encoder = new TextEncoder();
+  const [[a, b], names] = lettered(2);
+  const view = await openThoughtView(engine, replica);
+  const peerView = await openThoughtView(peer, replicaFromLabel('r-view-b'));
+  await insertThoughts(engine, replica, [
+    [a, 'cat', 10],
+    [b, 'cat', 20],
+  ]);
+  const one = await view.createFolder('cat', { payload: encoder.encode('one') });
+  const two = await view.createFolder('cat', { payload: encoder.encode('two') });
+  await exchangeOps(engine, peer);
+  assertEqual(await viewTree(peerView, 'cat', names), 'a, b, one[], two[]', 'B has the folders');
+
+  const [intoOne] = await view.place('cat', a, { parent: one.id });
+  const [intoTwo] = await peerView.place('cat', a, { parent: two.id });
+  assert(intoOne && intoTwo, 'each replica moves a');
+  await exchangeOps(engine, peer);
+  const later = opAfter(intoOne, intoTwo) ? 'b, one[a], two[]' : 'b, one[], two[a]';
+  assertEqual(await viewTree(view, 'cat', names), later, 'A keeps the later move');
+  assertEqual(await viewTree(peerView, 'cat', names), later, 'and so does B');
+}
+
+async function scenarioViewDropIntoReferenceAheadOfItsFolder(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const peer = await ctx.createEngine({ docId: ctx.docId, name: 'peer-b' });
+  const replica = replicaFromLabel('r-view-a');
+  const encoder = new TextEncoder();
+  const [[a, b, c], names] = lettered(3);
+  const view = await openThoughtView(engine, replica);
+  const peerView = await openThoughtView(peer, replicaFromLabel('r-view-b'));
+  await insertThoughts(engine, replica, [
+    [a, 'cat', 10],
+    [b, 'cat', 20],
+    [c, 'cat', 30],
+  ]);
+  await view.place('cat', c, { before: a });
+  await exchangeOps(engine, peer);
+  const folder = await view.createFolder('cat', { payload: encoder.encode('F') });
+  const intoFolder = await view.place('cat', a, { parent: folder.id });
+  await peerView.idle();
+  const reported: string[] = [];
+  peerView.onChange((groups) => void reported.push(...groups));
+
+  // As with a sync filter or batches out of order, B gets a's reference before the folder.
+  await peer.ops.appendMany(intoFolder);
+  await peerView.idle();
+  assertArrayEqual(await viewOrder(peerView, 'cat'), [c, a, b], 'B lists a at its default key');
+  assertArrayEqual(reported, [], 'which changes nothing B shows');
+  const drop = await peerView.place('cat', b, { parent: a });
+  assertEqual(drop.length, 1, "B's drop into a writes b's reference alone, leaving a's there");
+  await exchangeOps(engine, peer);
+  assertEqual(await viewTree(view, 'cat', names), 'c, F[a(b)]', "A keeps its move and B's drop");
+  assertEqual(await viewTree(peerView, 'cat', names), 'c, F[a(b)]', 'and so does B');
+}
+
+async function scenarioViewDeletedMembersLeave(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const replica = replicaFromLabel('r-view');
+  const [[a, b, c], names] = lettered(3);
+  const view = await openThoughtView(engine, replica);
+  await insertThoughts(engine, replica, [
+    [a, 'cat', 10],
+    [b, 'cat', 20],
+    [c, 'cat', 30],
+  ]);
+
+  await engine.local.delete(replica, b);
+  assertArrayEqual(await viewOrder(view, 'cat'), [a, c], 'a deleted member leaves');
+  await view.place('cat', c, { before: a });
+  await engine.local.delete(replica, a);
+  assertArrayEqual(await viewOrder(view, 'cat'), [c], 'an ordered group too');
+  assertEqual(await viewTree(view, 'cat', names), 'c', 'where its reference shows nothing');
+}
+
+async function scenarioViewNodeAheadOfItsInsert(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const peer = await ctx.createEngine({ docId: ctx.docId, name: 'peer-b' });
+  const replica = replicaFromLabel('r-view-a');
+  const encoder = new TextEncoder();
+  const [[a, b], names] = lettered(2);
+  const peerView = await openThoughtView(peer, replicaFromLabel('r-view-b'));
+  const root = nodeIdFromInt(0);
+  const insert = (node: string, created: number) =>
+    engine.local.insert(replica, root, node, { type: 'last' }, viewThought('cat', created));
+  const insertA = await insert(a, 10);
+  const insertB = await insert(b, 20);
+  const edit = await engine.local.payload(replica, a, viewThought('cat', 11));
+
+  // B gets an edit of a before a's insert, which leaves a placeholder row holding the payload.
+  await peer.ops.appendMany([insertB, edit]);
+  assertArrayEqual(await viewOrder(peerView, 'cat'), [b], 'a is not in the tree yet');
+  const folder = await peerView.createFolder('cat', { payload: encoder.encode('F') });
+  assertEqual(folder.ops.length, 3, 'the folder orders the group, writing no reference');
+  await peerView.idle();
+  const reported: string[] = [];
+  peerView.onChange((groups) => void reported.push(...groups));
+  await peer.ops.appendMany([insertA]);
+  await peerView.idle();
+  assertEqual(await viewTree(peerView, 'cat', names), 'a, b, F[]', 'a joins once it arrives');
+  assertArrayEqual(reported, ['cat'], 'which onChange reports');
+}
+
+async function scenarioViewDeletedReference(ctx: TreecrdtEngineConformanceContext): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const replica = replicaFromLabel('r-view');
+  const [[a, b, c], names] = lettered(3);
+  const view = await openThoughtView(engine, replica);
+  await insertThoughts(engine, replica, [
+    [a, 'cat', 10],
+    [b, 'cat', 20],
+    [c, 'cat', 30],
+  ]);
+
+  await view.place('cat', c, { before: a });
+  const [reference] = await view.place('cat', b, { before: a });
+  await engine.local.delete(replica, reference!.kind.node);
+  assertArrayEqual(await viewOrder(view, 'cat'), [c, a, b], 'b lists at its default key');
+  assertArrayEqual(await viewPlaced(view, 'cat'), [c], 'without a reference shown');
+
+  const into = await view.place('cat', a, { parent: b });
+  assertEqual(into.length, 2, "a drop into b moves b's reference back, then a goes under it");
+  assert(
+    into[0]!.kind.type === 'move' && into[0]!.kind.node === reference!.kind.node,
+    "as a move of b's reference",
+  );
+  assertEqual(await viewTree(view, 'cat', names), 'c, b(a)', 'b shows again, holding a');
+  assertArrayEqual(await viewPlaced(view, 'cat'), [c, b, a], 'and every member is placed');
+}
+
+async function scenarioViewNewIndexPathKeepsOrder(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const replica = replicaFromLabel('r-view');
+  const [[a, b, c]] = lettered(3);
+  const first = await openThoughtView(engine, replica);
+  await insertThoughts(engine, replica, [
+    [a, 'cat', 10],
+    [b, 'cat', 20],
+    [c, 'Cat', 30],
+  ]);
+  await first.place('cat', b, { before: a });
+  assertArrayEqual(await viewOrder(first, 'cat'), [b, a, c], 'the lowercased value ignores case');
+  await first.close();
+
+  const second = await openThoughtView(engine, replica, {
+    index: { name: 'thoughts', path: '$.value' },
+  });
+  assertArrayEqual(await viewOrder(second, 'cat'), [b, a], 'the value regroups, keeping the order');
+  assertArrayEqual(await viewOrder(second, 'Cat'), [c], 'and drops the old groups');
+}
+
+async function scenarioViewOnChangeReportsGroups(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const peer = await ctx.createEngine({ docId: ctx.docId, name: 'peer-b' });
+  const replica = replicaFromLabel('r-view');
+  const encoder = new TextEncoder();
+  const [[a, b]] = lettered(2);
+  const view = await openThoughtView(engine, replica);
+  const reported: string[][] = [];
+  view.onChange((groups) => void reported.push(groups));
+  await insertThoughts(engine, replica, [
+    [a, 'cat', 10],
+    [b, 'cat', 20],
+  ]);
+  /** Groups reported for the events of `write`. */
+  const changes = async (write: () => Promise<unknown>) => {
+    await view.idle();
+    reported.length = 0;
+    await write();
+    await view.idle();
+    return [...new Set(reported.flat())].sort();
+  };
+
+  assertArrayEqual(
+    await changes(() => engine.local.payload(replica, b, viewThought('dog', 20))),
+    ['cat', 'dog'],
+    'a member that moves to another group changes both',
+  );
+  assertArrayEqual(
+    await changes(() => engine.local.payload(replica, b, viewThought('Dog', 20))),
+    [],
+    'an edit that keeps the groups changes none',
+  );
+  assertEqual(reported.length, 1, 'the listener still gets the event');
+  await engine.local.payload(replica, b, viewThought('cat', 20));
+  assertArrayEqual(
+    await changes(() => view.place('cat', b, { before: a })),
+    ['cat'],
+    'a placement changes its group',
+  );
+  let folder = '';
+  assertArrayEqual(
+    await changes(async () => {
+      folder = (await view.createFolder('cat', { payload: encoder.encode('F') })).id;
+    }),
+    ['cat'],
+    'so does a new folder',
+  );
+  assertArrayEqual(
+    await changes(() => engine.local.payload(replica, folder, encoder.encode('G'))),
+    ['cat'],
+    'and a renamed one',
+  );
+  await exchangeOps(engine, peer);
+  const peerView = await openThoughtView(peer, replicaFromLabel('r-view-b'));
+  const moved = await peerView.place('cat', a, { parent: folder });
+  assertArrayEqual(
+    await changes(() => engine.ops.appendMany(moved)),
+    ['cat'],
+    "a peer's drop changes the group",
+  );
+  assertArrayEqual(
+    await changes(() => engine.local.delete(replica, a)),
+    ['cat'],
+    'a deletion changes the groups of the member',
+  );
+}
+
+async function scenarioViewSkipsUnmappableNode(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  const { engine } = ctx;
+  if (!engineRunnerOrNull(engine)) return ctx.skip('engine has no SQLite runner');
+  const replica = replicaFromLabel('r-view');
+  const [[a, b, c]] = lettered(3);
+  // The app cannot rank these yet, as with a field it cannot read until a key arrives.
+  const locked = new Set([a, c]);
+  const skipped = new Set<string | undefined>();
+  const view = await openThoughtView(engine, replica, {
+    rank: ({ id, payload }) => {
+      if (locked.has(id)) throw new Error('cannot rank this payload yet');
+      return (payload as ViewThought).created;
+    },
+    onError: (_error, node) => void skipped.add(node),
+  });
+  await insertThoughts(engine, replica, [
+    [a, 'cat', 10],
+    [b, 'cat', 20],
+    [c, 'cat', 30],
+  ]);
+  assertArrayEqual(await viewOrder(view, 'cat'), [b], 'the other members list');
+  assertArrayEqual([...skipped].map(String).sort(), [a, c], 'the skipped ones are reported');
+
+  locked.clear();
+  assertArrayEqual(await viewOrder(view, 'cat'), [a, b, c], 'and list once they rank');
+}
+
+async function scenarioViewNodeIdsAreKeyed(ctx: TreecrdtEngineConformanceContext): Promise<void> {
+  if (!engineRunnerOrNull(ctx.engine)) return ctx.skip('engine has no SQLite runner');
+  const replica = replicaFromLabel('r-view');
+  const [[a, b]] = lettered(2);
+  /** Ids of the nodes a group's first placement writes. */
+  const placedIds = async (engine: TreecrdtEngine) => {
+    const view = await openThoughtView(engine, replica);
+    await insertThoughts(engine, replica, [
+      [a, 'cat', 10],
+      [b, 'cat', 20],
+    ]);
+    return (await view.place('cat', b, { before: a })).map((op) => op.kind.node);
+  };
+
+  const ids = await placedIds(ctx.engine);
+  assertEqual(ids.length, 3, 'the view root, the group node and a reference');
+  assertArrayEqual(
+    await placedIds(await ctx.createEngine({ docId: ctx.docId, name: 'same-doc' })),
+    ids,
+    'replicas of a document derive the same ids',
+  );
+  const other = await placedIds(
+    await ctx.createEngine({ docId: `${ctx.docId}-other`, name: 'other-doc' }),
+  );
+  assert(
+    other.length === 3 && !other.some((id) => ids.includes(id)),
+    'another document gets other ids',
+  );
+}
+
+async function scenarioViewWritesAreAuthorized(
+  ctx: TreecrdtEngineConformanceContext,
+): Promise<void> {
+  if (!engineRunnerOrNull(ctx.engine)) return ctx.skip('engine has no SQLite runner');
+  const docId = ctx.docId;
+  const owner = ctx.engine;
+  const guest = await ctx.createEngine({ docId, name: 'guest' });
+  const issuerSk = randomEd25519SecretKey();
+  const issuerPk = await getEd25519PublicKey(issuerSk);
+  const ownerSk = randomEd25519SecretKey();
+  const ownerPk = await getEd25519PublicKey(ownerSk);
+  const guestSk = randomEd25519SecretKey();
+  const guestPk = await getEd25519PublicKey(guestSk);
+  const folder = nodeIdFromInt(100);
+  const [[a, b]] = lettered(2);
+
+  const sessionFor = (
+    engine: TreecrdtEngine,
+    privateKey: Uint8Array,
+    publicKey: Uint8Array,
+    token: Uint8Array,
+  ) =>
+    createTreecrdtAuthSession({
+      docId,
+      trust: { issuerPublicKeys: [issuerPk] },
+      local: { privateKey, publicKey, capabilityTokens: [token] },
+      backend: {
+        scopeEvaluator: createTreecrdtSqliteSubtreeScopeEvaluator(engineRunnerOrNull(engine)!),
+      },
+      requireProofRef: true,
+    });
+  const ownerSession = sessionFor(
+    owner,
+    ownerSk,
+    ownerPk,
+    makeCapabilityTokenV1({ issuerPrivateKey: issuerSk, subjectPublicKey: ownerPk, docId }),
+  );
+  // The guest may write only inside the folder; view nodes hang under the root.
+  const guestSession = sessionFor(
+    guest,
+    guestSk,
+    guestPk,
+    issueTreecrdtCapabilityTokenV1({
+      issuerPrivateKey: issuerSk,
+      subjectPublicKey: guestPk,
+      docId,
+      actions: ['write_structure', 'write_payload', 'delete', 'tombstone'],
+      rootNodeId: folder,
+    }),
+  );
+  await Promise.all([ownerSession.ready, guestSession.ready]);
+
+  const writer = owner.local.forReplica(ownerPk, { authSession: ownerSession });
+  await writer.insert(nodeIdFromInt(0), folder, { type: 'last' }, viewThought('folder', 1));
+  await writer.insert(folder, a, { type: 'last' }, viewThought('cat', 10));
+  await writer.insert(folder, b, { type: 'last' }, viewThought('cat', 20));
+  await exchangeOps(owner, guest);
+  const ownerView = await openThoughtView(owner, ownerPk, {
+    writeOptions: () => ({ authSession: ownerSession }),
+  });
+  const guestView = await openThoughtView(guest, guestPk, {
+    writeOptions: () => ({ authSession: guestSession }),
+  });
+
+  const written = (await guest.ops.all()).length;
+  const denied = await guestView.place('cat', b, { before: a }).then(
+    () => false,
+    () => true,
+  );
+  assert(denied, 'a placement outside the writer scope is rejected');
+  assertEqual((await guest.ops.all()).length, written, 'and writes no op');
+  assertArrayEqual(await viewOrder(guestView, 'cat'), [a, b], 'and keeps the order');
+
+  assertEqual((await ownerView.place('cat', b, { before: a })).length, 3, 'a writer with access');
+  assertArrayEqual(await viewOrder(ownerView, 'cat'), [b, a], 'orders the group');
 }
 
 async function scenarioAuthSqliteSubtreeEvaluator(
